@@ -45,6 +45,19 @@ _boot_root_table:
 .section .text.entry
 .global _start
 _start:
+    # --- Clear BSS (physical addresses — PC is physical before MMU) ---
+    la      t0, _sbss               # physical addr: auipc uses physical PC
+    la      t1, _ebss
+    bgeu    t0, t1, 2f
+1:
+    sd      zero, (t0)
+    addi    t0, t0, 8
+    bltu    t0, t1, 1b
+2:
+
+    # --- Set stack pointer (physical address) ---
+    la      sp, bstack_top
+
     # --- Enable Sv39 paging ---
     la      t0, _boot_root_table    # physical address (no MMU yet)
     srli    t0, t0, 12              # PPN for satp
@@ -60,15 +73,5 @@ _start:
     jr      t0
 3:
     # Now running at high-half VA
-    # --- Clear BSS ---
-    la      t0, _sbss
-    la      t1, _ebss
-    bgeu    t0, t1, 2f
-1:
-    sd      zero, (t0)
-    addi    t0, t0, 8
-    bltu    t0, t1, 1b
-2:
-    la      sp, bstack_top
     call    rust_entry
     j       .

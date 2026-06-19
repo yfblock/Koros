@@ -15,6 +15,9 @@
 // L0 table descriptor: VALID | TYPE_TABLE
 .set L0_TABLE_FLAGS, (PTE_VALID | PTE_TYPE_TABLE)
 
+// Kernel virtual-to-physical offset
+.set KERNEL_OFFSET, 0xFFFF000000000000
+
 .section .data.boot_page_table
 .balign 4096
 
@@ -29,10 +32,30 @@ _boot_page_table:
 _start:
     mov     x19, x0
 
+    // --- Clear BSS (physical addresses, MMU off) ---
+    ldr     x0, =_sbss
+    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
+    sub     x0, x0, x1              // physical _sbss
+    ldr     x1, =_ebss
+    movz    x2, #0xFFFF, lsl #48   // x2 = KERNEL_OFFSET
+    sub     x1, x1, x2              // physical _ebss
+    cmp     x0, x1
+    b.ge    2f
+1:
+    str     xzr, [x0], #8
+    cmp     x0, x1
+    b.lt    1b
+2:
+
+    // --- Set stack pointer (physical address) ---
+    ldr     x0, =bstack_top
+    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
+    sub     x0, x0, x1
+    mov     sp, x0
+
     // --- Build page tables ---
     // L0[0] -> L1 table (at BOOT_PT + 4096)
     ldr     x0, =_boot_page_table
-    mov     x1, #0xFFFF000000000000
     sub     x0, x0, x1
     add     x1, x0, #0x1000
     orr     x1, x1, #L0_TABLE_FLAGS
@@ -65,7 +88,7 @@ _start:
 
     // TTBR0_EL1 and TTBR1_EL1 point to same root table
     ldr     x0, =_boot_page_table
-    mov     x1, #0xFFFF000000000000
+    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
     sub     x0, x0, x1
     msr     ttbr0_el1, x0
     msr     ttbr1_el1, x0
@@ -84,23 +107,11 @@ _start:
 
     // --- Jump to high-half VA ---
     adr     x0, 3f
-    mov     x1, #0xFFFF000000000000
+    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
     add     x0, x0, x1
     br      x0
 3:
     // Now running at high-half VA
-    // --- Clear BSS ---
-    ldr     x0, =_sbss
-    ldr     x1, =_ebss
-    cmp     x0, x1
-    b.ge    2f
-1:
-    str     xzr, [x0], #8
-    cmp     x0, x1
-    b.lt    1b
-2:
-    ldr     x0, =bstack_top
-    mov     sp, x0
     mov     x0, x19
     ldr     x8, =rust_entry
     blr     x8

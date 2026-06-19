@@ -45,6 +45,9 @@ _start:
     mov     fs, ax
     mov     gs, ax
 
+    # set stack (physical address, 32-bit mode)
+    mov     esp, bstack_top - {kernel_offset}
+
     # enable PAE + PGE
     mov     eax, cr4
     or      eax, {cr4}
@@ -77,20 +80,7 @@ _start:
     mov     fs, ax
     mov     gs, ax
 
-    # --- Clear BSS ---
-    movabs  rcx, offset _sbss
-    movabs  rdx, offset _ebss
-    cmp     rcx, rdx
-    jae     .Lbss_done
-.Lbss_loop:
-    mov     byte ptr [rcx], 0
-    inc     rcx
-    cmp     rcx, rdx
-    jb      .Lbss_loop
-.Lbss_done:
-
-    # set stack and call Rust entry
-    movabs  rsp, offset bstack_top
+    # call Rust entry
     movabs  rax, offset {entry}
     call    rax
 
