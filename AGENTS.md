@@ -7,7 +7,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures via the
 
 ## Key Facts
 
-- **Nightly Rust required** — pinned to `nightly-2025-02-01` in `rust-toolchain.toml`. Components: `rust-src`, `clippy`, `rustfmt`, `llvm-tools-preview`.
+- **Nightly Rust required** — pinned to `nightly-2026-06-19` in `rust-toolchain.toml`. Components: `rust-src`, `clippy`, `rustfmt`, `rust-analyzer`, `llvm-tools-preview`.
 - **`build-std`** — `.cargo/config.toml` compiles `core`, `alloc`, `compiler_builtins` from source. No `std`.
 - **`polyhal/` is an external symlink** — do not edit files there. It is a git submodule-style link to `../polyhal`.
 - **No tests, no CI** — verification is running the kernel in QEMU.
@@ -36,6 +36,8 @@ Clippy / check (no Makefile target, run directly):
 ```
 cargo clippy --target riscv64gc-unknown-none-elf --release
 cargo clippy --target x86_64-unknown-none --release
+cargo clippy --target aarch64-unknown-none-softfloat --release
+cargo clippy --target loongarch64-unknown-none --release
 ```
 
 ## Linker Scripts
@@ -55,14 +57,18 @@ Kernel virtual base addresses (high-half kernel, all architectures):
 ```
 src/
   main.rs              — kernel_main entry, panic handler
-  arch/mod.rs           — cfg_if dispatch to arch-specific module
-  arch/<arch>/boot.rs   — _start entry, calls clear_bss then kernel_main
-  arch/<arch>/boot.S    — boot page tables & MMU enable (x86_64, riscv64, aarch64)
-  boot/mod.rs           — shared boot stack (512 KiB BSS) and clear_bss()
-  drivers/uart.rs       — UART driver (NS16550A / PL011), println! macro
+  arch/mod.rs           — cfg_if dispatch to per-arch module
+  arch/<arch>/boot.rs   — rust_entry, calls mm::set_*_ptr (if needed), then kernel_main
+  arch/<arch>/boot.S    — _start, BSS clear (physical), page tables, MMU, high-half jump
+  arch/<arch>/trap.rs   — trap vector init + handle_trap
+  arch/<arch>/trap.S    — assembly trampoline / vector table
+  boot/mod.rs           — shared boot stack (512 KiB BSS) only
+  drivers/uart/         — per-arch UART drivers (mod.rs + <device>.rs), println! macro
+  mm/                   — physical memory management
+  trap/mod.rs           — delegates init() to arch-specific trap::init()
 ```
 
-Entry flow per arch: `_start` (asm, in `arch/<arch>/boot.S`) → set up page tables → enable MMU → jump to high-half VA → `rust_entry` → `boot::clear_bss()` → `kernel_main()`.
+Entry flow per arch: `_start` (asm, in `arch/<arch>/boot.S`) → **clear BSS at physical addresses** → set up page tables → enable MMU → jump to high-half VA → `rust_entry` (boot.rs) → `mm::init()` → `trap::init()` → `kernel_main()`.
 
 ## CODE MAP
 
@@ -71,7 +77,7 @@ Entry flow per arch: `_start` (asm, in `arch/<arch>/boot.S`) → set up page tab
 | `kernel_main` | fn | `src/main.rs:12` | Kernel entry — prints hello, spins |
 | `panic` | fn | `src/main.rs:20` | Panic handler — infinite loop |
 | `clear_bss` | fn | `src/boot/mod.rs:19` | Zeroes BSS via linker symbols `_sbss`/`_ebss` |
-| `rust_entry` | fn | per-arch `boot.rs` | Arch-independent entry: calls `clear_bss` → `kernel_main` |
+| `rust_entry` | fn | per-arch `boot.rs` | Arch-independent entry: calls `mm::set_*_ptr` (if needed) → `kernel_main` |
 | `_start` | asm fn | per-arch `boot.S` / `boot.rs` | CPU entry point, page-table setup, mode switch |
 | `putchar` | fn | `src/drivers/uart.rs:31` | Blocking UART byte write (NS16550A / PL011) |
 | `puts` | fn | `src/drivers/uart.rs:52` | Writes string + `\r` before `\n` |
@@ -90,8 +96,10 @@ Entry flow per arch: `_start` (asm, in `arch/<arch>/boot.S`) → set up page tab
 - `#![no_std]` only — use `core` and `alloc` (with provided allocator), never `std`.
 - Minimize `unsafe` — wrap in safe abstractions, document why each block is needed.
 - No magic numbers — use named constants for all hardware addresses, flags, bit masks.
-- Arch-specific code goes in `src/arch/<arch>/`, not inline in generic modules.
-- Use `cfg_if` / `#[cfg(target_arch = "...")]` for small arch differences; don't duplicate whole files.
+- **`#[cfg(target_arch)]` must be confined to `src/arch/` where possible.** Shared non-driver modules (`mm/`, `trap/`, `sched/`, etc.) must not contain `#[cfg(target_arch)]` except for a thin dispatch import (one `use` line per architecture) that re-exports a uniform interface from `src/arch/<arch>/`. **Drivers (`src/drivers/`) are hardware-facing and may contain a modest amount of `#[cfg(target_arch)]`**, but should still prefer per-arch files under a subdirectory with thin dispatch (e.g. `drivers/uart/riscv64.rs`). Arch-specific constants, register definitions, and function bodies belong in per-arch files — never behind `#[cfg]` in shared code.
+- **Arch-specific code belongs under `src/arch/<arch>/`.** If a feature differs per architecture, implement it as a separate file in each arch directory, not as `#[cfg(target_arch)]` branches inside a shared module.
+- Generic/shared modules (`mm/`, `trap/`, `sched/`, etc.) may use a thin `cfg_if` dispatch to pull in arch-specific submodules, but should avoid scattering `#[cfg]` conditionals inside function bodies. The goal is: open `src/arch/<arch>/` and see everything specific to that architecture; open a shared module and see architecture-neutral logic.
+- **Every per-arch module must export a uniform interface.** All architectures that implement a module (e.g. `mm`, `trap`, `uart`) must export the same public functions and types with the same signatures, so shared code can call them through a thin cfg dispatch without architecture-specific branches.
 - `println!` and `print!` are provided by `drivers::uart` (not `std`).
 - For architecture-specific code bugs (boot, page tables, MMU, trap, context switch), refer to the `polyhal/` directory — it contains working implementations for all four architectures that can be used as reference.
 
@@ -118,5 +126,7 @@ Entry flow per arch: `_start` (asm, in `arch/<arch>/boot.S`) → set up page tab
 | Platform/Bus | `src/platform/` | Mixed | FDT/DTB parse, ACPI, PCI/PCIe enumeration |
 | Debug/Logging | `src/debug/` | Mixed | Log framework, backtrace, KASAN, perf counters |
 | Utilities | `src/utils/` | No | Linked list, bitmap, B-tree, error types |
+
+> **Key discipline for "Mixed" modules:** The shared module (e.g. `src/mm/mod.rs`) should use a thin dispatch to pull in arch-specific submodules, but avoid function-body `#[cfg]` branches. All arch-specific logic lives under `src/arch/<arch>/` — open that directory to see what belongs to a specific architecture.
 
 
