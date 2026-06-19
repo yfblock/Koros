@@ -4,11 +4,10 @@
 
 use core::arch::naked_asm;
 
-#[naked]
+#[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 unsafe extern "C" fn _start() -> ! {
-    unsafe {
         naked_asm!(
             "la.global $sp, bstack_top
              # --- Clear BSS ---
@@ -24,7 +23,6 @@ unsafe extern "C" fn _start() -> ! {
              jirl      $zero, $t0, 0",
             entry = sym rust_entry,
         )
-    }
 }
 
 #[unsafe(no_mangle)]
