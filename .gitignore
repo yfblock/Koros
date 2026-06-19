@@ -1,0 +1,7 @@
+/target
+linker_*.lds
+polyhal
+.omo/
+.opencode/
+opencode.jsonc
+session-*.md
