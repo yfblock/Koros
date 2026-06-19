@@ -7,12 +7,14 @@
 mod arch;
 mod boot;
 mod drivers;
+mod mm;
 mod trap;
 
 use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
 fn kernel_main() -> ! {
+    mm::init();
     trap::init();
     println!("Hello, world!");
 
