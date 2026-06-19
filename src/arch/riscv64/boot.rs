@@ -10,6 +10,7 @@ global_asm!(
 );
 
 #[unsafe(no_mangle)]
-extern "C" fn rust_entry() {
+extern "C" fn rust_entry(_hart_id: usize, dtb: usize) {
+    crate::arch::riscv64::mm::set_dtb_ptr(dtb);
     crate::kernel_main();
 }

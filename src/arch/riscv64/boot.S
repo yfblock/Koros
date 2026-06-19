@@ -45,6 +45,10 @@ _boot_root_table:
 .section .text.entry
 .global _start
 _start:
+    # Save OpenSBI-provided hart_id (a0) and DTB pointer (a1)
+    mv      s0, a0
+    mv      s1, a1
+
     # --- Clear BSS (physical addresses — PC is physical before MMU) ---
     la      t0, _sbss               # physical addr: auipc uses physical PC
     la      t1, _ebss
@@ -73,5 +77,7 @@ _start:
     jr      t0
 3:
     # Now running at high-half VA
+    mv      a0, s0              # restore hart_id
+    mv      a1, s1              # restore DTB pointer
     call    rust_entry
     j       .

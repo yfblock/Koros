@@ -46,6 +46,7 @@ global_asm!(
 
 /// Rust entry called from the 64-bit assembly stub.
 #[unsafe(no_mangle)]
-extern "C" fn rust_entry(_magic: usize, _mbi: usize) {
+extern "C" fn rust_entry(_magic: usize, mbi: usize) {
+    crate::arch::x86_64::mm::set_multiboot_info(mbi);
     crate::kernel_main();
 }

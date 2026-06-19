@@ -30,7 +30,8 @@ _boot_page_table:
 .section .text.entry
 .global _start
 _start:
-    mov     x19, x0
+    mov     x19, x0             // save DTB pointer (x0 on entry)
+    mrs     x20, mpidr_el1      // save CPU ID
 
     // --- Clear BSS (physical addresses, MMU off) ---
     ldr     x0, =_sbss
@@ -112,7 +113,8 @@ _start:
     br      x0
 3:
     // Now running at high-half VA
-    mov     x0, x19
+    and     x0, x20, #0xffffff      // hart_id from mpidr_el1
+    mov     x1, x19                 // DTB pointer
     ldr     x8, =rust_entry
     blr     x8
     b       .
