@@ -5,21 +5,32 @@ pub fn kernel_offset() -> usize {
     0xffff_8000_0000_0000
 }
 
+pub fn phys_to_virt(pa: usize) -> usize {
+    pa + kernel_offset()
+}
+
+pub fn virt_to_phys(va: usize) -> usize {
+    va - kernel_offset()
+}
+
 pub(crate) static MULTIBOOT_INFO: AtomicUsize = AtomicUsize::new(0);
 
 pub fn set_multiboot_info(mbi: usize) {
     MULTIBOOT_INFO.store(mbi, Ordering::Relaxed);
 }
 
-/// Detect physical memory regions from the Multiboot memory map and add them
-/// to the allocator.
-pub fn init(alloc: &mut crate::mm::frame_allocator::FrameAllocator) {
+/// Nothing below the linked kernel image needs a fixed firmware carve-out on x86_64.
+pub fn firmware_phys_start() -> usize {
+    0
+}
+
+/// Detect physical memory regions from the Multiboot memory map and register
+/// them with `add_region`.
+pub fn init(mut add_region: impl FnMut(usize, usize)) {
     let mbi = MULTIBOOT_INFO.load(Ordering::Relaxed);
     if mbi != 0 {
         unsafe {
-            parse_multiboot_regions(mbi, |start, end| {
-                alloc.add_region(start, end);
-            });
+            parse_multiboot_regions(phys_to_virt(mbi), &mut add_region);
         }
     }
 }
@@ -31,15 +42,11 @@ pub fn init(alloc: &mut crate::mm::frame_allocator::FrameAllocator) {
 use core::mem;
 
 const MULTIBOOT_INFO_MMAP: u32 = 1 << 6;
+const MULTIBOOT_MEMORY_AVAILABLE: u32 = 1;
 
-#[repr(C, packed)]
-struct MultibootInfo {
-    flags: u32,
-    // … many fields we don't care about …
-    mmap_len: u32,
-    mmap_addr: u32,
-    // … more fields …
-}
+const MBI_FLAGS: usize = 0;
+const MBI_MMAP_LEN: usize = 44;
+const MBI_MMAP_ADDR: usize = 48;
 
 #[repr(C, packed)]
 struct MmapEntry {
@@ -51,23 +58,30 @@ struct MmapEntry {
     type_: u32,
 }
 
-const MULTIBOOT_MEMORY_AVAILABLE: u32 = 1;
-
-/// Parse the Multiboot memory map at `mbi_addr` and call `add_region` for
-/// every available physical-memory region.
+/// Parse the Multiboot memory map at `mbi_va` (virtual) and call `add_region`.
 unsafe fn parse_multiboot_regions(
-    mbi_addr: usize,
+    mbi_va: usize,
     mut add_region: impl FnMut(usize, usize),
 ) -> usize {
-    let info = &*(mbi_addr as *const MultibootInfo);
-    let flags = info.flags;
+    let base = mbi_va as *const u8;
+    let flags = core::ptr::read_unaligned(base.add(MBI_FLAGS) as *const u32);
 
     if flags & MULTIBOOT_INFO_MMAP == 0 {
+        if flags & 1 != 0 {
+            let mem_upper_kb =
+                core::ptr::read_unaligned(base.add(8) as *const u32) as usize;
+            let end = mem_upper_kb * 1024;
+            if end > 0x100000 {
+                add_region(0x100000, end);
+                return 1;
+            }
+        }
         return 0;
     }
 
-    let mmap_addr = info.mmap_addr as usize;
-    let mmap_len = info.mmap_len as usize;
+    let mmap_len = core::ptr::read_unaligned(base.add(MBI_MMAP_LEN) as *const u32) as usize;
+    let mmap_phys = core::ptr::read_unaligned(base.add(MBI_MMAP_ADDR) as *const u32) as usize;
+    let mmap_addr = phys_to_virt(mmap_phys);
     if mmap_len == 0 {
         return 0;
     }

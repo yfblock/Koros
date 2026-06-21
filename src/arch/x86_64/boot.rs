@@ -7,8 +7,8 @@ use x86_64::registers::model_specific::EferFlags;
 /// Multiboot header magic number.
 const MULTIBOOT_MAGIC: u32 = 0x1BADB002;
 
-/// Multiboot flags: memory info (bit 1) + address fields (bit 16).
-const MULTIBOOT_FLAGS: usize = (1 << 1) | (1 << 16);
+/// Multiboot flags: memory info (bit 0) + mmap (bit 6) + address fields (bit 16).
+const MULTIBOOT_FLAGS: usize = (1 << 0) | (1 << 6) | (1 << 16);
 
 /// IA32_EFER MSR address.
 const IA32_EFER_MSR: u32 = 0xC0000080;

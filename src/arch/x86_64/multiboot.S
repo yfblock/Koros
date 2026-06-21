@@ -13,8 +13,8 @@
     Page2MTable  \addr
 .endm
 
-# Flags: bit 1 (memory info) + bit 16 (address fields).
-.set MB_FLAGS, (1 << 1) | (1 << 16)
+# Flags: bit 0 (mem info) + bit 6 (mmap) + bit 16 (address fields).
+.set MB_FLAGS, (1 << 0) | (1 << 6) | (1 << 16)
 
 .section .multiboot
 .balign 4
@@ -32,8 +32,8 @@ multiboot_header:
 .code32
 .global _start
 _start:
-    mov     edi, eax                            # save multiboot magic
-    mov     esi, ebx                            # save multiboot info ptr
+    mov     [.Lsaved_magic - {kernel_offset}], eax
+    mov     [.Lsaved_mbi - {kernel_offset}], ebx
 
     lgdt    [.Ltmp_gdt_desc - {kernel_offset}]
 
@@ -83,7 +83,10 @@ _start:
     mov     fs, ax
     mov     gs, ax
 
-    # call Rust entry
+    mov     rdi, [.Lsaved_magic - {kernel_offset}]
+    mov     rsi, [.Lsaved_mbi - {kernel_offset}]
+
+    # call Rust entry (System V ABI: rdi, rsi)
     movabs  rax, offset {entry}
     call    rax
 
@@ -98,6 +101,12 @@ _start:
     .long   .Ltmp_gdt - {kernel_offset}
 
 .section .data
+.balign 8
+.Lsaved_magic:
+    .quad 0
+.Lsaved_mbi:
+    .quad 0
+
 .balign 16
 .Ltmp_gdt:
     .quad 0x0000000000000000    # null

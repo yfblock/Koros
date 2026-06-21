@@ -39,15 +39,13 @@ QEMU_EXEC += -kernel $(KERNEL_IMG) -nographic -smp $(SMP)
 
 export RUSTFLAGS := $(RUSTFLAGS_EXTRA)
 
-.PHONY: build run clean
+.PHONY: build run clean verify
 
-build: $(KERNEL_IMG)
-
-target/$(TARGET)/release/Koros.bin: $(KERNEL_ELF)
-	$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $@
-
-$(KERNEL_ELF):
+build:
 	cargo build --release --target $(TARGET)
+ifneq ($(KERNEL_IMG),$(KERNEL_ELF))
+	$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $(KERNEL_IMG)
+endif
 
 run: build
 	$(QEMU_EXEC)
@@ -57,3 +55,6 @@ debug: build
 
 clean:
 	cargo clean
+
+verify:
+	./scripts/verify.sh

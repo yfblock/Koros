@@ -4,6 +4,8 @@
 // .altmacro conflicts with AT&T %-prefix, and multiboot.S transitions between
 // .code32 and .code64 sections with different syntax requirements.
 #![allow(bad_asm_style)]
+
+extern crate alloc;
 mod arch;
 mod boot;
 mod drivers;
@@ -14,8 +16,8 @@ use core::panic::PanicInfo;
 
 #[unsafe(no_mangle)]
 fn kernel_main() -> ! {
-    mm::init();
     trap::init();
+    mm::init();
     println!("Hello, world!");
 
     loop {

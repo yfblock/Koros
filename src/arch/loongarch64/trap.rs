@@ -75,5 +75,6 @@ pub fn init() {
     unsafe {
         asm!("csrwr {}, 0xc", inout(reg) eentry);  // EENTRY = 0xc
     }
+    let _ = eentry; // old CSR value unused
     println!("trap: EENTRY set to {:#x}", trap_vector_base as *const () as usize);
 }

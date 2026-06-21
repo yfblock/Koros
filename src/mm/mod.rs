@@ -3,12 +3,23 @@
 //! Responsibilities:
 //! - Detect available physical memory (per-arch code in `src/arch/<arch>/mm.rs`).
 //! - Exclude the kernel image itself from the free pool.
-//! - Initialise the [`frame_allocator`] so the rest of the kernel can
-//!   allocate and free physical 4 KiB frames.
+//! - Initialise the [`frame_allocator`] (buddy system) so the rest of the kernel
+//!   can allocate contiguous 4 KiB frames and 2 MiB huge pages.
 
-pub mod frame_allocator;
+mod frame_allocator;
+mod heap;
+mod page_table;
+mod regions;
+mod slab_heap;
+
+pub(crate) mod addr;
+
+pub use frame_allocator::{alloc_frames, alloc_huge_2m, alloc_page, available_frames, free_frames, FRAMES_2M, PAGE_SIZE};
+pub use page_table::{map, translate, MapError, MapSize, MappingFlags};
 
 // Shared FDT parser — used by riscv64, aarch64, and loongarch64.
+// Excluded on x86_64 which uses Multiboot instead.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
 pub(crate) mod fdt;
 
 // ---------------------------------------------------------------------------
@@ -43,6 +54,16 @@ use crate::arch::aarch64::mm as arch_mm;
 #[cfg(target_arch = "loongarch64")]
 use crate::arch::loongarch64::mm as arch_mm;
 
+/// Convert a physical address to the kernel direct-map virtual address.
+pub fn phys_to_virt(pa: usize) -> usize {
+    arch_mm::phys_to_virt(pa)
+}
+
+/// Inverse of [`phys_to_virt`] for addresses in the direct map.
+pub fn virt_to_phys(va: usize) -> usize {
+    arch_mm::virt_to_phys(va)
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -51,17 +72,28 @@ use crate::arch::loongarch64::mm as arch_mm;
 ///
 /// Must be called once, early in `kernel_main`, before any allocation.
 pub fn init() {
+    // Bootstrap heap for the frame buddy's internal `BTreeSet`.
+    heap::init_bootstrap();
+
+    let mut collected = regions::RegionCollector::new();
+    arch_mm::init(|start, end| collected.add(start, end));
+
+    let (ks, ke) = kernel_phys_range();
+    // Round the reserved range outward so partial tail pages stay reserved.
+    let ks = ks & !(frame_allocator::PAGE_SIZE - 1);
+    let ke = (ke + frame_allocator::PAGE_SIZE - 1) & !(frame_allocator::PAGE_SIZE - 1);
+    let hole_start = match arch_mm::firmware_phys_start() {
+        0 => ks,
+        fw => core::cmp::min(fw, ks),
+    };
     let alloc = unsafe { &mut *frame_allocator::ALLOCATOR.0.get() };
 
-    // 1. Arch-specific memory-region detection (FDT, Multiboot, etc.).
-    arch_mm::init(alloc);
+    collected.each(|start, end| {
+        regions::clip_region(start, end, hole_start, ke, |s, e| alloc.add_region(s, e));
+    });
 
-    // 2. Punch out the kernel image.
-    let (ks, ke) = kernel_phys_range();
-    alloc.reserve(ks, ke);
+    heap::self_test();
 
-    if cfg!(debug_assertions) {
-        crate::println!("mm: kernel phys {:#010x}–{:#010x}", ks, ke);
-        crate::println!("mm: {} free frames available", alloc.available_frames());
-    }
+    page_table::init();
+    page_table::self_test();
 }
