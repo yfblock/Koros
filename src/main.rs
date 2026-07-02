@@ -44,11 +44,8 @@ fn panic(info: &PanicInfo) -> ! {
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
 fn ext2_test() {
-    use alloc::sync::Arc;
-    use drivers::virtio::blk::VirtioBlk;
-
-    let device: Arc<VirtioBlk> = match discover_virtio_blk() {
-        Some(blk) => Arc::new(blk),
+    let device = match discover_blk() {
+        Some(dev) => dev,
         None => {
             println!("ext2 test SKIPPED: no virtio-blk device found");
             return;
@@ -58,110 +55,30 @@ fn ext2_test() {
     ext2_test_with_device(device);
 }
 
+/// Discover a virtio block device and return it behind the [`BlockDevice`]
+/// trait object.  MMIO architectures use the external `virtio_drivers` crate;
+/// x86_64 uses the in-tree PCI driver.
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-fn discover_virtio_blk() -> Option<drivers::virtio::blk::VirtioBlk> {
-    use alloc::boxed::Box;
-    use drivers::virtio::blk::VirtioBlk;
-    use drivers::virtio::mmio::VirtioMmio;
-
-    const MMIO_BASE: usize = if cfg!(target_arch = "riscv64") {
-        0x1000_1000
-    } else {
-        0x0a00_0000
-    };
-    const MMIO_STRIDE: usize = if cfg!(target_arch = "riscv64") {
-        0x1000
-    } else {
-        0x200
-    };
-    const VIRT_MAGIC: u32 = 0x7472_6976; // "virt" in little-endian
-    const DEV_ID_BLK: u32 = 2;
-
-    println!("ext2: probing virtio-mmio devices...");
-
-    for i in 0..32usize {
-        let base = MMIO_BASE + i * MMIO_STRIDE;
-        let magic = unsafe { core::ptr::read_volatile(base as *const u32) };
-        if magic != VIRT_MAGIC {
-            continue;
-        }
-        let dev_id = unsafe { core::ptr::read_volatile((base + 0x008) as *const u32) };
-        println!("  virtio[{}]: base={:#x}, id={}", i, base, dev_id);
-        if dev_id == DEV_ID_BLK {
-            let transport = Box::new(VirtioMmio::new(base));
-            match VirtioBlk::new(transport) {
-                Ok(blk) => {
-                    println!("ext2: found virtio-blk at {:#x}", base);
-                    return Some(blk);
-                }
-                Err(e) => println!("ext2: VirtioBlk init failed: {:?}", e),
-            }
-        }
-    }
-    None
+fn discover_blk() -> Option<alloc::sync::Arc<dyn drivers::block::BlockDevice>> {
+    use alloc::sync::Arc;
+    drivers::virtio::vd::discover_mmio_blk()
+        .map(|blk| Arc::new(blk) as Arc<dyn drivers::block::BlockDevice>)
 }
 
 #[cfg(target_arch = "x86_64")]
-fn discover_virtio_blk() -> Option<drivers::virtio::blk::VirtioBlk> {
-    use alloc::boxed::Box;
-    use drivers::virtio::blk::VirtioBlk;
-    use drivers::virtio::pci::{VirtioPci, VIRTIO_VENDOR_ID, VIRTIO_DEVICE_ID_BASE};
-
-    println!("ext2: scanning PCI bus for virtio-blk...");
-
-    for bus in 0..=255u16 {
-        for dev in 0..32u16 {
-            let pci_addr = (bus << 8) | (dev << 3);
-            let vendor = drivers::virtio::pci::pci_config_read16(
-                pci_addr,
-                0x00, // PCI_VENDOR_ID
-            );
-            if vendor == 0xFFFF {
-                continue;
-            }
-            if vendor != VIRTIO_VENDOR_ID {
-                continue;
-            }
-            let device_id = drivers::virtio::pci::pci_config_read16(
-                pci_addr,
-                0x02, // PCI_DEVICE_ID
-            );
-            // Virtio block device: 0x1001 (transitional) or 0x1042 (modern).
-            if device_id != VIRTIO_DEVICE_ID_BASE + 1 && device_id != 0x1042 {
-                continue;
-            }
-            println!(
-                "  PCI {:#06x}: vendor={:#06x} device={:#06x}",
-                pci_addr, vendor, device_id
-            );
-            let transport = match VirtioPci::new(pci_addr) {
-                Ok(t) => Box::new(t),
-                Err(e) => {
-                    println!("ext2: VirtioPci::new failed: {:?}", e);
-                    continue;
-                }
-            };
-            match VirtioBlk::new(transport) {
-                Ok(blk) => {
-                    use drivers::block::BlockDevice;
-                    println!("ext2: found virtio-blk at PCI {:#06x}, blocks={}, block_size={}",
-                        pci_addr, blk.total_blocks(), blk.block_size());
-                    return Some(blk);
-                }
-                Err(e) => println!("ext2: VirtioBlk init failed: {:?}", e),
-            }
-        }
-    }
-    None
+fn discover_blk() -> Option<alloc::sync::Arc<dyn drivers::block::BlockDevice>> {
+    use alloc::sync::Arc;
+    drivers::virtio::vd::discover_pci_blk()
+        .map(|blk| Arc::new(blk) as Arc<dyn drivers::block::BlockDevice>)
 }
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
-fn ext2_test_with_device(device: alloc::sync::Arc<drivers::virtio::blk::VirtioBlk>) {
+fn ext2_test_with_device(device: alloc::sync::Arc<dyn drivers::block::BlockDevice>) {
     use fs::ext2::Ext2Fs;
     use fs::{mount, SuperBlock as SuperBlockTrait};
 
     // --- Open and mount the ext2 filesystem at "/" ------------------------
-    let fs = match Ext2Fs::open(device) {
+    let fs = match Ext2Fs::open(device.clone()) {
         Ok(fs) => fs,
         Err(e) => {
             println!("ext2 test FAILED: open: {:?}", e);

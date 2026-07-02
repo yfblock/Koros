@@ -23,6 +23,11 @@ use super::{Ext2Fs, EXT2_ROOT_INO};
 /// Number of direct block pointers in an inode.
 const DIRECT_BLOCKS: usize = 12;
 
+/// Maximum number of filesystem blocks coalesced into a single multi-block
+/// device transfer by `read_at` / `write_at`.  Bounds the request size and
+/// the amount of cache bookkeeping per bulk operation.
+const MAX_BULK_BLOCKS: usize = 128;
+
 // ext2 file-type constants (upper 4 bits of i_mode)
 const EXT2_S_IFMT: u16 = 0xF000;
 const EXT2_S_IFSOCK: u16 = 0xC000;
@@ -330,7 +335,11 @@ impl Ext2INode {
     /// If the block is already mapped, returns its existing physical number.
     /// Otherwise allocates a new data block, wires it into the inode's block
     /// pointer tree, and returns the new physical block number.
-    fn allocate_block_for_offset(&self, logical_block: u32) -> Result<(u32, u32), FsError> {
+    fn allocate_block_for_offset(
+        &self,
+        logical_block: u32,
+        zero_data: bool,
+    ) -> Result<(u32, u32), FsError> {
         // Fast path: block already exists (no new blocks allocated).
         let existing = self.resolve_block_id(logical_block)?;
         if existing != 0 {
@@ -344,13 +353,16 @@ impl Ext2INode {
         let indirect_limit = direct_limit + ptrs_per_block;
         let double_limit = indirect_limit + ptrs_per_block * ptrs_per_block;
 
-        // Allocate and zero the data block, preferring this inode's own group.
+        // Allocate the data block, preferring this inode's own group.  Zeroing
+        // is skipped when the caller will overwrite the whole block (e.g. a
+        // full-block write), avoiding a wasted write.
         let new_block = self.fs.alloc_block_goal(self.block_group())?;
-        let zero_buf = vec![0u8; block_size];
-        if let Err(e) = write_fs_block(&self.fs, new_block as usize, &zero_buf) {
-            // Best-effort free on failure.
-            let _ = self.fs.free_block(new_block);
-            return Err(e);
+        if zero_data {
+            let zero_buf = vec![0u8; block_size];
+            if let Err(e) = write_fs_block(&self.fs, new_block as usize, &zero_buf) {
+                let _ = self.fs.free_block(new_block);
+                return Err(e);
+            }
         }
         // Count of filesystem blocks newly allocated during this call (the
         // data block plus any indirect metadata blocks), so the caller can
@@ -1062,11 +1074,38 @@ impl INode for Ext2INode {
             let file_offset = offset + bytes_read;
             let logical_block = file_offset / block_size;
             let block_offset = file_offset % block_size;
-            let chunk = core::cmp::min(bytes_to_read - bytes_read, block_size - block_offset);
+            let remaining = bytes_to_read - bytes_read;
 
+            // Fast path: block-aligned, at least one full block left, and the
+            // block is mapped — read a run of physically-contiguous full
+            // blocks in a single multi-block device request.
+            if block_offset == 0 && remaining >= block_size {
+                let phys = self.resolve_block_id(logical_block as u32)?;
+                if phys != 0 {
+                    let max_run = core::cmp::min(remaining / block_size, MAX_BULK_BLOCKS);
+                    let mut run = 1;
+                    while run < max_run {
+                        let np = self.resolve_block_id(logical_block as u32 + run as u32)?;
+                        if np == phys + run as u32 {
+                            run += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    self.fs.read_fs_blocks(
+                        phys as usize,
+                        run,
+                        &mut buf[bytes_read..bytes_read + run * block_size],
+                    )?;
+                    bytes_read += run * block_size;
+                    continue;
+                }
+            }
+
+            // Slow path: a partial block or a sparse hole.
+            let chunk = core::cmp::min(remaining, block_size - block_offset);
             let phys_block = self.resolve_block_id(logical_block as u32)?;
             if phys_block == 0 {
-                // Sparse block — fill with zeros.
                 for b in &mut buf[bytes_read..bytes_read + chunk] {
                     *b = 0;
                 }
@@ -1098,27 +1137,65 @@ impl INode for Ext2INode {
             let file_offset = offset + bytes_written;
             let logical_block = file_offset / block_size;
             let block_offset = file_offset % block_size;
-            let chunk = core::cmp::min(buf.len() - bytes_written, block_size - block_offset);
+            let remaining = buf.len() - bytes_written;
 
-            // Get or allocate the physical block for this logical position.
-            let (phys_block, allocated) = self.allocate_block_for_offset(logical_block as u32)?;
+            // Fast path: block-aligned with at least one full block to write.
+            // Allocate blocks without pre-zeroing (we overwrite them fully) and
+            // flush physically-contiguous runs in single multi-block requests.
+            if block_offset == 0 && remaining >= block_size {
+                let (first_phys, a0) =
+                    self.allocate_block_for_offset(logical_block as u32, false)?;
+                new_fs_blocks += a0;
+
+                let max_run = core::cmp::min(remaining / block_size, MAX_BULK_BLOCKS);
+                let mut run_start = first_phys;
+                let mut run_len = 1usize;
+                let mut done_in_region = 0usize; // full blocks already flushed
+
+                while done_in_region + run_len < max_run {
+                    let next_logical = logical_block + done_in_region + run_len;
+                    let (np, an) =
+                        self.allocate_block_for_offset(next_logical as u32, false)?;
+                    new_fs_blocks += an;
+                    if np == run_start + run_len as u32 {
+                        run_len += 1;
+                    } else {
+                        // Contiguity broke: flush the current run and start anew.
+                        let off = bytes_written + done_in_region * block_size;
+                        self.fs.write_fs_blocks(
+                            run_start as usize,
+                            run_len,
+                            &buf[off..off + run_len * block_size],
+                        )?;
+                        done_in_region += run_len;
+                        run_start = np;
+                        run_len = 1;
+                    }
+                }
+                let off = bytes_written + done_in_region * block_size;
+                self.fs.write_fs_blocks(
+                    run_start as usize,
+                    run_len,
+                    &buf[off..off + run_len * block_size],
+                )?;
+                done_in_region += run_len;
+                bytes_written += done_in_region * block_size;
+                continue;
+            }
+
+            // Slow path: partial (head/tail) block — read-modify-write via the
+            // cache.  A newly-allocated block is zeroed first so the untouched
+            // part is well-defined.
+            let chunk = core::cmp::min(remaining, block_size - block_offset);
+            let (phys_block, allocated) =
+                self.allocate_block_for_offset(logical_block as u32, true)?;
             new_fs_blocks += allocated;
 
-            if chunk == block_size && block_offset == 0 {
-                // Full-block write — write directly from the caller's buffer.
-                write_fs_block(
-                    &self.fs,
-                    phys_block as usize,
-                    &buf[bytes_written..bytes_written + chunk],
-                )?;
-            } else {
-                // Partial-block write — read-modify-write.
-                let mut block_buf = vec![0u8; block_size];
-                read_fs_block(&self.fs, phys_block as usize, &mut block_buf)?;
-                block_buf[block_offset..block_offset + chunk]
-                    .copy_from_slice(&buf[bytes_written..bytes_written + chunk]);
-                write_fs_block(&self.fs, phys_block as usize, &block_buf)?;
-            }
+            let mut block_buf = vec![0u8; block_size];
+            read_fs_block(&self.fs, phys_block as usize, &mut block_buf)?;
+            block_buf[block_offset..block_offset + chunk]
+                .copy_from_slice(&buf[bytes_written..bytes_written + chunk]);
+            write_fs_block(&self.fs, phys_block as usize, &block_buf)?;
 
             bytes_written += chunk;
         }

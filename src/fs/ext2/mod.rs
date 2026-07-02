@@ -243,6 +243,55 @@ impl Ext2Fs {
         Ok(())
     }
 
+    /// Read `count` contiguous filesystem blocks starting at `start_fs_block`
+    /// in a single multi-block device request, bypassing the block cache.
+    ///
+    /// Dirty cached copies of the range are flushed first so the direct read
+    /// observes the latest data.  `buf.len()` must equal `count * block_size`.
+    pub fn read_fs_blocks(
+        &self,
+        start_fs_block: usize,
+        count: usize,
+        buf: &mut [u8],
+    ) -> Result<(), FsError> {
+        let per = self.block_size / self.device.block_size();
+        let dev_start = start_fs_block * per;
+        {
+            let mut cache = self.cache.lock();
+            cache
+                .flush_range(dev_start, count * per)
+                .map_err(|_| FsError::IoError)?;
+        }
+        self.device
+            .read_blocks(dev_start, buf)
+            .map_err(|_| FsError::IoError)
+    }
+
+    /// Write `count` contiguous filesystem blocks starting at `start_fs_block`
+    /// in a single multi-block device request, bypassing the block cache.
+    ///
+    /// Any cached copies of the range are discarded first (the whole range is
+    /// overwritten).  `buf.len()` must equal `count * block_size`.
+    pub fn write_fs_blocks(
+        &self,
+        start_fs_block: usize,
+        count: usize,
+        buf: &[u8],
+    ) -> Result<(), FsError> {
+        if self.read_only {
+            return Err(FsError::ReadOnly);
+        }
+        let per = self.block_size / self.device.block_size();
+        let dev_start = start_fs_block * per;
+        {
+            let mut cache = self.cache.lock();
+            cache.invalidate_range(dev_start, count * per);
+        }
+        self.device
+            .write_blocks(dev_start, buf)
+            .map_err(|_| FsError::IoError)
+    }
+
     // -----------------------------------------------------------------------
     // Metadata persistence (superblock + block group descriptor table)
     // -----------------------------------------------------------------------

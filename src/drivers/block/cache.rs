@@ -126,6 +126,36 @@ impl BlockCache {
         Ok(())
     }
 
+    /// Flush any dirty cached blocks in `[start_block, start_block + count)`
+    /// to the device so a direct (bypass-cache) read of that range sees the
+    /// latest data.  Cached entries are kept (and remain valid, matching the
+    /// device).
+    pub fn flush_range(&mut self, start_block: usize, count: usize) -> Result<(), BlockError> {
+        for id in start_block..start_block + count {
+            if let Some(entry) = self.cache.get_mut(&id)
+                && entry.dirty
+            {
+                self.device.write_block(id, &entry.data)?;
+                entry.dirty = false;
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop any cached entries in `[start_block, start_block + count)` without
+    /// flushing them.  Used before a direct (bypass-cache) *write* of the
+    /// range: the caller is about to overwrite those blocks in full, so any
+    /// cached (even dirty) copies are stale and should simply be discarded.
+    pub fn invalidate_range(&mut self, start_block: usize, count: usize) {
+        for id in start_block..start_block + count {
+            if self.cache.remove(&id).is_some()
+                && let Some(pos) = self.access_order.iter().position(|&x| x == id)
+            {
+                self.access_order.remove(pos);
+            }
+        }
+    }
+
     /// Flush every dirty block to the underlying device and clear the dirty
     /// flags.
     pub fn sync(&mut self) -> Result<(), BlockError> {
