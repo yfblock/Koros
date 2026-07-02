@@ -13,29 +13,29 @@ QEMU_EXEC := qemu-system-$(ARCH)
 ifeq ($(ARCH), riscv64)
   TARGET := riscv64gc-unknown-none-elf
   QEMU_EXEC += -machine virt
-  KERNEL_IMG := target/$(TARGET)/release/Koros.bin
+  KERNEL_IMG := target/$(TARGET)/release/koros.bin
   EXT2_IMG := os-images/ext2-test.img
 else ifeq ($(ARCH), aarch64)
   TARGET := aarch64-unknown-none-softfloat
   QEMU_EXEC += -cpu cortex-a72 -machine virt
-  KERNEL_IMG := target/$(TARGET)/release/Koros.bin
+  KERNEL_IMG := target/$(TARGET)/release/koros.bin
   EXT2_IMG := os-images/ext2-test.img
 else ifeq ($(ARCH), loongarch64)
   TARGET := loongarch64-unknown-none
   QEMU_EXEC += -M virt -m 1G
-  KERNEL_IMG := target/$(TARGET)/release/Koros
+  KERNEL_IMG := target/$(TARGET)/release/koros
 else ifeq ($(ARCH), x86_64)
   TARGET := x86_64-unknown-none
   RUSTFLAGS_EXTRA := -Clink-arg=-no-pie
   QEMU_EXEC += -machine q35 -cpu IvyBridge-v2
   # x86_64 multiboot needs the ELF, not the raw binary.
-  KERNEL_IMG := target/$(TARGET)/release/Koros
+  KERNEL_IMG := target/$(TARGET)/release/koros
   EXT2_IMG := os-images/ext2-test.img
 else
   $(error ARCH must be one of: riscv64, x86_64, aarch64, loongarch64)
 endif
 
-KERNEL_ELF := target/$(TARGET)/release/Koros
+KERNEL_ELF := target/$(TARGET)/release/koros
 OBJCOPY := rust-objcopy
 
 QEMU_EXEC += -kernel $(KERNEL_IMG) -nographic -smp $(SMP)
@@ -53,7 +53,7 @@ export RUSTFLAGS := $(RUSTFLAGS_EXTRA)
 .PHONY: build run clean verify
 
 build:
-	cargo build --release --target $(TARGET)
+	cargo build --release --target $(TARGET) -p koros
 ifneq ($(KERNEL_IMG),$(KERNEL_ELF))
 	$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $(KERNEL_IMG)
 endif

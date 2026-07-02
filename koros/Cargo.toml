@@ -1,0 +1,11 @@
+[package]
+name = "koros"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "koros"
+path = "src/main.rs"
+
+[dependencies]
+koros-core = { path = "../koros-core" }

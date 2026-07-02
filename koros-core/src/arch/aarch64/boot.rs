@@ -8,7 +8,8 @@ global_asm!(include_str!("boot.S"));
 extern "C" fn rust_entry(hart_id: usize, dtb: usize) {
     crate::arch::aarch64::mm::set_dtb_ptr(dtb);
     if hart_id == 0 {
-        crate::kernel_main();
+        // SAFETY: `kernel_main` is provided by the `koros` binary crate.
+        unsafe { crate::kernel_main() }
     }
     loop {
         core::hint::spin_loop();

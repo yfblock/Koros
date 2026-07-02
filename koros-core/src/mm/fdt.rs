@@ -2,6 +2,7 @@
 //!
 //! Scans the tree for `/memory` nodes and extracts memory regions.
 
+use alloc::string::String;
 use fdt::Fdt;
 
 /// Parse FDT at `fdt_base` (physical address) and call `add_region` for each
@@ -34,4 +35,17 @@ pub unsafe fn parse_memory_regions(
         }
     }
     count
+}
+
+/// Read the kernel command line from the FDT `/chosen` node's `bootargs`
+/// property, copied into an owned [`String`].
+///
+/// # Safety
+///
+/// `fdt_base` must point to a valid, accessible FDT blob in memory.
+pub unsafe fn bootargs(fdt_base: usize) -> Option<String> {
+    // SAFETY: caller guarantees `fdt_base` points to a valid FDT blob.
+    let fdt = unsafe { Fdt::from_ptr_unaligned(fdt_base as *const u8) }.ok()?;
+    let args = fdt.root().chosen().bootargs()?;
+    Some(String::from(args))
 }

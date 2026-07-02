@@ -64,6 +64,12 @@ pub fn virt_to_phys(va: usize) -> usize {
     arch_mm::virt_to_phys(va)
 }
 
+/// The raw kernel command line supplied by the bootloader (FDT
+/// `/chosen/bootargs` or the Multiboot cmdline), if any.
+pub fn boot_cmdline() -> Option<alloc::string::String> {
+    arch_mm::boot_cmdline()
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------
@@ -74,6 +80,11 @@ pub fn virt_to_phys(va: usize) -> usize {
 pub fn init() {
     // Bootstrap heap for the frame buddy's internal `BTreeSet`.
     heap::init_bootstrap();
+
+    // Capture the boot command line now, while the pages the bootloader used
+    // for it (e.g. the Multiboot cmdline placed just past the kernel image)
+    // are still intact — before the frame allocator can hand them out.
+    crate::cmdline::init();
 
     let mut collected = regions::RegionCollector::new();
     arch_mm::init(|start, end| collected.add(start, end));

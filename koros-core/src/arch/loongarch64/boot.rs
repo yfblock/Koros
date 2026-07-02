@@ -27,5 +27,6 @@ unsafe extern "C" fn _start() -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry() {
-    crate::kernel_main();
+    // SAFETY: `kernel_main` is provided by the `koros` binary crate.
+    unsafe { crate::kernel_main() }
 }

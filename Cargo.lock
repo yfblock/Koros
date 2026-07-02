@@ -3,18 +3,6 @@
 version = 4
 
 [[package]]
-name = "Koros"
-version = "0.1.0"
-dependencies = [
- "buddy_system_allocator",
- "cfg-if",
- "fdt",
- "spin",
- "virtio-drivers",
- "x86_64",
-]
-
-[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -63,6 +51,25 @@ name = "fdt"
 version = "0.2.0-alpha2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8ccfb5c9d9425b2191070f0435636f4a9cdfedd107e33b15f861622b222726a"
+
+[[package]]
+name = "koros"
+version = "0.1.0"
+dependencies = [
+ "koros-core",
+]
+
+[[package]]
+name = "koros-core"
+version = "0.1.0"
+dependencies = [
+ "buddy_system_allocator",
+ "cfg-if",
+ "fdt",
+ "spin",
+ "virtio-drivers",
+ "x86_64",
+]
 
 [[package]]
 name = "lock_api"

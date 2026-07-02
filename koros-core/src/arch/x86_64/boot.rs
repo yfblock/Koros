@@ -48,5 +48,7 @@ global_asm!(
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry(_magic: usize, mbi: usize) {
     crate::arch::x86_64::mm::set_multiboot_info(mbi);
-    crate::kernel_main();
+    // SAFETY: `kernel_main` is provided by the `koros` binary crate and never
+    // returns.
+    unsafe { crate::kernel_main() }
 }

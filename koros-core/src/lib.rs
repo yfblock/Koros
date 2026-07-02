@@ -1,32 +1,27 @@
 #![no_std]
-#![no_main]
 // The assembly uses explicit .intel_syntax / .att_syntax directives because
 // .altmacro conflicts with AT&T %-prefix, and multiboot.S transitions between
 // .code32 and .code64 sections with different syntax requirements.
 #![allow(bad_asm_style)]
 
 extern crate alloc;
-mod arch;
-mod boot;
-mod drivers;
+
+pub mod arch;
+pub mod boot;
+pub mod cmdline;
+pub mod drivers;
 pub mod fs;
-mod mm;
-mod trap;
+pub mod mm;
+pub mod trap;
 
 use core::panic::PanicInfo;
 
-#[unsafe(no_mangle)]
-fn kernel_main() -> ! {
-    trap::init();
-    mm::init();
-    println!("Hello, world!");
-
-    #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
-    ext2_test();
-
-    loop {
-        core::hint::spin_loop();
-    }
+unsafe extern "C" {
+    /// The kernel entry point, provided by the `koros` binary crate.
+    ///
+    /// The architecture boot code (`arch::<arch>::boot::rust_entry`) calls
+    /// this after early setup.
+    pub fn kernel_main() -> !;
 }
 
 #[panic_handler]
@@ -42,8 +37,9 @@ fn panic(info: &PanicInfo) -> ! {
     }
 }
 
+/// Run the ext2-on-virtio functional test (kernel self-check).
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
-fn ext2_test() {
+pub fn ext2_test() {
     let device = match discover_blk() {
         Some(dev) => dev,
         None => {
@@ -56,8 +52,7 @@ fn ext2_test() {
 }
 
 /// Discover a virtio block device and return it behind the [`BlockDevice`]
-/// trait object.  MMIO architectures use the external `virtio_drivers` crate;
-/// x86_64 uses the in-tree PCI driver.
+/// trait object.  MMIO architectures probe virtio-mmio; x86_64 scans PCI.
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 fn discover_blk() -> Option<alloc::sync::Arc<dyn drivers::block::BlockDevice>> {
     use alloc::sync::Arc;

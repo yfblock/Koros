@@ -1,8 +1,39 @@
 #![allow(unsafe_op_in_unsafe_fn)]
+use alloc::string::String;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 pub fn kernel_offset() -> usize {
     0xffff_8000_0000_0000
+}
+
+/// Read the kernel command line from the Multiboot information structure.
+pub fn boot_cmdline() -> Option<String> {
+    const MULTIBOOT_INFO_CMDLINE: u32 = 1 << 2;
+    const MBI_CMDLINE: usize = 16;
+
+    let mbi = MULTIBOOT_INFO.load(Ordering::Relaxed);
+    if mbi == 0 {
+        return None;
+    }
+    unsafe {
+        let base = phys_to_virt(mbi) as *const u8;
+        let flags = core::ptr::read_unaligned(base.add(MBI_FLAGS) as *const u32);
+        if flags & MULTIBOOT_INFO_CMDLINE == 0 {
+            return None;
+        }
+        let cmdline_phys =
+            core::ptr::read_unaligned(base.add(MBI_CMDLINE) as *const u32) as usize;
+        if cmdline_phys == 0 {
+            return None;
+        }
+        let ptr = phys_to_virt(cmdline_phys) as *const u8;
+        let mut len = 0usize;
+        while core::ptr::read(ptr.add(len)) != 0 && len < 4096 {
+            len += 1;
+        }
+        let bytes = core::slice::from_raw_parts(ptr, len);
+        Some(String::from_utf8_lossy(bytes).into_owned())
+    }
 }
 
 pub fn phys_to_virt(pa: usize) -> usize {
