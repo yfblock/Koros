@@ -275,6 +275,19 @@ impl LockedSlabHeap {
 unsafe impl GlobalAlloc for LockedSlabHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let class = SlabHeap::class_for(&layout);
+
+        // Large allocations go directly to the frame allocator, bypassing the
+        // slab mutex.  This is critical because `alloc_frames` may trigger
+        // re-entrant allocations via the buddy allocator's internal BTreeSet
+        // operations — holding the slab spin-lock during that would deadlock.
+        if class == SlabClass::Large {
+            let pages = layout.size().div_ceil(PAGE_SIZE).max(1);
+            if let Some(phys) = frame_allocator::alloc_frames(pages) {
+                return phys_to_virt(phys) as *mut u8;
+            }
+            return core::ptr::null_mut();
+        }
+
         loop {
             {
                 let mut guard = self.0.lock();
@@ -286,7 +299,7 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
                     return core::ptr::null_mut();
                 }
             }
-            if class == SlabClass::Large || !self.grow_from_frames(class) {
+            if !self.grow_from_frames(class) {
                 return core::ptr::null_mut();
             }
         }
@@ -294,10 +307,19 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if let Some(nn) = NonNull::new(ptr) {
-            let mut guard = self.0.lock();
-            if let Some(heap) = guard.as_mut() {
-                unsafe {
-                    heap.deallocate(nn, layout);
+            let class = SlabHeap::class_for(&layout);
+            if class == SlabClass::Large {
+                // Large deallocation — same reasoning as alloc: avoid holding
+                // the slab lock while calling into the frame allocator.
+                let pages = layout.size().div_ceil(PAGE_SIZE).max(1);
+                let phys = virt_to_phys(ptr as usize);
+                frame_allocator::free_frames(phys, pages);
+            } else {
+                let mut guard = self.0.lock();
+                if let Some(heap) = guard.as_mut() {
+                    unsafe {
+                        heap.deallocate(nn, layout);
+                    }
                 }
             }
         }

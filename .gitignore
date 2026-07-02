@@ -5,3 +5,6 @@ polyhal
 .opencode/
 opencode.jsonc
 session-*.md
+/os-images/ext2-test.img
+/os-images/mount/
+ext2-plan.md

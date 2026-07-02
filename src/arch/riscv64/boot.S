@@ -76,7 +76,9 @@ _start:
     add     t0, t0, t1              # virtual address
     jr      t0
 3:
-    # Now running at high-half VA
+    # Now running at high-half VA — convert sp to high-half address
+    li      t0, {kernel_offset}
+    add     sp, sp, t0
     mv      a0, s0              # restore hart_id
     mv      a1, s1              # restore DTB pointer
     call    rust_entry

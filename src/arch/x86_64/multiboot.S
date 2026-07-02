@@ -83,6 +83,15 @@ _start:
     mov     fs, ax
     mov     gs, ax
 
+    # Relocate the stack to the high-half virtual address.
+    # During the 32-bit stage, esp was set to the *physical* address of
+    # bstack_top (bstack_top - KERNEL_OFFSET).  The identity map (PML4[0])
+    # makes low addresses work for plain loads/stores, but `virt_to_phys`
+    # in Rust expects all pointers to live in the high-half direct map.
+    # Without this fix, DMA addresses derived from stack variables (e.g.
+    # virtio-blk request headers) would underflow and produce garbage.
+    movabs  rsp, offset bstack_top
+
     mov     rdi, [.Lsaved_magic - {kernel_offset}]
     mov     rsi, [.Lsaved_mbi - {kernel_offset}]
 

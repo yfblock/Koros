@@ -82,8 +82,8 @@ _start:
     movk    x0, #0x0044, lsl #16
     msr     mair_el1, x0
 
-    // TCR_EL1: IPS=48, T0SZ=16, T1SZ=16, inner-shareable, cacheable
-    ldr     x0, =0x0000000535103510
+    // TCR_EL1: IPS=48, T0SZ=16, T1SZ=16, 4KB granule both, inner-shareable, cacheable
+    ldr     x0, =0x0000000575103510
     msr     tcr_el1, x0
     isb
 
@@ -113,6 +113,11 @@ _start:
     br      x0
 3:
     // Now running at high-half VA
+    // Convert stack pointer and DTB pointer to high-half VA
+    movz    x0, #0xFFFF, lsl #48   // KERNEL_OFFSET
+    add     sp, sp, x0
+    add     x19, x19, x0           // DTB pointer → high-half VA
+
     and     x0, x20, #0xffffff      // hart_id from mpidr_el1
     mov     x1, x19                 // DTB pointer
     ldr     x8, =rust_entry

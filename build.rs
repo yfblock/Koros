@@ -20,7 +20,7 @@ fn gen_linker_script() -> Result<()> {
     } else {
         (arch.as_str(), "0")
     };
-    let ld_content = std::fs::read_to_string("linker.lds")?;
+    let ld_content = std::fs::read_to_string("src/linker.lds")?;
     let ld_content = ld_content.replace("%ARCH%", output_arch);
     let ld_content = ld_content.replace("%KERNEL_BASE%", kernel_base);
 
@@ -35,6 +35,6 @@ fn gen_linker_script() -> Result<()> {
     println!("cargo:rustc-link-arg=-T{}", ld_path.display());
     println!("cargo:rerun-if-env-changed=CARGO_CFG_KERNEL_BASE");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=linker.lds");
+    println!("cargo:rerun-if-changed=src/linker.lds");
     Ok(())
 }
