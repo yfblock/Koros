@@ -4,9 +4,11 @@
 #   make ARCH=aarch64 run
 #   make ARCH=loongarch64 run
 #   make ARCH=x86_64 run
+#   make ARCH=riscv64 CMDLINE="root=/dev/vda loglevel=7" run  # set kernel cmdline
 
-ARCH ?= riscv64
-SMP  ?= 1
+ARCH    ?= riscv64
+SMP     ?= 1
+CMDLINE ?=
 
 QEMU_EXEC := qemu-system-$(ARCH)
 
@@ -46,6 +48,12 @@ ifdef EXT2_IMG
   else
     QEMU_EXEC += -global virtio-mmio.force-legacy=false -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-device,drive=ext2drv
   endif
+endif
+
+# Kernel command line: FDT /chosen/bootargs (riscv64/aarch64/loongarch64) or
+# the Multiboot cmdline (x86_64). Read at boot via koros_core::cmdline.
+ifneq ($(CMDLINE),)
+  QEMU_EXEC += -append "$(CMDLINE)"
 endif
 
 export RUSTFLAGS := $(RUSTFLAGS_EXTRA)

@@ -6,6 +6,29 @@
 
 pub mod cache;
 
+extern crate alloc;
+
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use spin::Mutex;
+
+// ---------------------------------------------------------------------------
+// Global registry of probed block devices
+// ---------------------------------------------------------------------------
+
+/// Block devices discovered during driver probing.
+static BLOCK_DEVICES: Mutex<Vec<Arc<dyn BlockDevice>>> = Mutex::new(Vec::new());
+
+/// Register a block device discovered by a driver.
+pub fn register(dev: Arc<dyn BlockDevice>) {
+    BLOCK_DEVICES.lock().push(dev);
+}
+
+/// Return the first registered block device, if any.
+pub fn first() -> Option<Arc<dyn BlockDevice>> {
+    BLOCK_DEVICES.lock().first().cloned()
+}
+
 // ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------

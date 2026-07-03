@@ -70,6 +70,11 @@ pub fn boot_cmdline() -> Option<alloc::string::String> {
     arch_mm::boot_cmdline()
 }
 
+/// Pointer to the flattened device tree (0 if the platform has none).
+pub fn dtb_ptr() -> usize {
+    arch_mm::dtb_ptr()
+}
+
 // ---------------------------------------------------------------------------
 // Initialisation
 // ---------------------------------------------------------------------------

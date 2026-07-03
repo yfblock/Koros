@@ -29,6 +29,11 @@ pub fn set_dtb_ptr(dtb: usize) {
     DTB_PTR.store(dtb, Ordering::Relaxed);
 }
 
+/// Pointer to the flattened device tree, or 0 if none was provided.
+pub fn dtb_ptr() -> usize {
+    DTB_PTR.load(Ordering::Relaxed)
+}
+
 /// Low physical address that must stay out of the frame allocator (OpenSBI, etc.).
 pub fn firmware_phys_start() -> usize {
     0x8000_0000

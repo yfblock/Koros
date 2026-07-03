@@ -6,6 +6,11 @@ pub fn kernel_offset() -> usize {
     0xffff_8000_0000_0000
 }
 
+/// x86_64 has no device tree (it uses Multiboot + PCI/ACPI).
+pub fn dtb_ptr() -> usize {
+    0
+}
+
 /// Read the kernel command line from the Multiboot information structure.
 pub fn boot_cmdline() -> Option<String> {
     const MULTIBOOT_INFO_CMDLINE: u32 = 1 << 2;

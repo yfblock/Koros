@@ -122,54 +122,57 @@ impl<T: Transport> VdBlk<T> {
 }
 
 // ---------------------------------------------------------------------------
-// MMIO discovery (riscv64 / aarch64)
+// virtio-mmio driver (matched by the device-tree `compatible = "virtio,mmio"`)
 // ---------------------------------------------------------------------------
 
-/// Probe the virtio-mmio device slots for a block device.
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-pub fn discover_mmio_blk()
--> Option<VdBlk<virtio_drivers::transport::mmio::MmioTransport<'static>>> {
-    use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
-    use virtio_drivers::transport::DeviceType;
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+use crate::drivers::driver::{DeviceDriver, DtDevice, DriverError};
 
-    const MMIO_BASE: usize = if cfg!(target_arch = "riscv64") {
-        0x1000_1000
-    } else {
-        0x0a00_0000
-    };
-    const MMIO_STRIDE: usize = if cfg!(target_arch = "riscv64") {
-        0x1000
-    } else {
-        0x200
-    };
-    const MMIO_SIZE: usize = 0x1000;
+/// The virtio-mmio bus/transport driver.  Its `probe` builds the transport at
+/// the node's `reg` base, reads the device type, and — for block devices —
+/// registers a [`VdBlk`] in the global block-device registry.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+pub struct VirtioMmioDriver;
 
-    crate::println!("virtio-drivers: probing virtio-mmio devices...");
-    for i in 0..32usize {
-        let base = MMIO_BASE + i * MMIO_STRIDE;
-        let header = NonNull::new(base as *mut VirtIOHeader)?;
-        // SAFETY: `base` addresses an identity-mapped MMIO register region
-        // that remains valid for the whole kernel lifetime ('static).
-        let transport = match unsafe { MmioTransport::new(header, MMIO_SIZE) } {
+/// Singleton instance, referenced by the binary crate's driver registry.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+pub static VIRTIO_MMIO_DRIVER: VirtioMmioDriver = VirtioMmioDriver;
+
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+impl DeviceDriver for VirtioMmioDriver {
+    fn compatible(&self) -> &'static [&'static str] {
+        &["virtio,mmio"]
+    }
+
+    fn probe(&self, dev: &DtDevice) -> Result<(), DriverError> {
+        use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
+        use virtio_drivers::transport::{DeviceType, Transport};
+
+        let header =
+            NonNull::new(dev.reg_base as *mut VirtIOHeader).ok_or(DriverError::NoResource)?;
+        // SAFETY: `reg_base`/`reg_size` describe a valid MMIO register region
+        // from the device tree, valid for the whole kernel lifetime.
+        let transport = match unsafe { MmioTransport::new(header, dev.reg_size) } {
             Ok(t) => t,
-            Err(_) => continue,
+            // An empty virtio-mmio slot (device id 0) is normal, not an error.
+            Err(_) => return Ok(()),
         };
-        if transport.device_type() != DeviceType::Block {
-            continue;
-        }
-        match VirtIOBlk::<KorosHal, _>::new(transport) {
-            Ok(blk) => {
+        match transport.device_type() {
+            DeviceType::Block => {
+                let blk =
+                    VirtIOBlk::<KorosHal, _>::new(transport).map_err(|_| DriverError::Probe)?;
                 crate::println!(
-                    "virtio-drivers: found virtio-blk (mmio) at {:#x} ({} sectors)",
-                    base,
+                    "virtio-blk (mmio) at {:#x}: {} sectors",
+                    dev.reg_base,
                     blk.capacity()
                 );
-                return Some(VdBlk::from_blk(blk));
+                crate::drivers::block::register(alloc::sync::Arc::new(VdBlk::from_blk(blk)));
+                Ok(())
             }
-            Err(e) => crate::println!("virtio-drivers: VirtIOBlk init failed: {:?}", e),
+            // Other virtio device types are recognised but not yet supported.
+            _ => Ok(()),
         }
     }
-    None
 }
 
 // ---------------------------------------------------------------------------
@@ -272,5 +275,14 @@ pub fn discover_pci_blk() -> Option<VdBlk<virtio_drivers::transport::pci::PciTra
             crate::println!("virtio-drivers: VirtIOBlk init failed: {:?}", e);
             None
         }
+    }
+}
+
+/// Scan the PCI bus for a virtio block device and register it (x86_64 has no
+/// device tree, so it uses PCI enumeration instead of `compatible` matching).
+#[cfg(target_arch = "x86_64")]
+pub fn probe_pci_and_register() {
+    if let Some(blk) = discover_pci_blk() {
+        crate::drivers::block::register(alloc::sync::Arc::new(blk));
     }
 }

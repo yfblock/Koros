@@ -8,6 +8,8 @@ extern crate alloc;
 
 pub mod arch;
 pub mod boot;
+#[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
+pub mod bench;
 pub mod cmdline;
 pub mod drivers;
 pub mod fs;
@@ -38,33 +40,21 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 /// Run the ext2-on-virtio functional test (kernel self-check).
+///
+/// Uses the first block device registered by the driver-probing step; the
+/// binary crate must have called the driver model (`drivers::driver::probe_fdt`
+/// or the PCI probe) before this.
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
 pub fn ext2_test() {
-    let device = match discover_blk() {
+    let device = match drivers::block::first() {
         Some(dev) => dev,
         None => {
-            println!("ext2 test SKIPPED: no virtio-blk device found");
+            println!("ext2 test SKIPPED: no block device registered");
             return;
         }
     };
 
     ext2_test_with_device(device);
-}
-
-/// Discover a virtio block device and return it behind the [`BlockDevice`]
-/// trait object.  MMIO architectures probe virtio-mmio; x86_64 scans PCI.
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
-fn discover_blk() -> Option<alloc::sync::Arc<dyn drivers::block::BlockDevice>> {
-    use alloc::sync::Arc;
-    drivers::virtio::vd::discover_mmio_blk()
-        .map(|blk| Arc::new(blk) as Arc<dyn drivers::block::BlockDevice>)
-}
-
-#[cfg(target_arch = "x86_64")]
-fn discover_blk() -> Option<alloc::sync::Arc<dyn drivers::block::BlockDevice>> {
-    use alloc::sync::Arc;
-    drivers::virtio::vd::discover_pci_blk()
-        .map(|blk| Arc::new(blk) as Arc<dyn drivers::block::BlockDevice>)
 }
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]

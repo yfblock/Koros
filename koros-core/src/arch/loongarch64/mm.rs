@@ -4,6 +4,11 @@ pub fn kernel_offset() -> usize {
     0x9000_0000_0000_0000
 }
 
+/// QEMU loongarch64 places the DTB at this fixed physical address.
+pub fn dtb_ptr() -> usize {
+    0x100000
+}
+
 /// Read the kernel command line from the device tree `/chosen/bootargs`.
 ///
 /// QEMU loongarch64 places the DTB at a fixed physical address.

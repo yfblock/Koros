@@ -79,7 +79,7 @@ koros-core/               — library crate `koros_core` (all subsystems)
   src/cmdline/mod.rs      — boot command-line storage + key=value/flag parsing
   src/drivers/uart/       — per-arch UART drivers, println!/print! macros
   src/drivers/block/      — BlockDevice trait + LRU write-back cache
-  src/drivers/virtio/vd.rs — adapter over the `virtio-drivers` crate (MMIO + PCI)
+  src/drivers/virtio.rs    — adapter over the `virtio-drivers` crate (MMIO + PCI) + virtio-mmio driver
   src/fs/                 — VFS (INode/SuperBlock, fd, mount, path) + ext2 + ramfs
   src/mm/                 — frame allocator, slab heap, page tables, FDT parse
   src/trap/mod.rs         — delegates init() to arch-specific trap::init()
