@@ -55,6 +55,12 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 extern "C" fn handle_trap(tf: &mut TrapFrame) {
+    // APIC timer interrupt (vector 0x20): tick and return.
+    if tf.vector == 0x20 {
+        crate::time::tick();
+        return;
+    }
+
     let description = match tf.vector {
         0  => "Divide-by-zero",
         1  => "Debug",

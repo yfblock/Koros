@@ -13,9 +13,11 @@ pub mod bench;
 pub mod cmdline;
 pub mod drivers;
 pub mod fs;
+pub mod irq;
 pub mod mm;
 pub mod platform;
 pub mod smp;
+pub mod time;
 pub mod trap;
 
 use core::panic::PanicInfo;

@@ -55,6 +55,8 @@ extern "C" fn kernel_main() -> ! {
     platform::init(platform_config());
     trap::init();
     mm::init(); // captures the boot command line early (see mm::init)
+    koros_core::time::init(); // arm the periodic timer (source only)
+    koros_core::irq::enable(); // take interrupts on this CPU
     koros_core::println!("Hello, world!");
     koros_core::println!("cmdline: {:?}", cmdline::raw());
 
@@ -81,6 +83,15 @@ extern "C" fn kernel_main() -> ! {
     }
 
     koros_core::ext2_test();
+
+    // Demonstrate the timer: wait (bounded) for ~1s worth of ticks.
+    let t0 = koros_core::time::ticks();
+    let mut spins: u64 = 0;
+    while koros_core::time::ticks() < t0 + koros_core::time::TICK_HZ && spins < 2_000_000_000 {
+        spins += 1;
+        core::hint::spin_loop();
+    }
+    koros_core::println!("timer: {} ticks since boot", koros_core::time::ticks());
 
     loop {
         core::hint::spin_loop();
