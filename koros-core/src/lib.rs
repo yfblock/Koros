@@ -15,6 +15,7 @@ pub mod drivers;
 pub mod fs;
 pub mod mm;
 pub mod platform;
+pub mod smp;
 pub mod trap;
 
 use core::panic::PanicInfo;

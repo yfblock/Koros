@@ -52,8 +52,12 @@ impl fmt::Write for UartWriter {
     }
 }
 
+/// Serialises console output across CPUs so concurrent prints don't interleave.
+static PRINT_LOCK: spin::Mutex<()> = spin::Mutex::new(());
+
 pub fn _print(args: fmt::Arguments) {
     use fmt::Write;
+    let _guard = PRINT_LOCK.lock();
     UartWriter.write_fmt(args).ok();
 }
 

@@ -43,6 +43,12 @@ OBJCOPY := rust-objcopy
 
 QEMU_EXEC += -kernel $(KERNEL_IMG) -nographic -smp $(SMP)
 
+# Give each vCPU its own host thread so secondaries run in parallel with the
+# boot CPU (the default single-threaded round-robin TCG starves them).
+ifneq ($(SMP),1)
+  QEMU_EXEC += -accel tcg,thread=multi
+endif
+
 ifdef EXT2_IMG
   # x86_64 (q35) and loongarch64 (virt) carry virtio on PCIe; riscv64/aarch64
   # 'virt' machines use the virtio-mmio bus.

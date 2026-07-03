@@ -123,3 +123,51 @@ _start:
     ldr     x8, =rust_entry
     blr     x8
     b       .
+
+// --- Secondary core entry (via PSCI CPU_ON) -----------------------------
+// PSCI enters here at EL1 with the MMU off; x0 = context id (our per-CPU
+// stack top VA).  The boot page table is already built, so we only re-enable
+// the MMU on this core, switch to the high-half, set the stack, and call
+// rust_entry_secondary.
+.global _secondary_start
+_secondary_start:
+    mov     x20, x0                 // per-CPU stack top (VA), used after MMU on
+    mrs     x19, mpidr_el1
+    and     x19, x19, #0xffffff     // cpu id
+
+    // MAIR / TCR (same config as the boot core)
+    movz    x0, #0xFF00
+    movk    x0, #0x0044, lsl #16
+    msr     mair_el1, x0
+    ldr     x0, =0x0000000575103510
+    msr     tcr_el1, x0
+    isb
+
+    // TTBR0/1 = physical base of the already-built boot page table
+    ldr     x0, =_boot_page_table
+    movz    x1, #0xFFFF, lsl #48
+    sub     x0, x0, x1
+    msr     ttbr0_el1, x0
+    msr     ttbr1_el1, x0
+    tlbi    vmalle1
+    dsb     sy
+    isb
+
+    // Enable MMU + I/D cache
+    mrs     x0, sctlr_el1
+    movz    x1, #0x1005
+    orr     x0, x0, x1
+    msr     sctlr_el1, x0
+    isb
+
+    // Jump to the high-half VA
+    adr     x0, 5f
+    movz    x1, #0xFFFF, lsl #48
+    add     x0, x0, x1
+    br      x0
+5:
+    mov     sp, x20                 // per-CPU stack top (high-half VA)
+    mov     x0, x19                 // cpu id
+    ldr     x8, =rust_entry_secondary
+    blr     x8
+    b       .

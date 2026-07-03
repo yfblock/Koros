@@ -11,12 +11,11 @@ global_asm!(
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry(hart_id: usize, dtb: usize) {
+    // Whichever hart SBI hands control to is the boot hart (not necessarily
+    // hart 0).  Record its id and run the kernel; secondaries are started
+    // later via `smp::boot_secondaries`.
+    crate::arch::riscv64::smp::set_cpu_id(hart_id);
     crate::arch::riscv64::mm::set_dtb_ptr(dtb);
-    if hart_id == 0 {
-        // SAFETY: `kernel_main` is provided by the `koros` binary crate.
-        unsafe { crate::kernel_main() }
-    }
-    loop {
-        core::hint::spin_loop();
-    }
+    // SAFETY: `kernel_main` is provided by the `koros` binary crate.
+    unsafe { crate::kernel_main() }
 }

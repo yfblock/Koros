@@ -62,6 +62,14 @@ extern "C" fn kernel_main() -> ! {
     // FDT platforms, PCI enumeration on x86_64).
     probe_devices();
 
+    // Bring up the other CPUs (they register online and idle for now).
+    let online = koros_core::smp::boot_secondaries();
+    koros_core::println!(
+        "SMP: {} CPU(s) online (boot cpu {})",
+        online,
+        koros_core::smp::cpu_id()
+    );
+
     // `bench` on the kernel command line runs the storage throughput
     // benchmark instead of the functional self-check.
     #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]

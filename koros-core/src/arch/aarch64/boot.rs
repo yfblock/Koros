@@ -5,13 +5,10 @@ use core::arch::global_asm;
 global_asm!(include_str!("boot.S"));
 
 #[unsafe(no_mangle)]
-extern "C" fn rust_entry(hart_id: usize, dtb: usize) {
+extern "C" fn rust_entry(_hart_id: usize, dtb: usize) {
+    // The CPU that enters here is the boot CPU; secondaries (once PSCI
+    // bring-up is implemented) will enter through a separate path.
     crate::arch::aarch64::mm::set_dtb_ptr(dtb);
-    if hart_id == 0 {
-        // SAFETY: `kernel_main` is provided by the `koros` binary crate.
-        unsafe { crate::kernel_main() }
-    }
-    loop {
-        core::hint::spin_loop();
-    }
+    // SAFETY: `kernel_main` is provided by the `koros` binary crate.
+    unsafe { crate::kernel_main() }
 }

@@ -83,3 +83,30 @@ _start:
     mv      a1, s1              # restore DTB pointer
     call    rust_entry
     j       .
+
+# --- Secondary hart entry (via SBI hart_start) --------------------------
+# SBI enters here in S-mode with the MMU off: a0 = hart_id, a1 = opaque
+# (per-hart stack top VA).  Enable paging with the shared boot page table,
+# switch to the high-half, set the stack, and call rust_entry_secondary.
+.global _secondary_start
+_secondary_start:
+    mv      s0, a0                  # hart_id
+    mv      s1, a1                  # stack top (VA), used only after paging
+
+    la      t0, _boot_root_table
+    srli    t0, t0, 12
+    li      t1, SATP_MODE_SV39
+    or      t0, t0, t1
+    csrw    satp, t0
+    sfence.vma
+
+    la      t0, 4f
+    li      t1, {kernel_offset}
+    add     t0, t0, t1
+    jr      t0
+4:
+    mv      sp, s1              # per-hart stack top (high-half VA)
+    mv      tp, s0              # tp = hart_id
+    mv      a0, s0
+    call    rust_entry_secondary
+    j       .

@@ -37,6 +37,20 @@ pub unsafe fn parse_memory_regions(
     count
 }
 
+/// Count the CPU nodes under `/cpus` in the FDT (at least 1).
+///
+/// # Safety
+///
+/// `fdt_base` must point to a valid, accessible FDT blob in memory.
+pub unsafe fn cpu_count(fdt_base: usize) -> usize {
+    // SAFETY: caller guarantees `fdt_base` points to a valid FDT blob.
+    let fdt = match unsafe { Fdt::from_ptr_unaligned(fdt_base as *const u8) } {
+        Ok(fdt) => fdt,
+        Err(_) => return 1,
+    };
+    fdt.root().cpus().iter().count().max(1)
+}
+
 /// Read the kernel command line from the FDT `/chosen` node's `bootargs`
 /// property, copied into an owned [`String`].
 ///

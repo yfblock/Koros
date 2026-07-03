@@ -30,3 +30,23 @@ extern "C" fn rust_entry() {
     // SAFETY: `kernel_main` is provided by the `koros` binary crate.
     unsafe { crate::kernel_main() }
 }
+
+/// Secondary-core entry, reached after the boot core places the entry address
+/// in mailbox 0 and the stack top in mailbox 1 and sends an IPI.  Runs in
+/// direct-address mode like the boot core.
+#[unsafe(naked)]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn _secondary_start() -> ! {
+    naked_asm!(
+        "li.w      $t0, 0x1028         # IOCSR MAIL_BUF1 (per-core)
+         iocsrrd.d $sp, $t0            # stack top from mailbox 1
+         csrrd     $a0, 0x20           # cpuid
+         la.global $t0, rust_entry_secondary
+         jirl      $zero, $t0, 0",
+    )
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn rust_entry_secondary(cpu_id: usize) -> ! {
+    crate::smp::secondary_entry(cpu_id)
+}
