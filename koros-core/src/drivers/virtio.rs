@@ -176,6 +176,104 @@ impl DeviceDriver for VirtioMmioDriver {
 }
 
 // ---------------------------------------------------------------------------
+// PCIe discovery via memory-mapped ECAM (loongarch64 / other FDT platforms
+// whose virtio devices sit on PCIe instead of a virtio-mmio bus)
+// ---------------------------------------------------------------------------
+
+/// Assign MMIO addresses to every unallocated memory BAR of `df` from a bump
+/// allocator starting at `*next`.  QEMU's loongarch `virt` machine has no
+/// firmware to program BARs, so the kernel must do it before using the device.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+fn allocate_bars<C>(
+    root: &mut virtio_drivers::transport::pci::bus::PciRoot<C>,
+    df: virtio_drivers::transport::pci::bus::DeviceFunction,
+    next: &mut u64,
+) where
+    C: virtio_drivers::transport::pci::bus::ConfigurationAccess,
+{
+    use virtio_drivers::transport::pci::bus::{BarInfo, MemoryBarType};
+
+    let mut bar = 0u8;
+    while bar < 6 {
+        let info = match root.bar_info(df, bar) {
+            Ok(Some(info)) => info,
+            _ => {
+                bar += 1;
+                continue;
+            }
+        };
+        let two = info.takes_two_entries();
+        if let BarInfo::Memory { address_type, size, .. } = info {
+            if size > 0 {
+                let aligned = (*next + (size - 1)) & !(size - 1);
+                match address_type {
+                    MemoryBarType::Width64 => root.set_bar_64(df, bar, aligned),
+                    _ => root.set_bar_32(df, bar, aligned as u32),
+                }
+                *next = aligned + size;
+            }
+        }
+        bar += if two { 2 } else { 1 };
+    }
+}
+
+/// Enumerate an ECAM PCIe root complex, program the first virtio-blk device's
+/// BARs, and register it as the block device.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+pub fn probe_pci_ecam_and_register(ecam_base: usize, mmio_base: u64, mmio_size: u64) {
+    use virtio_drivers::transport::pci::bus::{Cam, Command, DeviceFunction, MmioCam, PciRoot};
+    use virtio_drivers::transport::pci::{virtio_device_type, PciTransport};
+    use virtio_drivers::transport::DeviceType;
+
+    let ecam_va = mm::phys_to_virt(ecam_base);
+    crate::println!("virtio-drivers: scanning PCIe ECAM at {:#x} for virtio-blk...", ecam_base);
+    // SAFETY: `ecam_va` maps the platform's ECAM configuration region.
+    let cam = unsafe { MmioCam::new(ecam_va as *mut u8, Cam::Ecam) };
+    let mut root = PciRoot::new(cam);
+
+    let mut target: Option<DeviceFunction> = None;
+    for (df, info) in root.enumerate_bus(0) {
+        if matches!(virtio_device_type(&info), Some(DeviceType::Block)) {
+            target = Some(df);
+            break;
+        }
+    }
+    let Some(df) = target else {
+        return;
+    };
+
+    let mut next = mmio_base;
+    allocate_bars(&mut root, df, &mut next);
+    if next > mmio_base + mmio_size {
+        crate::println!("virtio-drivers: PCIe MMIO window exhausted");
+        return;
+    }
+
+    // Enable memory-space decoding and bus mastering (for DMA).
+    let (_status, command) = root.get_status_command(df);
+    root.set_command(df, command | Command::MEMORY_SPACE | Command::BUS_MASTER);
+
+    let transport = match PciTransport::new::<KorosHal, _>(&mut root, df) {
+        Ok(t) => t,
+        Err(e) => {
+            crate::println!("virtio-drivers: PciTransport::new failed: {:?}", e);
+            return;
+        }
+    };
+    match VirtIOBlk::<KorosHal, _>::new(transport) {
+        Ok(blk) => {
+            crate::println!(
+                "virtio-drivers: found virtio-blk (pcie) {:?} ({} sectors)",
+                df,
+                blk.capacity()
+            );
+            crate::drivers::block::register(alloc::sync::Arc::new(VdBlk::from_blk(blk)));
+        }
+        Err(e) => crate::println!("virtio-drivers: VirtIOBlk init failed: {:?}", e),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PCI discovery (x86_64) — config access via legacy port I/O (0xCF8/0xCFC)
 // ---------------------------------------------------------------------------
 

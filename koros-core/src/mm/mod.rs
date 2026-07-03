@@ -70,9 +70,14 @@ pub fn boot_cmdline() -> Option<alloc::string::String> {
     arch_mm::boot_cmdline()
 }
 
-/// Pointer to the flattened device tree (0 if the platform has none).
+/// Pointer to the flattened device tree.
+///
+/// A non-zero fixed address from the platform configuration takes precedence
+/// (e.g. loongarch64), otherwise the pointer the firmware passed in a register
+/// at boot is used (riscv64/aarch64).
 pub fn dtb_ptr() -> usize {
-    arch_mm::dtb_ptr()
+    let cfg = crate::platform::config_dtb();
+    if cfg != 0 { cfg } else { arch_mm::dtb_ptr() }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,7 +103,7 @@ pub fn init() {
     // Round the reserved range outward so partial tail pages stay reserved.
     let ks = ks & !(frame_allocator::PAGE_SIZE - 1);
     let ke = (ke + frame_allocator::PAGE_SIZE - 1) & !(frame_allocator::PAGE_SIZE - 1);
-    let hole_start = match arch_mm::firmware_phys_start() {
+    let hole_start = match crate::platform::firmware_phys_start() {
         0 => ks,
         fw => core::cmp::min(fw, ks),
     };

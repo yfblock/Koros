@@ -34,11 +34,6 @@ pub fn dtb_ptr() -> usize {
     DTB_PTR.load(Ordering::Relaxed)
 }
 
-/// Platform firmware / boot reserved area starts here on virt.
-pub fn firmware_phys_start() -> usize {
-    0x4000_0000
-}
-
 /// Detect physical memory regions via FDT and register them with `add_region`.
 pub fn init(mut add_region: impl FnMut(usize, usize)) {
     let dtb = DTB_PTR.load(Ordering::Relaxed);

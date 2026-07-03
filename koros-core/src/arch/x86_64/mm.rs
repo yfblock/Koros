@@ -55,11 +55,6 @@ pub fn set_multiboot_info(mbi: usize) {
     MULTIBOOT_INFO.store(mbi, Ordering::Relaxed);
 }
 
-/// Nothing below the linked kernel image needs a fixed firmware carve-out on x86_64.
-pub fn firmware_phys_start() -> usize {
-    0
-}
-
 /// Detect physical memory regions from the Multiboot memory map and register
 /// them with `add_region`.
 pub fn init(mut add_region: impl FnMut(usize, usize)) {

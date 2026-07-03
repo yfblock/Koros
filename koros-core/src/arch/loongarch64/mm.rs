@@ -1,21 +1,29 @@
 use alloc::string::String;
 
+/// loongarch64 currently runs in direct-address mode under QEMU `-kernel`
+/// (paging/DMW not yet enabled — see `boot.rs`).  The CPU executes at the
+/// physical load address and the high linked-address bits are ignored by the
+/// hardware, so kernel VA == PA and there is no offset.
 pub fn kernel_offset() -> usize {
-    0x9000_0000_0000_0000
+    0
 }
 
-/// QEMU loongarch64 places the DTB at this fixed physical address.
+/// No DTB pointer is passed in a register on this platform; the fixed
+/// device-tree address is supplied by the platform configuration
+/// (`mm::dtb_ptr` applies it).
 pub fn dtb_ptr() -> usize {
-    0x100000
+    0
 }
 
 /// Read the kernel command line from the device tree `/chosen/bootargs`.
-///
-/// QEMU loongarch64 places the DTB at a fixed physical address.
 pub fn boot_cmdline() -> Option<String> {
-    const DTB_ADDR: usize = 0x100000;
-    // SAFETY: fixed QEMU DTB address; `bootargs` validates the FDT magic.
-    unsafe { crate::mm::fdt::bootargs(DTB_ADDR) }
+    let dtb = crate::mm::dtb_ptr();
+    if dtb == 0 {
+        return None;
+    }
+    // SAFETY: `dtb` is the platform-configured DTB address; `bootargs`
+    // validates the FDT magic.
+    unsafe { crate::mm::fdt::bootargs(dtb) }
 }
 
 pub fn phys_to_virt(pa: usize) -> usize {
@@ -26,16 +34,13 @@ pub fn virt_to_phys(va: usize) -> usize {
     va
 }
 
-pub fn firmware_phys_start() -> usize {
-    0x8000_0000
-}
-
-/// Detect physical memory via FDT at a fixed address and register with `add_region`.
-///
-/// QEMU loongarch64 places the DTB at a hardcoded physical address.
+/// Detect physical memory via the device tree and register with `add_region`.
 pub fn init(mut add_region: impl FnMut(usize, usize)) {
-    const DTB_ADDR: usize = 0x100000;
-    unsafe {
-        crate::mm::fdt::parse_memory_regions(DTB_ADDR, &mut add_region);
+    let dtb = crate::mm::dtb_ptr();
+    if dtb != 0 {
+        // SAFETY: `dtb` is the platform-configured DTB address.
+        unsafe {
+            crate::mm::fdt::parse_memory_regions(dtb, &mut add_region);
+        }
     }
 }

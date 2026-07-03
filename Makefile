@@ -26,6 +26,7 @@ else ifeq ($(ARCH), loongarch64)
   TARGET := loongarch64-unknown-none
   QEMU_EXEC += -M virt -m 1G
   KERNEL_IMG := target/$(TARGET)/release/koros
+  EXT2_IMG := os-images/ext2-test.img
 else ifeq ($(ARCH), x86_64)
   TARGET := x86_64-unknown-none
   RUSTFLAGS_EXTRA := -Clink-arg=-no-pie
@@ -43,7 +44,9 @@ OBJCOPY := rust-objcopy
 QEMU_EXEC += -kernel $(KERNEL_IMG) -nographic -smp $(SMP)
 
 ifdef EXT2_IMG
-  ifeq ($(ARCH), x86_64)
+  # x86_64 (q35) and loongarch64 (virt) carry virtio on PCIe; riscv64/aarch64
+  # 'virt' machines use the virtio-mmio bus.
+  ifneq ($(filter $(ARCH),x86_64 loongarch64),)
     QEMU_EXEC += -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-pci,drive=ext2drv
   else
     QEMU_EXEC += -global virtio-mmio.force-legacy=false -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-device,drive=ext2drv

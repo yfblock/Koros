@@ -1,26 +1,34 @@
-//! Minimal UART driver for QEMU.
+//! Console UART output.
 //!
-//! Architecture-specific `putchar` implementations live in driver-named sibling
-//! modules (`ns16550a.rs`, `pl011.rs`).  The `mod` declarations below select
-//! the correct driver for each architecture; no `#[cfg]` is needed in the
-//! generic helpers.
+//! The console device (NS16550A / PL011, MMIO or port I/O, and its base
+//! address) is selected at runtime from the board's [`PlatformConfig`]
+//! ([`crate::platform`]), so no addresses are hardcoded here.  Register-level
+//! drivers live in `ns16550a.rs` / `pl011.rs`.
 
 use core::fmt;
 
-// ---------------------------------------------------------------------------
-// Driver selection by architecture
-// ---------------------------------------------------------------------------
+use crate::platform::{self, Console};
 
-#[cfg(any(target_arch = "riscv64", target_arch = "x86_64", target_arch = "loongarch64"))]
 mod ns16550a;
 #[cfg(target_arch = "aarch64")]
 mod pl011;
 
-// Re-export the selected driver's putchar.
-#[cfg(any(target_arch = "riscv64", target_arch = "x86_64", target_arch = "loongarch64"))]
-use ns16550a::putchar;
-#[cfg(target_arch = "aarch64")]
-use pl011::putchar;
+/// Emit one byte to the configured console.  A no-op until the platform
+/// configuration is installed (see [`crate::platform::init`]).
+fn putchar(c: u8) {
+    match platform::console() {
+        Some(Console::Ns16550aMmio { base }) => ns16550a::putchar_mmio(base, c),
+        #[cfg(target_arch = "x86_64")]
+        Some(Console::Ns16550aPort { base }) => ns16550a::putchar_port(base, c),
+        #[cfg(not(target_arch = "x86_64"))]
+        Some(Console::Ns16550aPort { .. }) => {}
+        #[cfg(target_arch = "aarch64")]
+        Some(Console::Pl011Mmio { base }) => pl011::putchar(base, c),
+        #[cfg(not(target_arch = "aarch64"))]
+        Some(Console::Pl011Mmio { .. }) => {}
+        None => {}
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Generic helpers (architecture-neutral)

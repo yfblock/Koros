@@ -14,6 +14,7 @@ pub mod cmdline;
 pub mod drivers;
 pub mod fs;
 pub mod mm;
+pub mod platform;
 pub mod trap;
 
 use core::panic::PanicInfo;
@@ -44,7 +45,7 @@ fn panic(info: &PanicInfo) -> ! {
 /// Uses the first block device registered by the driver-probing step; the
 /// binary crate must have called the driver model (`drivers::driver::probe_fdt`
 /// or the PCI probe) before this.
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64", target_arch = "x86_64"))]
 pub fn ext2_test() {
     let device = match drivers::block::first() {
         Some(dev) => dev,
@@ -57,7 +58,7 @@ pub fn ext2_test() {
     ext2_test_with_device(device);
 }
 
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64", target_arch = "x86_64"))]
 fn ext2_test_with_device(device: alloc::sync::Arc<dyn drivers::block::BlockDevice>) {
     use fs::ext2::Ext2Fs;
     use fs::{mount, SuperBlock as SuperBlockTrait};
@@ -104,7 +105,7 @@ fn ext2_test_with_device(device: alloc::sync::Arc<dyn drivers::block::BlockDevic
 }
 
 /// Exercise the read/write, symlink, hard-link, rename and truncate paths.
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64"))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64", target_arch = "x86_64"))]
 fn run_ext2_checks(root: &alloc::sync::Arc<dyn fs::INode>) -> Result<(), fs::FsError> {
     use fs::{path::resolve_path, FileType, FsError};
 
