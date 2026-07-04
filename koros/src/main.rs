@@ -96,23 +96,31 @@ extern "C" fn kernel_main() -> ! {
     koros_core::sched::idle_loop();
 }
 
-/// Semaphore used by the producer/consumer demo (starts empty).
-static DEMO_SEM: koros_core::sched::Semaphore = koros_core::sched::Semaphore::new(0);
+/// Blocking channel + shared mutex used by the producer/consumer demo.
+static DEMO_CHAN: koros_core::sync::Channel<u64> = koros_core::sync::Channel::new();
+static DEMO_TOTAL: koros_core::sync::Mutex<u64> = koros_core::sync::Mutex::new(0);
 
-/// Posts to the semaphore a few times, with a pause between each.
+/// Sends values into the blocking channel, with a pause between each.
 fn demo_producer() {
     for i in 0..5 {
         koros_core::sched::sleep_ms(150);
-        DEMO_SEM.post();
-        koros_core::println!("[producer cpu{}] posted {}", koros_core::smp::cpu_id(), i);
+        DEMO_CHAN.send(i * 10);
+        koros_core::println!("[producer cpu{}] sent {}", koros_core::smp::cpu_id(), i * 10);
     }
 }
 
-/// Blocks on the semaphore until the producer posts; proves blocking wait/wake.
+/// Blocks on the channel until items arrive; accumulates them under a mutex.
 fn demo_consumer() {
-    for i in 0..5 {
-        DEMO_SEM.wait();
-        koros_core::println!("[consumer cpu{}] received {}", koros_core::smp::cpu_id(), i);
+    for _ in 0..5 {
+        let v = DEMO_CHAN.recv();
+        let mut total = DEMO_TOTAL.lock();
+        *total += v;
+        koros_core::println!(
+            "[consumer cpu{}] recv {} (total {})",
+            koros_core::smp::cpu_id(),
+            v,
+            *total
+        );
     }
     koros_core::println!("[consumer] done");
 }

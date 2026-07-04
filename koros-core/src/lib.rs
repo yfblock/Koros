@@ -18,6 +18,7 @@ pub mod mm;
 pub mod platform;
 pub mod sched;
 pub mod smp;
+pub mod sync;
 pub mod time;
 pub mod trap;
 
