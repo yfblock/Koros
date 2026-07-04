@@ -8,9 +8,10 @@
 extern crate alloc;
 
 use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-use virtio_drivers::device::blk::{VirtIOBlk, SECTOR_SIZE};
+use virtio_drivers::device::blk::{BlkReq, BlkResp, VirtIOBlk, SECTOR_SIZE};
 use virtio_drivers::transport::Transport;
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
@@ -62,9 +63,19 @@ unsafe impl Hal for KorosHal {
 // ---------------------------------------------------------------------------
 
 /// A block device driven by the `virtio_drivers` crate.
+///
+/// When an interrupt is wired for the device (`irq_driven`) and the scheduler
+/// is running, I/O is *blocking*: the request is submitted, the task sleeps on
+/// `completion`, and the interrupt handler ([`VdBlk::handle_irq`]) wakes it.
+/// Otherwise (early boot, or no IRQ) it falls back to polling.
 pub struct VdBlk<T: Transport> {
     inner: Mutex<VirtIOBlk<KorosHal, T>>,
     capacity_sectors: u64,
+    /// Serialises interrupt-driven requests (one in flight per device).
+    op_lock: crate::sync::Mutex<()>,
+    /// Posted by the interrupt handler on request completion.
+    completion: crate::sched::Semaphore,
+    irq_driven: AtomicBool,
 }
 
 // SAFETY: all access to the inner driver is serialised by the mutex.
@@ -73,17 +84,11 @@ unsafe impl<T: Transport> Sync for VdBlk<T> {}
 
 impl<T: Transport + 'static> BlockDevice for VdBlk<T> {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        self.inner
-            .lock()
-            .read_blocks(block_id, buf)
-            .map_err(|_| BlockError::IoError)
+        self.read_blocks(block_id, buf)
     }
 
     fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError> {
-        self.inner
-            .lock()
-            .write_blocks(block_id, buf)
-            .map_err(|_| BlockError::IoError)
+        self.write_blocks(block_id, buf)
     }
 
     fn block_size(&self) -> usize {
@@ -95,19 +100,31 @@ impl<T: Transport + 'static> BlockDevice for VdBlk<T> {
     }
 
     fn read_blocks(&self, start_block: usize, buf: &mut [u8]) -> Result<(), BlockError> {
-        // virtio-drivers accepts a buffer spanning multiple sectors and issues
-        // it as a single multi-descriptor request.
-        self.inner
-            .lock()
-            .read_blocks(start_block, buf)
-            .map_err(|_| BlockError::IoError)
+        if self.use_irq() {
+            return self.read_irq(start_block, buf);
+        }
+        // Polling fallback (early boot / no IRQ): virtio-drivers issues the
+        // multi-sector buffer as a single request and spins on the used ring.
+        // Interrupts are disabled so the device IRQ (if wired) can't fire on
+        // this CPU while we hold `inner` and deadlock its handler.
+        crate::irq::without(|| {
+            self.inner
+                .lock()
+                .read_blocks(start_block, buf)
+                .map_err(|_| BlockError::IoError)
+        })
     }
 
     fn write_blocks(&self, start_block: usize, buf: &[u8]) -> Result<(), BlockError> {
-        self.inner
-            .lock()
-            .write_blocks(start_block, buf)
-            .map_err(|_| BlockError::IoError)
+        if self.use_irq() {
+            return self.write_irq(start_block, buf);
+        }
+        crate::irq::without(|| {
+            self.inner
+                .lock()
+                .write_blocks(start_block, buf)
+                .map_err(|_| BlockError::IoError)
+        })
     }
 }
 
@@ -117,6 +134,83 @@ impl<T: Transport> VdBlk<T> {
         Self {
             inner: Mutex::new(blk),
             capacity_sectors,
+            op_lock: crate::sync::Mutex::new(()),
+            completion: crate::sched::Semaphore::new(0),
+            irq_driven: AtomicBool::new(false),
+        }
+    }
+
+    /// Mark this device as interrupt-driven (an IRQ handler is wired).
+    fn set_irq_driven(&self) {
+        self.irq_driven.store(true, Ordering::Relaxed);
+    }
+
+    /// Interrupt handler: acknowledge the device interrupt and wake a waiter.
+    fn handle_irq(&self) {
+        crate::irq::without(|| {
+            self.inner.lock().ack_interrupt();
+        });
+        self.completion.post();
+    }
+
+    /// Use interrupt-driven (blocking) I/O only when wired and the scheduler is
+    /// running; otherwise the caller must poll.
+    fn use_irq(&self) -> bool {
+        self.irq_driven.load(Ordering::Relaxed) && crate::sched::is_ready()
+    }
+
+    /// Interrupt-driven read: submit, block until the interrupt completes it.
+    fn read_irq(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
+        let _op = self.op_lock.lock();
+        let mut req = BlkReq::default();
+        let mut resp = BlkResp::default();
+        let token = crate::irq::without(|| {
+            // SAFETY: `req`/`buf`/`resp` outlive the request (held on our stack
+            // until `complete_read_blocks` below) and are not touched meanwhile.
+            unsafe { self.inner.lock().read_blocks_nb(block_id, &mut req, buf, &mut resp) }
+        })
+        .map_err(|_| BlockError::IoError)?;
+        loop {
+            self.completion.wait();
+            let done = crate::irq::without(|| {
+                let mut blk = self.inner.lock();
+                if blk.peek_used() == Some(token) {
+                    // SAFETY: same buffers as the matching `read_blocks_nb`.
+                    Some(unsafe { blk.complete_read_blocks(token, &req, buf, &mut resp) })
+                } else {
+                    None
+                }
+            });
+            if let Some(res) = done {
+                return res.map_err(|_| BlockError::IoError);
+            }
+        }
+    }
+
+    /// Interrupt-driven write: submit, block until the interrupt completes it.
+    fn write_irq(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError> {
+        let _op = self.op_lock.lock();
+        let mut req = BlkReq::default();
+        let mut resp = BlkResp::default();
+        let token = crate::irq::without(|| {
+            // SAFETY: as in `read_irq`.
+            unsafe { self.inner.lock().write_blocks_nb(block_id, &mut req, buf, &mut resp) }
+        })
+        .map_err(|_| BlockError::IoError)?;
+        loop {
+            self.completion.wait();
+            let done = crate::irq::without(|| {
+                let mut blk = self.inner.lock();
+                if blk.peek_used() == Some(token) {
+                    // SAFETY: same buffers as the matching `write_blocks_nb`.
+                    Some(unsafe { blk.complete_write_blocks(token, &req, buf, &mut resp) })
+                } else {
+                    None
+                }
+            });
+            if let Some(res) = done {
+                return res.map_err(|_| BlockError::IoError);
+            }
         }
     }
 }
@@ -166,7 +260,23 @@ impl DeviceDriver for VirtioMmioDriver {
                     dev.reg_base,
                     blk.capacity()
                 );
-                crate::drivers::block::register(alloc::sync::Arc::new(VdBlk::from_blk(blk)));
+                let device = alloc::sync::Arc::new(VdBlk::from_blk(blk));
+                // On riscv64, route the device interrupt through the PLIC so
+                // block I/O from tasks can block instead of poll.
+                #[cfg(target_arch = "riscv64")]
+                if dev.irq != 0 {
+                    let handler = device.clone();
+                    crate::drivers::irq::register(
+                        dev.irq,
+                        alloc::boxed::Box::new(move || handler.handle_irq()),
+                    );
+                    let hart = crate::smp::cpu_id();
+                    crate::arch::riscv64::plic::enable(dev.irq, hart);
+                    crate::arch::riscv64::plic::enable_seie();
+                    device.set_irq_driven();
+                    crate::println!("virtio-blk: IRQ {} via PLIC on hart {}", dev.irq, hart);
+                }
+                crate::drivers::block::register(device);
                 Ok(())
             }
             // Other virtio device types are recognised but not yet supported.

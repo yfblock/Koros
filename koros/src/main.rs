@@ -93,7 +93,30 @@ extern "C" fn kernel_main() -> ! {
     koros_core::sched::spawn(demo_task_d);
     koros_core::sched::spawn(demo_producer);
     koros_core::sched::spawn(demo_consumer);
+    koros_core::sched::spawn(demo_blkio);
     koros_core::sched::idle_loop();
+}
+
+/// Reads a few blocks from a task: on riscv64 this blocks on the virtio-blk
+/// interrupt (see the PLIC path) instead of polling.
+fn demo_blkio() {
+    let Some(dev) = koros_core::drivers::block::first() else {
+        koros_core::println!("[blkio] no block device");
+        return;
+    };
+    let mut buf = [0u8; 512];
+    for id in 0..3 {
+        match dev.read_block(id, &mut buf) {
+            Ok(()) => koros_core::println!(
+                "[blkio cpu{}] read block {} ok (byte0={:#04x})",
+                koros_core::smp::cpu_id(),
+                id,
+                buf[0]
+            ),
+            Err(_) => koros_core::println!("[blkio] read block {} failed", id),
+        }
+    }
+    koros_core::println!("[blkio] done");
 }
 
 /// Blocking channel + shared mutex used by the producer/consumer demo.

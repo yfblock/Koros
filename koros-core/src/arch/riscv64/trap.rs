@@ -46,6 +46,12 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
         return;
     }
 
+    // Supervisor external interrupt (cause 9): dispatch via the PLIC.
+    if is_interrupt && code == 9 {
+        crate::arch::riscv64::plic::handle_external();
+        return;
+    }
+
     println!("");
     println!("=== TRAP ===");
     println!("scause  = {:#x} ({} #{})", scause, if is_interrupt { "Interrupt" } else { "Exception" }, code);
