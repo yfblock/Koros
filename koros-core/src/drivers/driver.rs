@@ -21,8 +21,11 @@ pub struct DtDevice {
     pub reg_base: usize,
     /// Size in bytes of that `reg` entry.
     pub reg_size: usize,
-    /// First `interrupts` cell (the interrupt-controller source number), or 0.
-    pub irq: u32,
+    /// First up to three `interrupts` cells (big-endian decoded, zero-padded).
+    /// Interpretation depends on the interrupt controller: riscv PLIC uses one
+    /// cell (`[0]` = source), aarch64 GIC uses three (`[0]` = type, `[1]` =
+    /// number, `[2]` = flags).
+    pub interrupts: [u32; 3],
 }
 
 /// Error returned by a driver's [`DeviceDriver::probe`].
@@ -70,12 +73,15 @@ pub fn probe_fdt(fdt_base: usize, drivers: &[&dyn DeviceDriver]) {
             None => continue,
         };
 
-        // First `interrupts` cell, if present (big-endian u32).
-        let irq = node
-            .raw_property("interrupts")
-            .and_then(|p| p.value.get(0..4))
-            .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
-            .unwrap_or(0);
+        // First up to three `interrupts` cells (big-endian u32 each).
+        let mut interrupts = [0u32; 3];
+        if let Some(prop) = node.raw_property("interrupts") {
+            for (i, slot) in interrupts.iter_mut().enumerate() {
+                if let Some(b) = prop.value.get(i * 4..i * 4 + 4) {
+                    *slot = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+                }
+            }
+        }
 
         for drv in drivers {
             let matched = node
@@ -86,7 +92,7 @@ pub fn probe_fdt(fdt_base: usize, drivers: &[&dyn DeviceDriver]) {
                 if let Err(e) = drv.probe(&DtDevice {
                     reg_base: base,
                     reg_size: size,
-                    irq,
+                    interrupts,
                 }) {
                     println!("driver: probe failed at {:#x}: {:?}", base, e);
                 }

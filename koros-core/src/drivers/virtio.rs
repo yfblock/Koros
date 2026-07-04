@@ -232,6 +232,43 @@ pub struct VirtioMmioDriver;
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
 pub static VIRTIO_MMIO_DRIVER: VirtioMmioDriver = VirtioMmioDriver;
 
+/// Route a virtio-mmio device's interrupt through the arch interrupt controller
+/// and mark the device interrupt-driven, so block I/O from tasks blocks instead
+/// of polling.  A no-op on architectures without an external-IRQ path yet.
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+fn wire_mmio_irq<T: Transport + 'static>(dev: &DtDevice, device: &alloc::sync::Arc<VdBlk<T>>) {
+    #[cfg(target_arch = "riscv64")]
+    {
+        // PLIC: a single `interrupts` cell is the source number.
+        let irq = dev.interrupts[0];
+        if irq != 0 {
+            let handler = device.clone();
+            crate::drivers::irq::register(irq, alloc::boxed::Box::new(move || handler.handle_irq()));
+            let hart = crate::smp::cpu_id();
+            crate::arch::riscv64::plic::enable(irq, hart);
+            crate::arch::riscv64::plic::enable_seie();
+            device.set_irq_driven();
+            crate::println!("virtio-blk: IRQ {} via PLIC on hart {}", irq, hart);
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // GIC: interrupts = <type, number, flags>; SPI (type 0) -> INTID num+32.
+        if dev.interrupts[0] == 0 {
+            let intid = dev.interrupts[1] + 32;
+            let handler = device.clone();
+            crate::drivers::irq::register(intid, alloc::boxed::Box::new(move || handler.handle_irq()));
+            crate::arch::aarch64::gic::enable_spi(intid);
+            device.set_irq_driven();
+            crate::println!("virtio-blk: IRQ {} via GIC", intid);
+        }
+    }
+    #[cfg(target_arch = "loongarch64")]
+    {
+        let _ = (dev, device); // extioi/PCH-PIC routing not implemented yet
+    }
+}
+
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
 impl DeviceDriver for VirtioMmioDriver {
     fn compatible(&self) -> &'static [&'static str] {
@@ -261,21 +298,7 @@ impl DeviceDriver for VirtioMmioDriver {
                     blk.capacity()
                 );
                 let device = alloc::sync::Arc::new(VdBlk::from_blk(blk));
-                // On riscv64, route the device interrupt through the PLIC so
-                // block I/O from tasks can block instead of poll.
-                #[cfg(target_arch = "riscv64")]
-                if dev.irq != 0 {
-                    let handler = device.clone();
-                    crate::drivers::irq::register(
-                        dev.irq,
-                        alloc::boxed::Box::new(move || handler.handle_irq()),
-                    );
-                    let hart = crate::smp::cpu_id();
-                    crate::arch::riscv64::plic::enable(dev.irq, hart);
-                    crate::arch::riscv64::plic::enable_seie();
-                    device.set_irq_driven();
-                    crate::println!("virtio-blk: IRQ {} via PLIC on hart {}", dev.irq, hart);
-                }
+                wire_mmio_irq(dev, &device);
                 crate::drivers::block::register(device);
                 Ok(())
             }

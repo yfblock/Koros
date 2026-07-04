@@ -1,5 +1,6 @@
 pub mod boot;
 pub mod context;
+pub mod gic;
 pub mod irq;
 pub mod mm;
 pub mod page_table;
