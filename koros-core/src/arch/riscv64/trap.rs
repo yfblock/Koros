@@ -39,9 +39,10 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
     let is_interrupt = (scause >> 63) != 0;
     let code = scause & ((1 << 63) - 1);
 
-    // Supervisor timer interrupt (cause 5): tick and return.
+    // Supervisor timer interrupt (cause 5): tick, maybe preempt, and return.
     if is_interrupt && code == 5 {
         crate::time::tick();
+        crate::sched::preempt();
         return;
     }
 

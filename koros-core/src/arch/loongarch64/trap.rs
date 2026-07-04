@@ -38,9 +38,10 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
     let is_interrupt = (estat >> 2) & 0x3f != 0;  // bit 12:0 for hw interrupt pending
     let exc_code = estat & 0x3f;  // bits 5:0 = ECODE
 
-    // Timer interrupt (ESTAT bit 11 = TI): tick and return.
+    // Timer interrupt (ESTAT bit 11 = TI): tick, maybe preempt, and return.
     if estat & (1 << 11) != 0 {
         crate::time::tick();
+        crate::sched::preempt();
         return;
     }
 

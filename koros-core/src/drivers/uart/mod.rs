@@ -57,8 +57,13 @@ static PRINT_LOCK: spin::Mutex<()> = spin::Mutex::new(());
 
 pub fn _print(args: fmt::Arguments) {
     use fmt::Write;
-    let _guard = PRINT_LOCK.lock();
-    UartWriter.write_fmt(args).ok();
+    // Hold the lock with interrupts disabled: otherwise a task could be
+    // preempted mid-print while holding the lock, and the next task's print
+    // would spin forever waiting for it (single-CPU deadlock).
+    crate::irq::without(|| {
+        let _guard = PRINT_LOCK.lock();
+        UartWriter.write_fmt(args).ok();
+    });
 }
 
 #[macro_export]

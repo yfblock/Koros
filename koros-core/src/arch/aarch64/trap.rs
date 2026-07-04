@@ -29,9 +29,11 @@ unsafe extern "C" {
 /// Called from assembly with `x0 = &mut TrapFrame, x1 = kind, x2 = source`.
 #[unsafe(no_mangle)]
 extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
-    // IRQ (kind 1): the only source we enable is the timer — tick and return.
+    // IRQ (kind 1): the only source we enable is the timer — tick, maybe
+    // preempt, and return.
     if kind == 1 {
         crate::time::tick();
+        crate::sched::preempt();
         return;
     }
 

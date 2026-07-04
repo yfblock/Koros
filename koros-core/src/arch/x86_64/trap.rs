@@ -55,9 +55,10 @@ unsafe extern "C" {
 
 #[unsafe(no_mangle)]
 extern "C" fn handle_trap(tf: &mut TrapFrame) {
-    // APIC timer interrupt (vector 0x20): tick and return.
+    // APIC timer interrupt (vector 0x20): tick, maybe preempt, and return.
     if tf.vector == 0x20 {
         crate::time::tick();
+        crate::sched::preempt();
         return;
     }
 

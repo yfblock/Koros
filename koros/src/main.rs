@@ -89,7 +89,38 @@ extern "C" fn kernel_main() -> ! {
     koros_core::sched::init();
     koros_core::sched::spawn(demo_task_a);
     koros_core::sched::spawn(demo_task_b);
+    koros_core::sched::spawn(demo_task_c);
+    koros_core::sched::spawn(demo_task_d);
     koros_core::sched::idle_loop();
+}
+
+/// Spin (CPU-bound, never yielding) for ~150 ms of wall time — long enough to
+/// span several scheduler time slices, so a co-runner can only make progress
+/// if the timer preempts us.
+fn busy_work() {
+    let start = koros_core::time::ticks();
+    while koros_core::time::ticks() < start + 15 {
+        core::hint::spin_loop();
+    }
+}
+
+/// CPU-bound demo thread: never yields or sleeps, so only timer preemption can
+/// let `demo_task_d` interleave with it.
+fn demo_task_c() {
+    for round in 0..6 {
+        busy_work();
+        koros_core::println!("[task C] round {}", round);
+    }
+    koros_core::println!("[task C] done");
+}
+
+/// Second CPU-bound thread — interleaving with C proves preemption works.
+fn demo_task_d() {
+    for round in 0..6 {
+        busy_work();
+        koros_core::println!("[task D] round {}", round);
+    }
+    koros_core::println!("[task D] done");
 }
 
 /// Demo kernel thread: prints and sleeps.

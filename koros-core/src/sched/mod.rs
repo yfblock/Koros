@@ -16,7 +16,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use spin::{Mutex, Once};
 
@@ -93,6 +93,15 @@ static SLEEPERS: Mutex<Vec<Arc<Task>>> = Mutex::new(Vec::new());
 static CURRENT: Mutex<Option<Arc<Task>>> = Mutex::new(None);
 static IDLE: Once<Arc<Task>> = Once::new();
 
+/// Exited tasks awaiting cleanup (their stacks are still in use during the
+/// switch away, so they're freed later from another task via [`reap`]).
+static ZOMBIES: Mutex<Vec<Arc<Task>>> = Mutex::new(Vec::new());
+
+/// Timer ticks a task may run before being preempted (~50 ms at 100 Hz).
+const TIME_SLICE: u32 = 5;
+/// Remaining ticks in the current task's slice.
+static SLICE: AtomicU32 = AtomicU32::new(TIME_SLICE);
+
 fn current() -> Arc<Task> {
     CURRENT.lock().clone().expect("scheduler not initialised")
 }
@@ -125,6 +134,7 @@ fn pick_next() -> Arc<Task> {
 /// no scheduler locks held).
 fn switch_to(prev: &Arc<Task>, next: &Arc<Task>) {
     next.state.store(RUNNING, Ordering::Relaxed);
+    SLICE.store(TIME_SLICE, Ordering::Relaxed); // fresh slice for the next task
     let prev_ctx = prev.ctx.get();
     let next_ctx = next.ctx.get() as *const TaskContext;
     // SAFETY: both tasks are kept alive (prev by the queue/sleepers/idle,
@@ -195,16 +205,46 @@ pub fn sleep_ms(ms: u64) {
 /// Terminate the current task and switch away permanently.
 pub fn exit() -> ! {
     crate::irq::disable();
-    let (prev, next) = {
-        let next = pick_next();
-        let mut cur = CURRENT.lock();
-        let prev = cur.take().unwrap();
-        prev.state.store(EXITED, Ordering::Relaxed);
-        *cur = Some(next.clone());
-        (prev, next)
-    };
-    switch_to(&prev, &next);
+    let next = pick_next();
+    let mut cur = CURRENT.lock();
+    let prev = cur.take().unwrap();
+    prev.state.store(EXITED, Ordering::Relaxed);
+    *cur = Some(next.clone());
+    drop(cur);
+
+    next.state.store(RUNNING, Ordering::Relaxed);
+    SLICE.store(TIME_SLICE, Ordering::Relaxed);
+    let prev_ctx = prev.ctx.get();
+    let next_ctx = next.ctx.get() as *const TaskContext;
+    // Move `prev` into the zombie list (no lingering local ref → no leak);
+    // its stack is still in use until the switch completes, so it is freed
+    // later by [`reap`] from another task.
+    ZOMBIES.lock().push(prev);
+    // SAFETY: both tasks are alive (prev in ZOMBIES, next in CURRENT).
+    unsafe { arch_ctx::context_switch(prev_ctx, next_ctx) };
     unreachable!("exited task resumed");
+}
+
+/// Free the stacks of tasks that have exited (called from a live task).
+fn reap() {
+    crate::irq::without(|| {
+        let mut zombies = ZOMBIES.lock();
+        if !zombies.is_empty() {
+            zombies.clear();
+        }
+    });
+}
+
+/// Timer preemption hook: called from the arch trap handler right after
+/// [`crate::time::tick`].  Yields when the running task's slice is used up.
+pub fn preempt() {
+    if IDLE.get().is_none() {
+        return; // scheduler not running yet
+    }
+    if SLICE.load(Ordering::Relaxed) == 0 {
+        SLICE.store(TIME_SLICE, Ordering::Relaxed);
+        yield_now();
+    }
 }
 
 /// Timer hook: move any sleepers whose deadline has passed back to ready.
@@ -225,6 +265,14 @@ pub fn timer_tick() {
             i += 1;
         }
     }
+    drop(sleepers);
+
+    // Count down the running task's time slice; expiry is acted on by
+    // `preempt` (called from the trap handler after this returns).
+    let rem = SLICE.load(Ordering::Relaxed);
+    if rem > 0 {
+        SLICE.store(rem - 1, Ordering::Relaxed);
+    }
 }
 
 /// The idle loop: run ready tasks, otherwise wait for an interrupt.  Becomes
@@ -232,6 +280,7 @@ pub fn timer_tick() {
 pub fn idle_loop() -> ! {
     loop {
         crate::irq::enable();
+        reap(); // free any exited tasks' stacks
         yield_now();
         // Nothing ready right now — wait for the timer to wake a sleeper.
         crate::smp::wait_for_interrupt();
