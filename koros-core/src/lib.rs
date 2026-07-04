@@ -16,6 +16,7 @@ pub mod fs;
 pub mod irq;
 pub mod mm;
 pub mod platform;
+pub mod sched;
 pub mod smp;
 pub mod time;
 pub mod trap;

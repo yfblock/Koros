@@ -32,6 +32,11 @@ pub fn online_count() -> usize {
     ONLINE.load(Ordering::Acquire)
 }
 
+/// Idle the current CPU until an interrupt arrives.
+pub fn wait_for_interrupt() {
+    arch_smp::wait_for_interrupt();
+}
+
 /// Bring up the secondary CPUs and wait (bounded) for them to register.
 /// Returns the total number of CPUs online (including the boot CPU).
 ///

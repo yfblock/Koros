@@ -44,4 +44,5 @@ pub fn ticks() -> u64 {
 pub fn tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
     arch_time::handle_tick();
+    crate::sched::timer_tick();
 }

@@ -84,18 +84,31 @@ extern "C" fn kernel_main() -> ! {
 
     koros_core::ext2_test();
 
-    // Demonstrate the timer: wait (bounded) for ~1s worth of ticks.
-    let t0 = koros_core::time::ticks();
-    let mut spins: u64 = 0;
-    while koros_core::time::ticks() < t0 + koros_core::time::TICK_HZ && spins < 2_000_000_000 {
-        spins += 1;
-        core::hint::spin_loop();
-    }
-    koros_core::println!("timer: {} ticks since boot", koros_core::time::ticks());
+    // Demonstrate the scheduler: spawn a couple of kernel threads that yield
+    // and sleep, then become the idle task.
+    koros_core::sched::init();
+    koros_core::sched::spawn(demo_task_a);
+    koros_core::sched::spawn(demo_task_b);
+    koros_core::sched::idle_loop();
+}
 
-    loop {
-        core::hint::spin_loop();
+/// Demo kernel thread: prints and sleeps.
+fn demo_task_a() {
+    for i in 0..5 {
+        koros_core::println!("[task A] iteration {}", i);
+        koros_core::sched::sleep_ms(200);
     }
+    koros_core::println!("[task A] done");
+}
+
+/// Demo kernel thread: prints, yields, and sleeps.
+fn demo_task_b() {
+    for i in 0..8 {
+        koros_core::println!("[task B] tick {}", i);
+        koros_core::sched::yield_now();
+        koros_core::sched::sleep_ms(120);
+    }
+    koros_core::println!("[task B] done");
 }
 
 /// Match device-tree nodes against the driver registry and probe them.
