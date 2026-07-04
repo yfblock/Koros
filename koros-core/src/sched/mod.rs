@@ -47,11 +47,17 @@ const READY: u8 = 0;
 const RUNNING: u8 = 1;
 const SLEEPING: u8 = 2;
 const EXITED: u8 = 3;
+const BLOCKED: u8 = 4;
 
 // Deferred transition applied by `finish_switch` to the outgoing task.
 const TO_READY: u8 = 0;
 const TO_SLEEP: u8 = 1;
 const TO_ZOMBIE: u8 = 2;
+/// Block on a wait queue (its pointer is carried alongside the action); the
+/// queue's raw lock is held across the switch and released by `finish_switch`
+/// once the task is enqueued — closing both the migration and lost-wakeup
+/// races (see [`WaitQueue`]).
+const TO_WAIT: u8 = 3;
 
 /// Timer ticks a task may run before being preempted (~50 ms at 100 Hz).
 const TIME_SLICE: u32 = 5;
@@ -112,8 +118,9 @@ impl Task {
 struct PerCpu {
     current: Mutex<Option<Arc<Task>>>,
     idle: Mutex<Option<Arc<Task>>>,
-    /// Outgoing task awaiting its deferred transition (task, action).
-    prev: Mutex<Option<(Arc<Task>, u8)>>,
+    /// Outgoing task awaiting its deferred transition (task, action, wait-queue
+    /// pointer for `TO_WAIT`).
+    prev: Mutex<Option<(Arc<Task>, u8, usize)>>,
     slice: AtomicU32,
 }
 
@@ -189,7 +196,7 @@ fn pick_next(cpu: &PerCpu) -> Arc<Task> {
 /// from.  Runs on the incoming task, after the switch completed.
 fn finish_switch() {
     let taken = this_cpu().prev.lock().take();
-    if let Some((prev, action)) = taken {
+    if let Some((prev, action, wait_ptr)) = taken {
         match action {
             TO_READY => {
                 // The idle task is a per-CPU fallback, never queued.
@@ -206,6 +213,16 @@ fn finish_switch() {
                 prev.state.store(EXITED, Ordering::Relaxed);
                 ZOMBIES.lock().push(prev);
             }
+            TO_WAIT => {
+                // SAFETY: `wait_ptr` points to the WaitQueue the blocking task
+                // is parking on; its raw lock is held (taken in `block_on`) and
+                // released here after the task is enqueued.
+                let wq = unsafe { &*(wait_ptr as *const WaitQueue) };
+                prev.state.store(BLOCKED, Ordering::Relaxed);
+                // SAFETY: the queue's raw lock is held across the switch.
+                unsafe { (*wq.list.get()).push_back(prev) };
+                wq.raw_unlock();
+            }
             _ => {}
         }
     }
@@ -213,7 +230,7 @@ fn finish_switch() {
 
 /// Core switch: pick the next task, record the outgoing one for the deferred
 /// transition, and switch.  Must be called with interrupts disabled.
-fn schedule(prev_action: u8) {
+fn schedule(prev_action: u8, wait_ptr: usize) {
     let cpu = this_cpu();
     let next = pick_next(cpu);
 
@@ -224,7 +241,7 @@ fn schedule(prev_action: u8) {
         if Arc::ptr_eq(&prev, &next) && prev_action == TO_READY {
             return;
         }
-        *cpu.prev.lock() = Some((prev.clone(), prev_action));
+        *cpu.prev.lock() = Some((prev.clone(), prev_action, wait_ptr));
         next.state.store(RUNNING, Ordering::Relaxed);
         cpu.slice.store(TIME_SLICE, Ordering::Relaxed);
         *cur = Some(next.clone());
@@ -240,7 +257,7 @@ fn schedule(prev_action: u8) {
 pub fn yield_now() {
     let enabled = crate::irq::is_enabled();
     crate::irq::disable();
-    schedule(TO_READY);
+    schedule(TO_READY, 0);
     if enabled {
         crate::irq::enable();
     }
@@ -251,15 +268,21 @@ pub fn sleep_ms(ms: u64) {
     let wake = crate::time::ticks() + (ms * crate::time::TICK_HZ / 1000).max(1);
     crate::irq::disable();
     current().wake_tick.store(wake, Ordering::Relaxed);
-    schedule(TO_SLEEP);
+    schedule(TO_SLEEP, 0);
     crate::irq::enable();
 }
 
 /// Terminate the current task and switch away permanently.
 pub fn exit() -> ! {
     crate::irq::disable();
-    schedule(TO_ZOMBIE);
+    schedule(TO_ZOMBIE, 0);
     unreachable!("exited task resumed");
+}
+
+/// Move a blocked/parked task back to the ready queue.
+fn make_ready(task: Arc<Task>) {
+    task.state.store(READY, Ordering::Relaxed);
+    READY_QUEUE.lock().push_back(task);
 }
 
 /// Free the stacks of exited tasks (called from a live task).
@@ -328,4 +351,159 @@ extern "C" fn task_bootstrap() -> ! {
     let entry = current().entry;
     entry();
     exit();
+}
+
+// ---------------------------------------------------------------------------
+// Blocking synchronisation primitives
+// ---------------------------------------------------------------------------
+
+/// A queue of tasks blocked waiting for an event.
+///
+/// Uses a raw spin lock that is *held across the context switch* when a task
+/// blocks and released by [`finish_switch`] after the task is enqueued.  A
+/// waker acquiring the same lock therefore cannot miss a task that has decided
+/// to block (no lost wakeup), and the enqueue-after-save ordering means a woken
+/// task is never run on another CPU before its context is saved.
+pub struct WaitQueue {
+    lock: AtomicBool,
+    list: UnsafeCell<VecDeque<Arc<Task>>>,
+}
+
+// SAFETY: all access to `list` is serialised by the raw `lock`.
+unsafe impl Sync for WaitQueue {}
+unsafe impl Send for WaitQueue {}
+
+impl Default for WaitQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl WaitQueue {
+    pub const fn new() -> Self {
+        Self {
+            lock: AtomicBool::new(false),
+            list: UnsafeCell::new(VecDeque::new()),
+        }
+    }
+
+    fn raw_lock(&self) {
+        while self.lock.swap(true, Ordering::Acquire) {
+            core::hint::spin_loop();
+        }
+    }
+
+    fn raw_unlock(&self) {
+        self.lock.store(false, Ordering::Release);
+    }
+
+    /// Block the current task on this queue.  The queue's raw lock **must be
+    /// held** by the caller; it is released (after the task is enqueued) by
+    /// `finish_switch`.  Interrupts must be disabled.
+    fn block_locked(&self) {
+        schedule(TO_WAIT, self as *const _ as usize);
+    }
+
+    /// Wake one blocked task, if any.
+    pub fn wake_one(&self) {
+        crate::irq::without(|| {
+            self.raw_lock();
+            let task = unsafe { (*self.list.get()).pop_front() };
+            self.raw_unlock();
+            if let Some(task) = task {
+                make_ready(task);
+            }
+        });
+    }
+
+    /// Wake all blocked tasks.
+    pub fn wake_all(&self) {
+        crate::irq::without(|| {
+            self.raw_lock();
+            let mut drained = VecDeque::new();
+            core::mem::swap(unsafe { &mut *self.list.get() }, &mut drained);
+            self.raw_unlock();
+            for task in drained {
+                make_ready(task);
+            }
+        });
+    }
+}
+
+/// A counting semaphore with blocking `wait`.
+pub struct Semaphore {
+    wq: WaitQueue,
+    count: UnsafeCell<isize>,
+}
+
+// SAFETY: `count` is only accessed under `wq`'s raw lock.
+unsafe impl Sync for Semaphore {}
+unsafe impl Send for Semaphore {}
+
+impl Semaphore {
+    pub const fn new(initial: isize) -> Self {
+        Self { wq: WaitQueue::new(), count: UnsafeCell::new(initial) }
+    }
+
+    /// Decrement the count, blocking while it is zero.
+    pub fn wait(&self) {
+        let enabled = crate::irq::is_enabled();
+        crate::irq::disable();
+        loop {
+            self.wq.raw_lock();
+            let count = unsafe { &mut *self.count.get() };
+            if *count > 0 {
+                *count -= 1;
+                self.wq.raw_unlock();
+                break;
+            }
+            // Block: `finish_switch` enqueues us and releases the queue lock,
+            // so a concurrent `post` cannot slip between the check and the
+            // block.
+            self.wq.block_locked();
+            // Resumed after a wake; re-check the count.
+        }
+        if enabled {
+            crate::irq::enable();
+        }
+    }
+
+    /// Increment the count, waking one waiter.
+    pub fn post(&self) {
+        crate::irq::without(|| {
+            self.wq.raw_lock();
+            let count = unsafe { &mut *self.count.get() };
+            *count += 1;
+            let task = unsafe { (*self.wq.list.get()).pop_front() };
+            self.wq.raw_unlock();
+            if let Some(task) = task {
+                make_ready(task);
+            }
+        });
+    }
+}
+
+/// A blocking mutual-exclusion lock built on a binary semaphore.
+pub struct Mutex2 {
+    sem: Semaphore,
+}
+
+impl Default for Mutex2 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Mutex2 {
+    pub const fn new() -> Self {
+        Self { sem: Semaphore::new(1) }
+    }
+
+    pub fn lock(&self) {
+        self.sem.wait();
+    }
+
+    pub fn unlock(&self) {
+        self.sem.post();
+    }
 }

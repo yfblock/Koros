@@ -91,7 +91,30 @@ extern "C" fn kernel_main() -> ! {
     koros_core::sched::spawn(demo_task_b);
     koros_core::sched::spawn(demo_task_c);
     koros_core::sched::spawn(demo_task_d);
+    koros_core::sched::spawn(demo_producer);
+    koros_core::sched::spawn(demo_consumer);
     koros_core::sched::idle_loop();
+}
+
+/// Semaphore used by the producer/consumer demo (starts empty).
+static DEMO_SEM: koros_core::sched::Semaphore = koros_core::sched::Semaphore::new(0);
+
+/// Posts to the semaphore a few times, with a pause between each.
+fn demo_producer() {
+    for i in 0..5 {
+        koros_core::sched::sleep_ms(150);
+        DEMO_SEM.post();
+        koros_core::println!("[producer cpu{}] posted {}", koros_core::smp::cpu_id(), i);
+    }
+}
+
+/// Blocks on the semaphore until the producer posts; proves blocking wait/wake.
+fn demo_consumer() {
+    for i in 0..5 {
+        DEMO_SEM.wait();
+        koros_core::println!("[consumer cpu{}] received {}", koros_core::smp::cpu_id(), i);
+    }
+    koros_core::println!("[consumer] done");
 }
 
 /// Spin (CPU-bound, never yielding) for ~150 ms of wall time — long enough to
