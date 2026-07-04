@@ -109,7 +109,7 @@ fn busy_work() {
 fn demo_task_c() {
     for round in 0..6 {
         busy_work();
-        koros_core::println!("[task C] round {}", round);
+        koros_core::println!("[task C cpu{}] round {}", koros_core::smp::cpu_id(), round);
     }
     koros_core::println!("[task C] done");
 }
@@ -118,7 +118,7 @@ fn demo_task_c() {
 fn demo_task_d() {
     for round in 0..6 {
         busy_work();
-        koros_core::println!("[task D] round {}", round);
+        koros_core::println!("[task D cpu{}] round {}", koros_core::smp::cpu_id(), round);
     }
     koros_core::println!("[task D] done");
 }
@@ -126,7 +126,7 @@ fn demo_task_d() {
 /// Demo kernel thread: prints and sleeps.
 fn demo_task_a() {
     for i in 0..5 {
-        koros_core::println!("[task A] iteration {}", i);
+        koros_core::println!("[task A cpu{}] iteration {}", koros_core::smp::cpu_id(), i);
         koros_core::sched::sleep_ms(200);
     }
     koros_core::println!("[task A] done");
@@ -135,7 +135,7 @@ fn demo_task_a() {
 /// Demo kernel thread: prints, yields, and sleeps.
 fn demo_task_b() {
     for i in 0..8 {
-        koros_core::println!("[task B] tick {}", i);
+        koros_core::println!("[task B cpu{}] tick {}", koros_core::smp::cpu_id(), i);
         koros_core::sched::yield_now();
         koros_core::sched::sleep_ms(120);
     }

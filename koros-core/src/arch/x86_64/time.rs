@@ -5,7 +5,13 @@
 //! run it periodically at [`crate::time::TICK_HZ`].
 
 use crate::mm;
+use spin::Once;
 use x86_64::instructions::port::Port;
+
+/// APIC timer initial count for one tick, calibrated once and shared by all
+/// CPUs (the timer frequency is identical across cores).  Calibration uses the
+/// shared PIT, so it must run on only one CPU at a time — `Once` guarantees it.
+static TIMER_COUNT: Once<u32> = Once::new();
 
 const APIC_BASE_PHYS: usize = 0xFEE0_0000;
 const APIC_EOI: usize = 0xB0;
@@ -80,7 +86,8 @@ pub fn init() {
     // Software-enable the LAPIC (spurious vector 0xFF).
     lapic_write(APIC_SVR, lapic_read(APIC_SVR) | 0x100 | 0xFF);
 
-    let count = calibrate();
+    // Calibrate once (boot CPU); secondary CPUs reuse the stored count.
+    let count = *TIMER_COUNT.call_once(calibrate);
     lapic_write(APIC_TIMER_DIV, TIMER_DIV_16);
     lapic_write(APIC_LVT_TIMER, TIMER_VECTOR | LVT_PERIODIC);
     lapic_write(APIC_TIMER_INITCNT, count);

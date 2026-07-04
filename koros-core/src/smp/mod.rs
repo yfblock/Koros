@@ -60,7 +60,16 @@ pub extern "C" fn secondary_entry(id: usize) -> ! {
     crate::trap::init();
     ONLINE.fetch_add(1, Ordering::AcqRel);
     crate::println!("cpu {} online", id);
-    loop {
+
+    // Arm this CPU's timer and enable interrupts, then idle until the boot CPU
+    // has initialised the scheduler.  Interrupts must be on so `wait_for_interrupt`
+    // (`hlt`/`wfi`) is woken by the timer instead of blocking forever; the timer
+    // handler no-ops until the scheduler is ready.
+    crate::time::init();
+    crate::irq::enable();
+    while !crate::sched::is_ready() {
         arch_smp::wait_for_interrupt();
     }
+    crate::sched::init_this_cpu();
+    crate::sched::idle_loop();
 }

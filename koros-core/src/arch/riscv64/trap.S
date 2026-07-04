@@ -65,11 +65,13 @@ kernelvec:
     csrw    sstatus, t0
     csrw    sepc, t1
 
-    # Restore x1 – x31
+    # Restore x1 – x31.  NOTE: x4 (tp) is deliberately NOT restored — it holds
+    # this hart's CPU id (per-CPU, fixed in kernel mode).  A task preempted on
+    # one hart may resume on another after migration; restoring the saved tp
+    # would carry the old hart's id and corrupt cpu_id()/per-CPU state.
     ld      x1,   1 * 8(sp)
     ld      x2,   2 * 8(sp)
     ld      x3,   3 * 8(sp)
-    ld      x4,   4 * 8(sp)
     ld      x5,   5 * 8(sp)
     ld      x6,   6 * 8(sp)
     ld      x7,   7 * 8(sp)
