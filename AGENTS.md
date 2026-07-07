@@ -3,15 +3,17 @@
 **Generated:** 2026-06-19 (rewritten 2026-07-07)
 **Branch:** main
 
-Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv64, x86_64, aarch64, loongarch64). It is structured as a **seven-crate Cargo workspace** of small, composable libraries plus one binary composition crate. Architecture abstraction is **runtime trait-object dispatch** (`kor::ArchProvider`), not `#[cfg(target_arch)]` branches in shared code.
+Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv64, x86_64, aarch64, loongarch64). It is structured as a **nine-crate Cargo workspace** of small, composable libraries plus one binary composition crate. Architecture abstraction is **runtime trait-object dispatch** (`kor::ArchProvider`), not `#[cfg(target_arch)]` branches in shared code.
 
 ## Key Facts
 
-- **Cargo workspace, seven crates** (`Cargo.toml`, `resolver = "2"`):
+- **Cargo workspace, nine crates** (`Cargo.toml`, `resolver = "2"`):
   - `kor/` — library crate `kor`. The **bottom generic-abstraction layer**: traits + registries, no arch code, no subsystem implementations. Defines `ArchProvider`, `InterruptController`, `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, plus boot-time helpers (FDT parse, region collection, cmdline, config, SMP/time bookkeeping).
   - `kor-frame/` — library crate `kor_frame`. Physical frame allocator (buddy system via `buddy_system_allocator`). Global free-function API + an instance type.
   - `kor-alloc/` — library crate `kor_alloc`. Slab-based kernel heap (`LockedSlabHeap`, used as `#[global_allocator]`).
-  - `kor-fs/` — library crate `kor_fs`. VFS layer + **ext2** (read/write, symlink, hard link, truncate, rename, indirect blocks, xattr, mknod) + **ramfs** + block cache + mount table + path resolver + fd abstraction. Re-exports VFS traits from `kor`.
+  - `kor-fs/` — library crate `kor_fs`. The VFS infrastructure layer: block cache, mount table, path resolver, fd abstraction, and the **filesystem-driver registry** (`register_filesystem`/`find_filesystem`). Re-exports VFS traits (incl. `FileSystemDriver`) from `kor`. No concrete filesystems — ext2 and ramfs live in their own crates and register a driver here at boot.
+  - `kor-ext2/` — library crate `kor_ext2`. **ext2** implementation (read/write, symlink, hard link, truncate, rename, indirect blocks, xattr, mknod) + the `Ext2Driver` `FileSystemDriver` singleton. Depends on `kor-fs` for the block cache.
+  - `kor-ramfs/` — library crate `kor_ramfs`. In-memory reference filesystem + the `RamFsDriver` `FileSystemDriver` singleton. Depends on `kor` only.
   - `kor-sched/` — library crate `kor_sched`. **Preemptive multi-core kernel-thread scheduler** + blocking sync primitives (`WaitQueue`, `Semaphore`, `Mutex<T>`, `Channel<T>`).
   - `kor-arch/` — library crate `kor_arch`. **All architecture-specific code**: per-arch `boot`/`trap`/`mm`/`page_table`/`smp`/`time`/`irq`/`context`/`ic`/`console`/`provider` modules under `src/<arch>/`, plus the shared UART drivers. Provides concrete `ArchProvider` impls and `provider()`/`interrupt_controller()`/`console()` selectors.
   - `koros/` — the **binary crate** (`[[bin]] name = "koros"`). The composition root: `kernel_main` init sequence, the `#[global_allocator]`, `#[panic_handler]`, the virtio driver adapter, device/IRQ/block registries, the ext2 self-check, the storage benchmark, and the scheduler demo tasks. Holds `build.rs` + `linker.lds`.
@@ -105,13 +107,17 @@ kor-alloc/src/
   lib.rs                  — re-exports LockedSlabHeap/SlabHeap
   slab_heap.rs            — 7 size-class slab heap + frame-backed large allocs
 kor-fs/src/
-  lib.rs                  — re-exports VFS/block types from kor
+  lib.rs                  — re-exports VFS/block types from kor; module decls
   block_cache.rs          — LRU write-back BlockCache
   fd.rs                   — FileDescriptor, OpenFlags, SeekFrom
   mount.rs                — MountTable + mount/unmount/resolve/sync_all
   path.rs                 — Path, resolve_path (symlink-following walker)
-  ext2/{mod,bitmap,block_group,dir,inode,super_block,xattr}.rs
-  ramfs/mod.rs            — in-memory reference filesystem
+  registry.rs             — FileSystemDriver registry: register/find/mount_named
+kor-ext2/src/
+  lib.rs                  — Ext2Fs + Ext2Driver (FileSystemDriver singleton)
+  {bitmap,block_group,dir,inode,super_block,xattr}.rs
+kor-ramfs/src/
+  lib.rs                  — RamFs + RamFsDriver (FileSystemDriver singleton)
 kor-sched/src/
   lib.rs                  — Task/PerCpu, scheduler core, WaitQueue/Semaphore/Mutex2
   sync.rs                 — guard-based Mutex<T>, unbounded Channel<T>
@@ -145,7 +151,7 @@ Per arch (assembly in `kor-arch/src/<arch>/`): `_start` → **clear BSS at physi
 3. Arch provider — `kor::install(kor_arch::provider())`.
 4. Interrupt controller — `install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stubs on x86_64/loongarch64).
 5. Trap callbacks — `install_callbacks(&TRAP_CB)`; `on_timer` does `increment_tick` + `arch.handle_tick` + `kor_sched::timer_tick` + `kor_sched::preempt`; `on_external(irq)` dispatches `registries::IRQS`.
-6. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region).
+6. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region), then register filesystem drivers (`kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)` + `&kor_ramfs::RAMFS_DRIVER`) — the registry `Vec` allocates, so this must follow heap init.
 7. Trap vectors — `arch.trap_init()`.
 8. Memory init — capture cmdline, `RegionCollector`, `detect_memory_regions`, clip `kernel_phys_range()` + firmware hole, feed `kor_frame::add_region`, `heap::self_test()`, `arch.page_table_init()`, `page_table_self_test()` (4K + 2M map/translate round-trip).
 9. Timer + IRQ on this CPU; print `Hello, world!` and cmdline.
@@ -175,7 +181,11 @@ Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` 
 | `FrameAllocator` / `alloc_page` / `alloc_huge_2m` | struct/fn | `kor-frame/src/lib.rs` | Buddy physical frame allocator |
 | `Task` / `spawn` / `yield_now` / `sleep_ms` / `idle_loop` | struct/fn | `kor-sched/src/lib.rs` | Preemptive multi-core scheduler |
 | `WaitQueue` / `Semaphore` / `Mutex<T>` / `Channel<T>` | struct | `kor-sched/src/{lib,sync}.rs` | Blocking sync primitives |
-| `Ext2Fs` / `Ext2INode` | struct | `kor-fs/src/ext2/` | ext2 filesystem + full `INode` impl |
+| `Ext2Fs` / `Ext2INode` | struct | `kor-ext2/src/` | ext2 filesystem + full `INode` impl |
+| `RamFs` | struct | `kor-ramfs/src/lib.rs` | In-memory reference filesystem (`SuperBlock` + `INode`) |
+| `FileSystemDriver` | trait | `kor/src/vfs.rs` | Filesystem factory (`name`/`mount`); impls register with `kor_fs` |
+| `EXT2_DRIVER` / `RAMFS_DRIVER` | static | `kor-ext2`/`kor-ramfs` `src/lib.rs` | `FileSystemDriver` singletons registered in `kernel_main` |
+| `register_filesystem` / `find_filesystem` / `mount_named` | fn | `kor-fs/src/registry.rs` | FS-driver registry (registered at boot, looked up by name to mount) |
 | `VdBlk` / `KorosHal` | struct | `koros/src/virtio.rs` | virtio-blk adapter (IRQ-driven + polling) over `virtio-drivers` |
 | `BLOCKS` / `IRQS` / `MOUNTS` | static | `koros/src/registries.rs` | Composition-owned device/IRQ/mount registries |
 
@@ -199,12 +209,12 @@ Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` 
 - `#![no_std]` only — use `core` and `alloc` (with provided allocator), never `std`.
 - Minimize `unsafe` — wrap in safe abstractions, document why each block is needed.
 - No magic numbers — use named constants for all hardware addresses, flags, bit masks.
-- **Architecture abstraction is runtime trait-object dispatch, not `#[cfg]`.** Shared crates (`kor`, `kor-frame`, `kor-alloc`, `kor-fs`, `kor-sched`) must contain **no `#[cfg(target_arch)]`**. Call `kor::arch::current()` (a `&'static dyn ArchProvider`) instead. The only permitted cfg is `kor-arch/src/lib.rs`'s single `cfg_if!` arch selector.
+- **Architecture abstraction is runtime trait-object dispatch, not `#[cfg]`.** Shared crates (`kor`, `kor-frame`, `kor-alloc`, `kor-fs`, `kor-ext2`, `kor-ramfs`, `kor-sched`) must contain **no `#[cfg(target_arch)]`**. Call `kor::arch::current()` (a `&'static dyn ArchProvider`) instead. The only permitted cfg is `kor-arch/src/lib.rs`'s single `cfg_if!` arch selector.
 - **All arch-specific code lives under `kor-arch/src/<arch>/`.** If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same `ArchProvider` methods), not as `#[cfg]` branches in shared code. Open `kor-arch/src/<arch>/` to see everything specific to that architecture; open a shared crate and see architecture-neutral logic.
 - **Every per-arch module must satisfy the uniform `ArchProvider` interface.** All four architectures implement the same `ArchProvider` trait with the same method signatures, so shared code calls through `kor::arch::current()` without architecture-specific branches.
 - `println!` and `print!` are provided by `kor::console` (via the `Console` registry), not `std`.
 - For architecture-specific code bugs (boot, page tables, MMU, trap, context switch), refer to the `polyhal/` directory — it contains working implementations for all four architectures that can be used as reference.
-- Registries (`kor::arch`, `kor::interrupt`, `kor::console`, `kor::trap_callbacks`, `kor::config`, `kor::cmdline`) are installed once at boot via `spin::Once`. Composition-owned registries (`BLOCKS`, `IRQS`, `MOUNTS`) live in `koros/src/registries.rs`.
+- Registries (`kor::arch`, `kor::interrupt`, `kor::console`, `kor::trap_callbacks`, `kor::config`, `kor::cmdline`) are installed once at boot via `spin::Once`. Composition-owned registries (`BLOCKS`, `IRQS`, `MOUNTS`) live in `koros/src/registries.rs`. The filesystem-driver registry (`register_filesystem`/`find_filesystem`) lives in `kor-fs/src/registry.rs` and is populated from `kernel_main`.
 
 ## Verification
 

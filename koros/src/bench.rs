@@ -36,12 +36,18 @@ pub fn run() {
 /// Write phase streams a large file and `sync()`s it; read phase reopens the
 /// filesystem (cold cache) so reads hit the device.
 fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
-    use kor_fs::ext2::Ext2Fs;
-    use kor::{FileType, SuperBlock as SuperBlockTrait};
+    use kor::FileType;
 
     let timebase_hz = kor::arch::current().timer_hz();
 
-    let fs = match Ext2Fs::open(device.clone()) {
+    let driver = match kor_fs::find_filesystem("ext2") {
+        Some(d) => d,
+        None => {
+            println!("ext2 bench SKIPPED: ext2 driver not registered");
+            return;
+        }
+    };
+    let fs = match driver.mount(Some(device.clone())) {
         Ok(f) => f,
         Err(e) => {
             println!("ext2 bench SKIPPED: open: {:?}", e);
@@ -57,7 +63,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         return;
     }
 
-    let block_size = fs.block_size();
+    let block_size = info.block_size;
     let root = fs.root_inode();
     let file = match root.create("bench.bin", FileType::Regular, 0o644) {
         Ok(f) => f,
@@ -79,7 +85,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
     fs.sync();
     let write_ticks = kor::arch::current().now_ticks() - t0;
 
-    let fs2 = match Ext2Fs::open(device.clone()) {
+    let fs2 = match driver.mount(Some(device.clone())) {
         Ok(f) => f,
         Err(e) => {
             println!("ext2 bench SKIPPED: reopen: {:?}", e);

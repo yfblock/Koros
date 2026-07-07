@@ -23,7 +23,7 @@ use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::FsError;
+use kor::FsError;
 
 /// Magic number at the start of an xattr block header.
 pub const XATTR_MAGIC: u32 = 0xEA02_0000;

@@ -1,12 +1,14 @@
 //! Core Virtual File System trait definitions.
 //!
-//! Concrete filesystems (ext2, ramfs, ...) in `kor-fs` implement the
-//! [`SuperBlock`] and [`INode`] traits defined here.
+//! Concrete filesystems (ext2 in `kor-ext2`, ramfs in `kor-ramfs`, ...) implement
+//! the [`SuperBlock`] and [`INode`] traits defined here and register a
+//! [`FileSystemDriver`] with `kor-fs` at boot.
 
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
+use crate::BlockDevice;
 
 /// Classification of a filesystem entry.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -68,6 +70,7 @@ pub trait SuperBlock: Send + Sync {
     fn info(&self) -> FsInfo;
     fn on_mount(&self) {}
     fn on_unmount(&self) {}
+    fn read_only(&self) -> bool { false }
 }
 
 /// A single file, directory, or special file within a filesystem.
@@ -95,4 +98,21 @@ pub trait INode: Send + Sync {
     fn setxattr(&self, _name: &str, _value: &[u8]) -> Result<(), FsError> { Err(FsError::Unsupported) }
     fn listxattr(&self) -> Result<Vec<String>, FsError> { Ok(Vec::new()) }
     fn removexattr(&self, _name: &str) -> Result<(), FsError> { Err(FsError::Unsupported) }
+}
+
+// ---------------------------------------------------------------------------
+// Filesystem driver (factory) — analogue of Linux's `file_system_type`.
+// Implementations live in dedicated crates (kor-ext2, kor-ramfs, ...) and
+// register themselves with `kor_fs::register_filesystem` at boot.
+// ---------------------------------------------------------------------------
+
+/// A filesystem driver: manufactures mounted [`SuperBlock`] instances.
+///
+/// A block-backed filesystem (ext2) requires `Some(device)`; a nodev
+/// filesystem (ramfs) ignores the device argument.
+pub trait FileSystemDriver: Send + Sync {
+    /// Canonical name of this filesystem type, e.g. `"ext2"`, `"ramfs"`.
+    fn name(&self) -> &'static str;
+    /// Create and mount a filesystem instance from `device`.
+    fn mount(&self, device: Option<Arc<dyn BlockDevice>>) -> Result<Arc<dyn SuperBlock>, FsError>;
 }

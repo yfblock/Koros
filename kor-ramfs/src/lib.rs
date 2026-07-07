@@ -1,8 +1,10 @@
+#![no_std]
 //! In-memory filesystem (RamFS) implementation.
 //!
 //! Provides a simple in-memory filesystem backed by `Vec<u8>` for file content
 //! and `BTreeMap` for directory entries.  Intended as a reference implementation
 //! and test harness for the VFS trait layer.
+extern crate alloc;
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -12,7 +14,7 @@ use core::any::Any;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
-use super::{FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
+use kor::{FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
 
 // ---------------------------------------------------------------------------
 // Inode number allocator
@@ -325,5 +327,23 @@ impl SuperBlock for RamFs {
             free_inodes: 0,
             block_size: 4096,
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// FileSystemDriver — register with kor_fs at boot
+// ---------------------------------------------------------------------------
+
+/// ramfs filesystem driver singleton.
+///
+/// Register at boot: `kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER)`.
+pub struct RamFsDriver;
+pub static RAMFS_DRIVER: RamFsDriver = RamFsDriver;
+
+impl kor::FileSystemDriver for RamFsDriver {
+    fn name(&self) -> &'static str { "ramfs" }
+    fn mount(&self, _device: Option<Arc<dyn kor::BlockDevice>>) -> Result<Arc<dyn kor::SuperBlock>, FsError> {
+        let fs: Arc<dyn kor::SuperBlock> = Arc::new(RamFs::new());
+        Ok(fs)
     }
 }

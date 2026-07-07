@@ -11,7 +11,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::{FsError, FileType, INode, Metadata};
+use kor::{FsError, FileType, INode, Metadata};
 
 use super::xattr;
 use super::{Ext2Fs, EXT2_ROOT_INO};

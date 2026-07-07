@@ -7,7 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
 
-use crate::{FsError, FileType, INode};
+use kor::{FsError, FileType, INode};
 
 use super::inode::Ext2INode;
 

@@ -12,6 +12,8 @@ kor = { path = "../kor" }
 kor-frame = { path = "../kor-frame" }
 kor-alloc = { path = "../kor-alloc" }
 kor-fs = { path = "../kor-fs" }
+kor-ext2 = { path = "../kor-ext2" }
+kor-ramfs = { path = "../kor-ramfs" }
 kor-sched = { path = "../kor-sched" }
 kor-arch = { path = "../kor-arch" }
 spin = "0.9"

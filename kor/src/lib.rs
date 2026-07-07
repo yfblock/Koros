@@ -36,7 +36,7 @@ pub use mapping::{MapError, MapSize, MappingFlags};
 pub use trap_callbacks::{
     callbacks, dispatch_external, install_callbacks, on_timer, TrapCallbacks,
 };
-pub use vfs::{FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
+pub use vfs::{FileSystemDriver, FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
 
 /// Kernel image physical range from linker symbols `_skernel`..`_end`.
 /// Used by the composition layer to clip the kernel image out of the frame

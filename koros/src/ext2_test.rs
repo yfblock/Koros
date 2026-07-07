@@ -18,12 +18,15 @@ pub fn ext2_test() {
 }
 
 fn ext2_test_with_device(device: alloc::sync::Arc<dyn kor::BlockDevice>) {
-    use kor_fs::ext2::Ext2Fs;
-    use kor_fs::mount;
-    use kor::SuperBlock as SuperBlockTrait;
-
-    // --- Open and mount the ext2 filesystem at "/" ------------------------
-    let fs = match Ext2Fs::open(device.clone()) {
+    // --- Open and mount the ext2 filesystem at "/" via the driver registry --
+    let driver = match kor_fs::find_filesystem("ext2") {
+        Some(d) => d,
+        None => {
+            kor::println!("ext2 test FAILED: ext2 driver not registered");
+            return;
+        }
+    };
+    let fs = match driver.mount(Some(device)) {
         Ok(fs) => fs,
         Err(e) => {
             kor::println!("ext2 test FAILED: open: {:?}", e);
@@ -39,7 +42,7 @@ fn ext2_test_with_device(device: alloc::sync::Arc<dyn kor::BlockDevice>) {
         info.total_inodes,
         info.free_inodes,
         info.block_size,
-        fs.is_read_only(),
+        fs.read_only(),
     );
 
     if let Err(e) = kor_fs::mount::mount(&crate::registries::MOUNTS, "/", fs.clone()) {

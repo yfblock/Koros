@@ -1,3 +1,4 @@
+#![no_std]
 //! ext2 filesystem implementation.
 //!
 //! Provides read-only ext2 support by parsing the on-disk superblock
@@ -18,9 +19,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::BlockDevice;
-use crate::block_cache::BlockCache;
-use crate::{FsError, FsInfo, INode, SuperBlock as SuperBlockTrait};
+use kor::BlockDevice;
+use kor_fs::block_cache::BlockCache;
+use kor::{FsError, FsInfo, INode, SuperBlock as SuperBlockTrait};
 
 use block_group::BlockGroupDescriptor;
 use inode::Ext2INode;
@@ -515,6 +516,10 @@ impl SuperBlockTrait for Ext2Fs {
             block_size: self.block_size,
         }
     }
+
+    fn read_only(&self) -> bool {
+        self.read_only
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,4 +576,23 @@ fn parse_block_group_descriptors(buf: &[u8], count: usize) -> Vec<BlockGroupDesc
         groups.push(*desc);
     }
     groups
+}
+
+// ---------------------------------------------------------------------------
+// FileSystemDriver — register with kor_fs at boot
+// ---------------------------------------------------------------------------
+
+/// ext2 filesystem driver singleton.
+///
+/// Register at boot: `kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)`.
+pub struct Ext2Driver;
+pub static EXT2_DRIVER: Ext2Driver = Ext2Driver;
+
+impl kor::FileSystemDriver for Ext2Driver {
+    fn name(&self) -> &'static str { "ext2" }
+    fn mount(&self, device: Option<Arc<dyn kor::BlockDevice>>) -> Result<Arc<dyn kor::SuperBlock>, FsError> {
+        let device = device.ok_or(FsError::InvalidInput)?;
+        let fs: Arc<dyn kor::SuperBlock> = Ext2Fs::open(device)?;
+        Ok(fs)
+    }
 }

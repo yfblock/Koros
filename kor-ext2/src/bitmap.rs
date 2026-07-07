@@ -9,7 +9,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::FsError;
+use kor::FsError;
 
 use super::Ext2Fs;
 

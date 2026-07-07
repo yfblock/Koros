@@ -1,6 +1,6 @@
 //! ext2 superblock definition and parsing.
 
-use crate::FsError;
+use kor::FsError;
 
 /// ext2 magic number identifying a valid superblock.
 const EXT2_MAGIC: u16 = 0xEF53;

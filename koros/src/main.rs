@@ -91,6 +91,10 @@ extern "C" fn kernel_main() -> ! {
 
     // 6. Bootstrap heap (frame buddy's internal BTreeSet needs it).
     heap::init_bootstrap();
+
+    // Register filesystem drivers (ext2, ramfs) — mounted by name later.
+    kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
+    kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
     // 7. Trap vectors.
     kor::arch::current().trap_init();
     // 8. Memory init: capture cmdline, detect regions, clip the kernel image,

@@ -1,8 +1,9 @@
 [package]
-name = "kor-fs"
+name = "kor-ext2"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 kor = { path = "../kor" }
+kor-fs = { path = "../kor-fs" }
 spin = "0.9"

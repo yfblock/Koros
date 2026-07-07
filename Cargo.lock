@@ -81,6 +81,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "kor-ext2"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-fs",
+ "spin",
+]
+
+[[package]]
 name = "kor-frame"
 version = "0.1.0"
 dependencies = [
@@ -93,7 +102,14 @@ name = "kor-fs"
 version = "0.1.0"
 dependencies = [
  "kor",
- "kor-alloc",
+ "spin",
+]
+
+[[package]]
+name = "kor-ramfs"
+version = "0.1.0"
+dependencies = [
+ "kor",
  "spin",
 ]
 
@@ -113,8 +129,10 @@ dependencies = [
  "kor",
  "kor-alloc",
  "kor-arch",
+ "kor-ext2",
  "kor-frame",
  "kor-fs",
+ "kor-ramfs",
  "kor-sched",
  "spin",
  "virtio-drivers",
