@@ -1,0 +1,13 @@
+[package]
+name = "kor-arch"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kor = { path = "../kor" }
+kor-frame = { path = "../kor-frame" }
+cfg-if = "1"
+spin = "0.9"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = "0.15"

@@ -1,9 +1,0 @@
-pub mod boot;
-pub mod context;
-pub mod irq;
-pub mod mm;
-pub mod page_table;
-pub mod plic;
-pub mod smp;
-pub mod time;
-pub mod trap;

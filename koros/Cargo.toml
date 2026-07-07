@@ -8,4 +8,14 @@ name = "koros"
 path = "src/main.rs"
 
 [dependencies]
-koros-core = { path = "../koros-core" }
+kor = { path = "../kor" }
+kor-frame = { path = "../kor-frame" }
+kor-alloc = { path = "../kor-alloc" }
+kor-fs = { path = "../kor-fs" }
+kor-sched = { path = "../kor-sched" }
+kor-arch = { path = "../kor-arch" }
+spin = "0.9"
+virtio-drivers = "0.13.0"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = "0.15"

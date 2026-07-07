@@ -1,0 +1,8 @@
+[package]
+name = "kor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+spin = "0.9"
+fdt = { version = "0.2.0-alpha2", default-features = false }

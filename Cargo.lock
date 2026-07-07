@@ -53,19 +53,69 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8ccfb5c9d9425b2191070f0435636f4a9cdfedd107e33b15f861622b222726a"
 
 [[package]]
-name = "koros"
+name = "kor"
 version = "0.1.0"
 dependencies = [
- "koros-core",
+ "fdt",
+ "spin",
 ]
 
 [[package]]
-name = "koros-core"
+name = "kor-alloc"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-frame",
+ "spin",
+]
+
+[[package]]
+name = "kor-arch"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "kor",
+ "kor-frame",
+ "spin",
+ "x86_64",
+]
+
+[[package]]
+name = "kor-frame"
 version = "0.1.0"
 dependencies = [
  "buddy_system_allocator",
- "cfg-if",
- "fdt",
+ "kor",
+]
+
+[[package]]
+name = "kor-fs"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-alloc",
+ "spin",
+]
+
+[[package]]
+name = "kor-sched"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-alloc",
+ "spin",
+]
+
+[[package]]
+name = "koros"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-alloc",
+ "kor-arch",
+ "kor-frame",
+ "kor-fs",
+ "kor-sched",
  "spin",
  "virtio-drivers",
  "x86_64",
