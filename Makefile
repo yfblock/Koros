@@ -1,7 +1,7 @@
 # Koros Makefile
 # Usage:
 #   make ARCH=riscv64 run                       # boot koros
-#   make ARCH=x86_64  BIN=korhv run             # boot the Type-1 hypervisor
+#   make ARCH=riscv64 BIN=korix run             # boot korix (Linux-compatible)
 #   make ARCH=aarch64 BIN=korhv run
 #   make ARCH=riscv64 CMDLINE="root=/dev/vda loglevel=7" run
 #

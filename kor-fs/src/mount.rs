@@ -96,10 +96,7 @@ impl MountTable {
         // key is a prefix of `canonical`.
         self.table
             .range(..=canonical.clone())
-            .rfind(|(mount_path, _)| {
-                canonical == *mount_path.as_str()
-                    || canonical.starts_with(&format!("{mount_path}/"))
-            })
+            .rfind(|(mount_path, _)| is_mount_prefix(mount_path, &canonical))
             .map(|(_, fs)| Arc::clone(fs))
     }
 
@@ -109,12 +106,27 @@ impl MountTable {
         let canonical = canonicalize_mount_path(path);
         self.table
             .range(..=canonical.clone())
-            .rfind(|(mount_path, _)| {
-                canonical == *mount_path.as_str()
-                    || canonical.starts_with(&format!("{mount_path}/"))
-            })
+            .rfind(|(mount_path, _)| is_mount_prefix(mount_path, &canonical))
             .map(|(mount_path, _)| mount_path.clone())
     }
+}
+
+/// Check whether `mount_path` is a prefix of `canonical` for mount-matching
+/// purposes.
+///
+/// A mount path matches if:
+/// - `canonical` equals `mount_path` exactly, or
+/// - `canonical` starts with `mount_path` and the next character is `/`
+///   (or `mount_path` itself ends with `/`, which only happens for root).
+///
+/// The previous implementation used `format!("{mount_path}/")` which
+/// produced `"//"` for the root mount `/`, causing all non-root paths
+/// to fail prefix matching.
+fn is_mount_prefix(mount_path: &str, canonical: &str) -> bool {
+    canonical == mount_path
+        || canonical.starts_with(mount_path)
+            && (mount_path.ends_with('/')
+                || canonical.as_bytes().get(mount_path.len()) == Some(&b'/'))
 }
 
 impl Default for MountTable {

@@ -134,6 +134,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "korix"
+version = "0.1.0"
+dependencies = [
+ "buddy_system_allocator",
+ "kor",
+ "kor-alloc",
+ "kor-arch",
+ "kor-ext2",
+ "kor-frame",
+ "kor-fs",
+ "kor-ramfs",
+ "spin",
+ "x86_64",
+]
+
+[[package]]
 name = "koros"
 version = "0.1.0"
 dependencies = [
