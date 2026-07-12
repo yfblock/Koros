@@ -1,3 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["kor", "kor-frame", "kor-alloc", "kor-fs", "kor-ext2", "kor-ramfs", "kor-sched", "kor-arch", "koros"]
+members = ["kor", "kor-frame", "kor-alloc", "kor-fs", "kor-ext2", "kor-ramfs", "kor-sched", "kor-arch", "koros", "korhv"]
