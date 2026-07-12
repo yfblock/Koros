@@ -123,6 +123,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "korhv"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-alloc",
+ "kor-frame",
+ "spin",
+ "x86_64",
+]
+
+[[package]]
 name = "koros"
 version = "0.1.0"
 dependencies = [
