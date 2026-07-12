@@ -9,3 +9,7 @@ session-*.md
 /os-images/mount/
 ext2-plan.md
 roadmap.md
+korhv/linux-demo/Image
+korhv/linux-demo/disk*.img
+korhv/linux-demo/virt*.dtb
+korhv/linux-demo/init

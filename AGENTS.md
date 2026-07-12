@@ -17,6 +17,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv6
   - `kor-sched/` — library crate `kor_sched`. **Preemptive multi-core kernel-thread scheduler** + blocking sync primitives (`WaitQueue`, `Semaphore`, `Mutex<T>`, `Channel<T>`).
   - `kor-arch/` — library crate `kor_arch`. **All architecture-specific code**: per-arch `boot`/`trap`/`mm`/`page_table`/`smp`/`time`/`irq`/`context`/`ic`/`console`/`provider` modules under `src/<arch>/`, plus the shared UART drivers. Provides concrete `ArchProvider` impls and `provider()`/`interrupt_controller()`/`console()` selectors.
   - `koros/` — the **binary crate** (`[[bin]] name = "koros"`). The composition root: `kernel_main` init sequence, the `#[global_allocator]`, `#[panic_handler]`, the virtio driver adapter, device/IRQ/block registries, the ext2 self-check, the storage benchmark, and the scheduler demo tasks. Holds `build.rs` + `linker.lds`.
+  - `korhv/` — the **Type-1 hypervisor binary crate** (`[[bin]] name = "korhv"`). A second composition root parallel to `koros`: reuses `kor`/`kor-frame`/`kor-alloc` but enables the hardware virtualization extension instead of bringing up fs/sched/timer. On x86_64 it is **AMD SVM** (VMRUN/#VMEXIT, NPT stage-2, VMMCALL hypercalls); on aarch64 it is **EL2** (ERET to an EL1 guest, HVC hypercalls). Holds its own `build.rs`/`linker.lds` and a per-arch layer under `src/arch/{x86_64,aarch64}/`. Run with `make ARCH=x86_64 BIN=korhv run` or `make ARCH=aarch64 BIN=korhv run`.
 - **Boot → entry resolution:** the boot assembly lives in `kor-arch/src/<arch>/boot*.S` and calls `rust_entry` → `kernel_main` through an `unsafe extern "C" { fn kernel_main() -> !; }` declaration in `kor-arch/src/lib.rs`, resolved at link time against the `koros` binary's `#[no_mangle]` symbol. Secondary CPUs enter via `secondary_entry` (also declared extern in `kor-arch`, defined in `koros`).
 - **Nightly Rust required** — pinned to `nightly-2026-06-19` in `rust-toolchain.toml`. Components: `rust-src`, `clippy`, `rustfmt`, `rust-analyzer`, `llvm-tools-preview`. Targets pre-installed: `riscv64gc-unknown-none-elf`, `x86_64-unknown-none`, `aarch64-unknown-none-softfloat`, `loongarch64-unknown-none`.
 - **`build-std`** — `.cargo/config.toml` (workspace root) compiles `core`, `alloc`, `compiler_builtins` from source with `compiler-builtins-mem`. No `std`. (No rustflags here; x86_64's `-Clink-arg=-no-pie` is set by the Makefile via `RUSTFLAGS`.)
@@ -141,6 +142,22 @@ koros/
   linker.lds              — linker script template
 ```
 
+```
+korhv/                       — Type-1 hypervisor binary crate (parallel to koros)
+  Cargo.toml                — depends on kor / kor-frame / kor-alloc (+ x86_64 crate on x86_64)
+  build.rs / linker.lds     — same template as koros; aarch64 links at 0x40080000 (identity, non-VHE EL2)
+  src/main.rs               — hyp_main: console + provider + heap + frame alloc, then arch::hyp::init/run
+  src/panic.rs / heap.rs    — copies of the koros panic/heap bootstrap
+  src/arch/mod.rs           — cfg-selects x86_64 or aarch64 (other arches compile_error)
+  src/arch/x86_64/          — Multiboot boot, NS16550A console, ArchProvider, IDT, and SVM hyp:
+    hyp.rs                  — EFER.SVME + host save area; VMCB; 3-level NPT (2 MiB identity);
+                              VMRUN/#VMEXIT loop; VMMCALL hypercall (PUTCHAR/EXIT); embedded 32-bit guest
+  src/arch/aarch64/         — EL2 identity boot (TTBR0_EL2), PL011 console, ArchProvider, and EL2 hyp:
+    hyp.rs                  — HCR/VTCR; EL2 vector table; vcpu_enter trampoline (ERET to EL1) + guest-exit
+                              handler; HVC hypercall; embedded AArch64 guest.  (Stage-2/VTTBR is prepared
+                              but currently disabled — see the HCR_EL2_VAL note in hyp.rs.)
+```
+
 ## Entry Flow
 
 Per arch (assembly in `kor-arch/src/<arch>/`): `_start` → **clear BSS at physical addresses** (x86_64 excepted — Multiboot zeroes BSS via `bss_end_addr`) → build boot page tables → enable MMU → jump to high-half VA (loongarch64 skips MMU) → `rust_entry` (boot.rs) → `unsafe { kernel_main() }` (in `koros`).
@@ -174,6 +191,9 @@ Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` 
 | `_start` / `_secondary_start` | asm fn | per-arch `kor-arch/src/<arch>/boot*.S` | CPU entry, page-table setup, MMU, high-half jump; secondary stub |
 | `panic` | fn | `koros/src/panic.rs` | Panic handler — prints + infinite loop |
 | `ext2_test` | fn | `koros/src/ext2_test.rs` | In-kernel ext2-on-virtio functional self-check |
+| `kernel_main` | fn | `korhv/src/main.rs` | Hypervisor entry (binary crate) — boot/heap/frame init, then `arch::hyp::init`/`run` |
+| `hyp::init` / `hyp::run` | fn | `korhv/src/arch/<arch>/hyp.rs` | Enable virt (SVM/EL2); create VM + vCPU, run the VMRUN/ERET + hypercall loop |
+| `svm_vmrun` / `vcpu_enter` | asm fn | `korhv/src/arch/<arch>/hyp.rs` | Enter the guest (VMRUN / ERET) and return on #VMEXIT / guest trap |
 | `ArchProvider` | trait | `kor/src/arch.rs` | Uniform arch abstraction (MM, traps, IRQ, timer, SMP, context switch) |
 | `provider` / `interrupt_controller` / `console` | fn | `kor-arch/src/lib.rs` | Per-arch singletons handed to `kor` registries |
 | `print!` / `println!` | macro | `kor/src/console.rs` | UART output via the `Console` registry (exported as `kor::println!`) |
