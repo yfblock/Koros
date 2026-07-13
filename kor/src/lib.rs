@@ -34,7 +34,8 @@ pub use console::{install_console, putc, Console};
 pub use interrupt::{controller, enable_device_irq, install_controller, InterruptController};
 pub use mapping::{MapError, MapSize, MappingFlags};
 pub use trap_callbacks::{
-    callbacks, dispatch_external, install_callbacks, on_timer, TrapCallbacks,
+    callbacks, dispatch_external, install_callbacks, install_syscall_handler, on_timer,
+    syscall_handler, TrapCallbacks,
 };
 pub use vfs::{FileSystemDriver, FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
 

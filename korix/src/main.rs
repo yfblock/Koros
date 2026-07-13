@@ -11,7 +11,7 @@ mod fs;
 mod heap;
 mod mm;
 mod panic;
-mod syscall;
+pub mod syscall;
 mod user;
 
 use kor::config::{self, Console as ConsoleCfg, PlatformConfig};
@@ -51,6 +51,9 @@ impl kor::TrapCallbacks for KernelTrapCallbacks {
     fn on_timer(&self) {
         kor::time::increment_tick();
         kor::arch::current().handle_tick();
+        // Drain UART RX FIFO into kernel buffer to prevent overflow during user init
+        #[cfg(target_arch = "riscv64")]
+        crate::syscall::rx_fill();
     }
     fn on_external(&self, _irq: u32) {}
 }
@@ -101,9 +104,28 @@ extern "C" fn kernel_main() -> ! {
     crate::arch::probe_devices();
     kor::smp::boot_secondaries();
     crate::fs::init_rootfs();
+
+    // Install syscall handler so ecall from U-mode dispatches to our syscall layer.
+    kor::install_syscall_handler(syscall::dispatch);
+
+    // Split L2 identity mapping so user pages can be mapped in low address space.
+    #[cfg(target_arch = "riscv64")]
+    kor_arch::riscv64::page_table::split_l2_identity();
+
+    // Drain UART RX buffer (leftover bytes from boot).
+    #[cfg(target_arch = "riscv64")]
+    while kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000).is_some() {}
+
+    // Verify rootfs is accessible
+    match crate::fs::list_dir("/") {
+        Ok(entries) => kor::println!("[korix] root / has {} entries", entries.len()),
+        Err(e) => kor::println!("[korix] root / list failed: {:?}", e),
+    }
+
     crate::user::init::spawn_init();
 
-    kor::println!("[korix] init process started, entering idle loop");
+    // If spawn_init returns (e.g., ELF load failed), idle.
+    kor::println!("[korix] init returned, entering idle loop");
     loop {
         kor::arch::current().wait_for_interrupt();
     }

@@ -34,8 +34,7 @@ fn alloc_ino() -> u32 {
 
 /// An in-memory inode.
 ///
-/// Directories populate [`children`]; regular files populate [`content`].
-/// Symlinks and special files are not supported by this implementation.
+/// Directories populate [`children`]; regular files and symlinks populate [`content`].
 struct RamINode {
     /// Inode number (unique per filesystem instance).
     ino: u32,
@@ -94,6 +93,28 @@ impl RamINode {
                 mtime: 0,
                 ctime: 0,
                 file_type: FileType::Regular,
+            }),
+            self_ref: Mutex::new(None),
+            parent: Mutex::new(Some(parent)),
+        });
+        *node.self_ref.lock() = Some(Arc::downgrade(&node));
+        node
+    }
+
+    /// Create a new symlink inode. The target string is stored in `content`.
+    fn new_symlink(parent: Weak<RamINode>, target: &str) -> Arc<Self> {
+        let target_bytes = target.as_bytes().to_vec();
+        let size = target_bytes.len();
+        let node = Arc::new(Self {
+            ino: alloc_ino(),
+            file_type: FileType::Symlink,
+            content: Mutex::new(target_bytes),
+            children: Mutex::new(BTreeMap::new()),
+            metadata: Mutex::new(Metadata {
+                size,
+                mode: 0o777,
+                uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0,
+                file_type: FileType::Symlink,
             }),
             self_ref: Mutex::new(None),
             parent: Mutex::new(Some(parent)),
@@ -279,6 +300,28 @@ impl INode for RamINode {
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    fn symlink(&self, name: &str, target: &str) -> Result<Arc<dyn INode>, FsError> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        let self_weak = self.self_ref.lock().clone().ok_or(FsError::IoError)?;
+        let mut children = self.children.lock();
+        if children.contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+        let child = RamINode::new_symlink(self_weak, target);
+        children.insert(name.to_string(), Arc::clone(&child));
+        Ok(child as Arc<dyn INode>)
+    }
+
+    fn readlink(&self) -> Result<String, FsError> {
+        if self.file_type != FileType::Symlink {
+            return Err(FsError::InvalidInput);
+        }
+        let content = self.content.lock();
+        String::from_utf8(content.clone()).map_err(|_| FsError::IoError)
     }
 }
 

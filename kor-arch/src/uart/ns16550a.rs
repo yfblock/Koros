@@ -4,9 +4,11 @@
 //! only knows the register layout.
 
 // Register offsets (same for MMIO and port-I/O variants).
-const THR: usize = 0; // Transmit Holding Register
+const THR: usize = 0; // Transmit Holding Register (write)
+const RBR: usize = 0; // Receive Buffer Register (read)
 const LSR: usize = 5; // Line Status Register
 const LSR_THRE: u8 = 1 << 5; // Transmit Hold Register Empty
+const LSR_DR: u8 = 1 << 0;   // Data Ready
 
 /// Write one byte to an MMIO-mapped NS16550A at `base`.
 pub fn putchar_mmio(base: usize, c: u8) {
@@ -15,6 +17,20 @@ pub fn putchar_mmio(base: usize, c: u8) {
     unsafe {
         while p.add(LSR).read_volatile() & LSR_THRE == 0 {}
         p.add(THR).write_volatile(c);
+    }
+}
+
+/// Read one byte from an MMIO-mapped NS16550A at `base`.
+/// Returns `None` if no data is available (non-blocking).
+pub fn getchar_mmio(base: usize) -> Option<u8> {
+    let p = base as *mut u8;
+    // SAFETY: `base` is the console UART MMIO region from the platform config.
+    unsafe {
+        if p.add(LSR).read_volatile() & LSR_DR != 0 {
+            Some(p.add(RBR).read_volatile())
+        } else {
+            None
+        }
     }
 }
 

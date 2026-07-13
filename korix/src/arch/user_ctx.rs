@@ -1,67 +1,78 @@
 //! User-mode context management.
-//!
-//! Each user process has a UserContext that tracks:
-//! - Saved registers (for context switch)
-//! - User stack pointer
-//! - User program counter
-//! - Address space (page table root)
-//!
-//! On a context switch, the kernel:
-//! 1. Saves the outgoing process's user registers
-//! 2. Switches to the incoming process's page table
-//! 3. Restores the incoming process's user registers
-//! 4. Returns to user mode (eret / sret / iretq)
 
-#[repr(C)]
 pub struct UserContext {
-    pub regs: [u64; 31],
-    pub sp: u64,
-    pub pc: u64,
-    pub pstate: u64,
+    pub entry: usize,
+    pub sp: usize,
 }
 
 impl UserContext {
-    pub const fn new() -> Self {
-        Self {
-            regs: [0; 31],
-            sp: 0,
-            pc: 0,
-            pstate: 0,
-        }
-    }
-
-    /// Set the entry point and stack for a new user process.
-    pub fn init(&mut self, entry: usize, stack_top: usize) {
-        self.pc = entry as u64;
-        self.sp = stack_top as u64;
-
-        #[cfg(target_arch = "riscv64")]
-        {
-            self.pstate = 0; // User mode, interrupts enabled
-        }
-        #[cfg(target_arch = "aarch64")]
-        {
-            // SPSR: EL0h, interrupts enabled
-            self.pstate = 0x3C5;
-        }
-        #[cfg(target_arch = "x86_64")]
-        {
-            // RFLAGS: interrupts enabled
-            self.pstate = 0x202;
-        }
+    pub fn new(entry: usize, sp: usize) -> Self {
+        Self { entry, sp }
     }
 }
 
-/// Switch to user mode and run the given context.
-///
-/// # Safety
-/// The page table must already be set up for the user process.
-pub unsafe fn enter_user(_ctx: &UserContext) -> ! {
-    // TODO: implement arch-specific user-mode entry
-    // riscv64: sret
-    // aarch64: eret
-    // x86_64: iretq
-    loop {
-        core::hint::spin_loop();
+/// Switch to user mode. Zeros all GP registers (except sp) to prevent
+/// kernel values leaking into user space.
+pub unsafe fn enter_user(ctx: &UserContext) -> ! {
+    #[cfg(target_arch = "riscv64")]
+    {
+        use core::arch::asm;
+
+        asm!(
+            // 1. Save kernel sp to sscratch.
+            "csrw    sscratch, sp",
+            // 2. Set sepc and sp BEFORE zeroing (entry/usp might be in any reg).
+            "csrw    sepc, {entry}",
+            "mv      sp, {usp}",
+            // 3. Zero all GP registers except x0 and sp.
+            "mv      ra, zero",
+            "mv      gp, zero",
+            "mv      tp, zero",
+            "mv      t0, zero",
+            "mv      t1, zero",
+            "mv      t2, zero",
+            "mv      s0, zero",
+            "mv      s1, zero",
+            "mv      a0, zero",
+            "mv      a1, zero",
+            "mv      a2, zero",
+            "mv      a3, zero",
+            "mv      a4, zero",
+            "mv      a5, zero",
+            "mv      a6, zero",
+            "mv      a7, zero",
+            "mv      s2, zero",
+            "mv      s3, zero",
+            "mv      s4, zero",
+            "mv      s5, zero",
+            "mv      s6, zero",
+            "mv      s7, zero",
+            "mv      s8, zero",
+            "mv      s9, zero",
+            "mv      s10, zero",
+            "mv      s11, zero",
+            "mv      t3, zero",
+            "mv      t4, zero",
+            "mv      t5, zero",
+            "mv      t6, zero",
+            // 4. Set SPP=0 (U-mode) and SPIE=1 (interrupts on).
+            "li      {tmp}, (1 << 5)",
+            "csrs    sstatus, {tmp}",
+            "li      {tmp}, (1 << 8)",
+            "csrc    sstatus, {tmp}",
+            // 5. Flush TLB and enter user mode.
+            "sfence.vma",
+            "sret",
+            entry = in(reg) ctx.entry,
+            usp = in(reg) ctx.sp,
+            tmp = out(reg) _,
+        );
+        unreachable!();
+    }
+
+    #[cfg(not(target_arch = "riscv64"))]
+    {
+        let _ = ctx;
+        loop { core::hint::spin_loop(); }
     }
 }

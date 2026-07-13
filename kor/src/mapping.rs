@@ -18,6 +18,14 @@ impl MappingFlags {
     }
 }
 
+impl core::ops::BitOr for MappingFlags {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
 /// Page size for a mapping operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapSize {

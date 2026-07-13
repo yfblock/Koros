@@ -11,13 +11,46 @@ use alloc::vec::Vec;
 use kor::{FsError, INode, FileType};
 use kor_fs::mount;
 
-/// Mount the root filesystem.
+/// Mount the root filesystem and populate it with busybox and standard dirs.
 pub fn init_rootfs() {
     let mounts = &crate::MOUNTS;
     match kor_fs::registry::mount_named(mounts, "ramfs", None, "/") {
         Ok(_) => kor::println!("[korix] mounted ramfs on /"),
-        Err(e) => kor::println!("[korix] ramfs mount failed: {:?}", e),
+        Err(e) => { kor::println!("[korix] ramfs mount failed: {:?}", e); return; }
     }
+
+    // Create standard directories
+    for dir in &["/bin", "/dev", "/proc", "/etc", "/tmp"] {
+        let _ = mkdir(dir);
+    }
+
+    // Write busybox binary to /bin/busybox
+    let busybox: &[u8] = include_bytes!("../../busybox-riscv64");
+    match write_file("/bin/busybox", busybox) {
+        Ok(_) => kor::println!("[korix] /bin/busybox ({} bytes)", busybox.len()),
+        Err(e) => kor::println!("[korix] failed to write /bin/busybox: {:?}", e),
+    }
+
+    // Create symlinks for common applets
+    let applets = [
+        "sh", "ls", "echo", "cat", "date", "true", "false", "pwd",
+        "mkdir", "rmdir", "rm", "cp", "mv", "ln", "head", "tail",
+        "wc", "sort", "uniq", "grep", "sed", "awk", "vi", "env",
+        "id", "whoami", "hostname", "sleep", "test", "[",
+    ];
+    for applet in &applets {
+        if let Ok(root) = resolve("/bin") {
+            let _ = root.symlink(applet, "/bin/busybox");
+        }
+    }
+    // /bin/[ needs special handling — create as regular name
+
+    // Create /etc/passwd and /etc/group for ls/id/whoami
+    let _ = write_file("/etc/passwd", b"root:x:0:0:root:/root:/bin/sh\n");
+    let _ = write_file("/etc/group", b"root:x:0:\n");
+    let _ = mkdir("/root");
+
+    kor::println!("[korix] rootfs ready: /bin/busybox + {} applets", applets.len());
 }
 
 /// Resolve a path to an INode via the mount table.

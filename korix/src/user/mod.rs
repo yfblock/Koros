@@ -10,18 +10,9 @@
 pub mod elf;
 pub mod init;
 
-/// A user process.
+/// A user process (placeholder — full process abstraction TBD).
 pub struct Process {
     pub pid: usize,
-    pub ctx: crate::arch::user_ctx::UserContext,
-    // TODO: page table root, kernel stack, user stack, brk
-}
-
-impl Process {
-    pub fn new() -> Self {
-        Self {
-            pid: 0,
-            ctx: crate::arch::user_ctx::UserContext::new(),
-        }
-    }
+    pub entry: usize,
+    pub sp: usize,
 }

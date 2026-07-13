@@ -34,3 +34,23 @@ pub fn dispatch_external() {
         ic.dispatch_external(cb);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Syscall handler registry (optional — installed by composition layers that
+// support user-mode processes, e.g. korix; koros leaves it unset).
+// ---------------------------------------------------------------------------
+
+/// Signature of a syscall handler: `(nr, args[0..6]) -> ret`.
+pub type SyscallHandler = fn(usize, &[usize]) -> isize;
+
+static SYSCALL_HANDLER: Once<SyscallHandler> = Once::new();
+
+/// Install the syscall handler.  Call once before entering user mode.
+pub fn install_syscall_handler(handler: SyscallHandler) {
+    SYSCALL_HANDLER.call_once(|| handler);
+}
+
+/// The installed syscall handler, or `None` if user mode is not supported.
+pub fn syscall_handler() -> Option<SyscallHandler> {
+    SYSCALL_HANDLER.get().copied()
+}

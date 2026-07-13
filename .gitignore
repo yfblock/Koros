@@ -13,3 +13,4 @@ korhv/linux-demo/Image
 korhv/linux-demo/disk*.img
 korhv/linux-demo/virt*.dtb
 korhv/linux-demo/init
+korix/busybox-riscv64
