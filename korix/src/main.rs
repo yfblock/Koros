@@ -108,13 +108,17 @@ extern "C" fn kernel_main() -> ! {
     // Install syscall handler so ecall from U-mode dispatches to our syscall layer.
     kor::install_syscall_handler(syscall::dispatch);
 
-    // Split L2 identity mapping so user pages can be mapped in low address space.
+    // Split identity mapping so user pages can be mapped in low address space.
     #[cfg(target_arch = "riscv64")]
     kor_arch::riscv64::page_table::split_l2_identity();
+    #[cfg(target_arch = "aarch64")]
+    kor_arch::aarch64::page_table::split_identity_map();
 
     // Drain UART RX buffer (leftover bytes from boot).
     #[cfg(target_arch = "riscv64")]
     while kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000).is_some() {}
+    #[cfg(target_arch = "aarch64")]
+    while kor_arch::uart::pl011::getchar(0x0900_0000).is_some() {}
 
     // Verify rootfs is accessible
     match crate::fs::list_dir("/") {

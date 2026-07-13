@@ -49,7 +49,11 @@ const LOAD_BASE: usize = 0x0001_0000; // 64 KiB
 const PAGE_SIZE: usize = 4096;
 
 /// User stack top (256 GiB — well above any program).
-const USER_STACK_TOP: usize = 0x10_0000_0000;
+// Above identity-mapped region (512 GiB on aarch64, 4 GiB on riscv64)
+    #[cfg(target_arch = "riscv64")]
+    const USER_STACK_TOP: usize = 0x10_0000_0000;
+    #[cfg(target_arch = "aarch64")]
+    const USER_STACK_TOP: usize = 0x80_0000_0000;
 /// User stack size (64 KiB = 16 pages).
 const USER_STACK_SIZE: usize = 64 * 1024;
 
@@ -225,7 +229,10 @@ pub fn load_elf(data: &[u8]) -> Result<LoadedProgram, &'static str> {
     let phnum = ehdr.e_phnum as usize;
     let stack_top = setup_user_stack(entry, phdr_addr, phnum);
 
+    #[cfg(target_arch = "riscv64")]
     unsafe { core::arch::asm!("sfence.vma"); }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { core::arch::asm!("tlbi vmalle1is", "dsb sy", "isb"); }
 
     Ok(LoadedProgram {
         entry,

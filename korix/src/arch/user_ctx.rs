@@ -69,8 +69,60 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
         );
         unreachable!();
     }
+    #[cfg(target_arch = "aarch64")]
+    {
+        use core::arch::asm;
+        // Set ELR_EL1 to entry, SP_EL0 to user sp, SPSR_EL1 to EL0h
+        // SPSR_EL1 for EL0h: M=0 (EL0t), all interrupts unmasked
+        const SPSR_EL0H: usize = 0; // M[3:0]=0 → EL0t
+        asm!(
+            "msr     elr_el1, {entry}",
+            "msr     sp_el0, {usp}",
+            "msr     spsr_el1, {spsr}",
+            // Zero all GP registers
+            "mov     x0, xzr",
+            "mov     x1, xzr",
+            "mov     x2, xzr",
+            "mov     x3, xzr",
+            "mov     x4, xzr",
+            "mov     x5, xzr",
+            "mov     x6, xzr",
+            "mov     x7, xzr",
+            "mov     x8, xzr",
+            "mov     x9, xzr",
+            "mov     x10, xzr",
+            "mov     x11, xzr",
+            "mov     x12, xzr",
+            "mov     x13, xzr",
+            "mov     x14, xzr",
+            "mov     x15, xzr",
+            "mov     x16, xzr",
+            "mov     x17, xzr",
+            "mov     x18, xzr",
+            "mov     x19, xzr",
+            "mov     x20, xzr",
+            "mov     x21, xzr",
+            "mov     x22, xzr",
+            "mov     x23, xzr",
+            "mov     x24, xzr",
+            "mov     x25, xzr",
+            "mov     x26, xzr",
+            "mov     x27, xzr",
+            "mov     x28, xzr",
+            "mov     x29, xzr",
+            "mov     x30, xzr",
+            "tlbi    vmalle1is",
+            "dsb     sy",
+            "isb",
+            "eret",
+            entry = in(reg) ctx.entry,
+            usp = in(reg) ctx.sp,
+            spsr = in(reg) SPSR_EL0H,
+        );
+        unreachable!();
+    }
 
-    #[cfg(not(target_arch = "riscv64"))]
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
     {
         let _ = ctx;
         loop { core::hint::spin_loop(); }

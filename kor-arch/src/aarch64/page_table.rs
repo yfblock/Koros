@@ -29,6 +29,38 @@ pub fn init() {
     }
 }
 
+/// Split L1[0] (first 1 GiB identity-mapped block) into an L2 table
+/// with 512 × 2 MiB blocks, so user pages can be mapped in low address space.
+pub fn split_identity_map() {
+    unsafe {
+        let root = &mut *ROOT.0.get();
+        let l0_table = root.page_slice_mut::<usize>(PTE_NUM);
+        // L0[0] points to L1 table
+        if !is_table(l0_table[0]) {
+            return; // already split or not a table
+        }
+        let l1_pa = pte_address(l0_table[0]);
+        let l1_table = PhysAddr::new(l1_pa).page_slice_mut::<usize>(PTE_NUM);
+        // Check if L1[0] is a 1 GiB block (needs splitting)
+        if !is_block(l1_table[0]) {
+            return; // already split
+        }
+        // Allocate L2 table
+        let l2_paddr = alloc_page().expect("OOM: L2 table");
+        PhysAddr::new(l2_paddr).clear_page();
+        let l2_table = PhysAddr::new(l2_paddr).page_slice_mut::<usize>(PTE_NUM);
+        // Fill L2 with 512 × 2 MiB identity-mapped blocks (no U bit)
+        for i in 0..512 {
+            let pa_2m = i * (2 * 1024 * 1024);
+            l2_table[i] = pa_2m | PTE_VALID | PTE_AF | PTE_ATTR; // block, no U
+        }
+        // Replace L1[0] with table descriptor pointing to L2
+        l1_table[0] = l2_paddr | PTE_VALID | PTE_TABLE;
+        // Flush TLB
+        core::arch::asm!("tlbi vmalle1is", "dsb sy", "isb");
+    }
+}
+
 pub fn dynamic_maps_supported() -> bool {
     true
 }
@@ -80,7 +112,7 @@ fn map_4k(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), M
         let l0 = walk_table(&mut l1, vaddr, 1)?;
         let idx = vaddr.pn_index(0);
         let entry = &mut l0.page_slice_mut::<usize>(PTE_NUM)[idx];
-        if is_valid(*entry) {
+        if is_valid(*entry) && !flags.contains(MappingFlags::U) {
             return Err(MapError::BlockedByExistingMapping);
         }
         *entry = page_pte(paddr.raw(), flags);
@@ -118,14 +150,31 @@ unsafe fn walk_table(
     let idx = vaddr.pn_index(level);
     let entry = &mut parent.page_slice_mut::<usize>(PTE_NUM)[idx];
     if is_valid(*entry) && is_block(*entry) {
-        return Err(MapError::BlockedByExistingMapping);
+        // Split the block into a new table with leaf entries
+        let block_paddr = pte_address(*entry);
+        // Preserve permission flags: AP (6-7), UXN (54), nG (11), AttrIndx (2-4)
+        let perm_flags = *entry & ((1 << 55) | (1 << 11) | (0x3 << 6) | (0x7 << 2));
+        let new_table = alloc_page().ok_or(MapError::OutOfMemory)?;
+        PhysAddr::new(new_table).clear_page();
+        let table = PhysAddr::new(new_table).page_slice_mut::<usize>(PTE_NUM);
+        // Fill with leaf entries covering the block's range
+        let block_size = 1 << (12 + 9 * (level - 1));
+        for i in 0..512 {
+            let pa = block_paddr + i * block_size;
+            if level == 1 {
+                // L3 page (4K) — must have TABLE bit set
+                table[i] = pa | PTE_VALID | PTE_TABLE | PTE_AF | PTE_ATTR | perm_flags;
+            } else {
+                // L2 block (2M) — no TABLE bit
+                table[i] = pa | PTE_VALID | PTE_AF | PTE_ATTR | perm_flags;
+            }
+        }
+        *entry = new_table | PTE_VALID | PTE_TABLE;
     }
     if !is_valid(*entry) {
         let frame = alloc_page().ok_or(MapError::OutOfMemory)?;
         PhysAddr::new(frame).clear_page();
         *entry = table_pte(frame);
-    } else if !is_table(*entry) {
-        return Err(MapError::BlockedByExistingMapping);
     }
     Ok(PhysAddr::new(pte_address(*entry)))
 }

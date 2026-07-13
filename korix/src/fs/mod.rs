@@ -25,7 +25,12 @@ pub fn init_rootfs() {
     }
 
     // Write busybox binary to /bin/busybox
+    #[cfg(target_arch = "riscv64")]
     let busybox: &[u8] = include_bytes!("../../busybox-riscv64");
+    #[cfg(target_arch = "aarch64")]
+    let busybox: &[u8] = include_bytes!("../../busybox-aarch64");
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    let busybox: &[u8] = &[0u8; 0];
     match write_file("/bin/busybox", busybox) {
         Ok(_) => kor::println!("[korix] /bin/busybox ({} bytes)", busybox.len()),
         Err(e) => kor::println!("[korix] failed to write /bin/busybox: {:?}", e),

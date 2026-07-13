@@ -29,68 +29,67 @@ unsafe extern "C" {
 /// Called from assembly with `x0 = &mut TrapFrame, x1 = kind, x2 = source`.
 #[unsafe(no_mangle)]
 extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
-    // IRQ (kind 1): dispatch through the interrupt controller (timer -> tick/
-    // preempt, device sources -> external-interrupt registry).
+    // IRQ (kind 1): dispatch through the interrupt controller.
     if kind == 1 {
         kor::dispatch_external();
         return;
     }
 
-    let esr: u64;
-    let far: u64;
-    unsafe {
-        asm!("mrs {}, esr_el1", out(reg) esr);
-        asm!("mrs {}, far_el1", out(reg) far);
+    // Synchronous exception
+    if kind == 0 {
+        let esr: u64;
+        let far: u64;
+        unsafe {
+            asm!("mrs {}, esr_el1", out(reg) esr);
+            asm!("mrs {}, far_el1", out(reg) far);
+        }
+        let ec = esr >> 26;
+
+        // SVC from AArch64 (EC=0x15) — syscall
+        if ec == 0x15 && source == 2 {
+            if let Some(handler) = kor::trap_callbacks::syscall_handler() {
+                unsafe extern "Rust" {
+                    fn korix_set_current_tf(tf: *mut u8);
+                }
+                unsafe { korix_set_current_tf(tf as *mut TrapFrame as *mut u8); }
+                let nr = tf.regs[8];       // x8 = syscall number
+                let args = [
+                    tf.regs[0],            // x0
+                    tf.regs[1],            // x1
+                    tf.regs[2],            // x2
+                    tf.regs[3],            // x3
+                    tf.regs[4],            // x4
+                    tf.regs[5],            // x5
+                ];
+                let ret = handler(nr, &args);
+                tf.regs[0] = ret as usize;  // x0 = return value
+                tf.elr += 4;                // skip SVC instruction
+                return;
+            }
+        }
+
+        println!("");
+        println!("=== TRAP ===");
+        println!("ESR_EL1 = {:#x} (EC={:#x}, ISS={:#x})", esr, ec, esr & 0xFFFFFF);
+        println!("FAR_EL1 = {:#x}", far);
+        println!("ELR_EL1 = {:#x}", tf.elr);
+        println!("SPSR_EL1 = {:#x}", tf.spsr);
+        panic!("Unhandled trap: EC={:#x}, ELR={:#x}", ec, tf.elr);
     }
-
-    let ec = esr >> 26;
-    let iss = esr & 0x00FF_FFFF;
-
-    let source_name = match source {
-        0 => "CurrentEL SP_EL0",
-        1 => "CurrentEL SP_ELx",
-        2 => "LowerEL AArch64",
-        3 => "LowerEL AArch32",
-        _ => "Unknown",
-    };
-
-    let kind_name = match kind {
-        0 => "Synchronous",
-        1 => "IRQ",
-        2 => "FIQ",
-        3 => "SError",
-        _ => "Unknown",
-    };
 
     println!("");
     println!("=== TRAP ===");
-    println!("Kind:   {} ({})", kind_name, kind);
-    println!("Source: {} ({})", source_name, source);
-    println!("ESR_EL1 = {:#x} (EC={:#06b}, ISS={:#x})", esr, ec, iss);
-    println!("FAR_EL1 = {:#x}", far);
-    println!("ELR_EL1 = {:#x}", tf.elr);
-    println!("SPSR_EL1 = {:#x}", tf.spsr);
-    println!("");
-
-    // Print key registers
-    println!("Register dump:");
-    println!("  x0={:#018x}  x1={:#018x}  x2={:#018x}  x3={:#018x}", tf.regs[0], tf.regs[1], tf.regs[2], tf.regs[3]);
-    println!("  x4={:#018x}  x5={:#018x}  x6={:#018x}  x7={:#018x}", tf.regs[4], tf.regs[5], tf.regs[6], tf.regs[7]);
-    println!("  x8={:#018x}  x9={:#018x} x10={:#018x} x11={:#018x}", tf.regs[8], tf.regs[9], tf.regs[10], tf.regs[11]);
-    println!(" x12={:#018x} x13={:#018x} x14={:#018x} x15={:#018x}", tf.regs[12], tf.regs[13], tf.regs[14], tf.regs[15]);
-    println!(" x16={:#018x} x17={:#018x} x18={:#018x} x19={:#018x}", tf.regs[16], tf.regs[17], tf.regs[18], tf.regs[19]);
-    println!(" x20={:#018x} x21={:#018x} x22={:#018x} x23={:#018x}", tf.regs[20], tf.regs[21], tf.regs[22], tf.regs[23]);
-    println!(" x24={:#018x} x25={:#018x} x26={:#018x} x27={:#018x}", tf.regs[24], tf.regs[25], tf.regs[26], tf.regs[27]);
-    println!(" x28={:#018x} x29={:#018x} x30={:#018x}", tf.regs[28], tf.regs[29], tf.regs[30]);
-    println!(" sp={:#018x}  tpidr={:#018x}", tf.sp, tf.tpidr);
-
+    println!("kind={} source={}", kind, source);
     panic!("Unhandled trap");
 }
 
-/// Install the trap handler: set `VBAR_EL1` to `exception_vector_base`.
+/// Install the trap handler: set `VBAR_EL1` and enable FPSIMD.
 pub fn init() {
     unsafe {
-        asm!("msr vbar_el1, {}", in(reg) exception_vector_base as *const () as u64);
+        // Enable FPSIMD/NEON access for EL0 and EL1 (FPEN=0b11)
+        asm!("msr cpacr_el1, {0}", in(reg) 0x300000u64);
+        asm!("isb");
+        asm!("msr vbar_el1, {0}", in(reg) exception_vector_base as *const () as u64);
     }
     println!("trap: VBAR_EL1 set to {:#x}", exception_vector_base as *const () as usize);
 }

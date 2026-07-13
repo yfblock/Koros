@@ -92,9 +92,10 @@ pub static RX_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 
 pub fn rx_fill() {
     let mut buf = RX_BUF.lock();
-    while let Some(b) = kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000) {
-        buf.push(b);
-    }
+    #[cfg(target_arch = "riscv64")]
+    while let Some(b) = kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000) { buf.push(b); }
+    #[cfg(target_arch = "aarch64")]
+    while let Some(b) = kor_arch::uart::pl011::getchar(0x0900_0000) { buf.push(b); }
 }
 
 fn rx_get() -> Option<u8> {
@@ -165,7 +166,9 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_FCNTL => 0,
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
-        SYS_CLONE => sys_clone(),
+        SYS_CLONE => {
+            if cfg!(target_arch = "aarch64") { -38 } else { sys_clone() }
+        },
         SYS_EXECVE => 0, // standalone mode: no-op (applet runs directly)
         SYS_WAIT4 => {
             // Only return child PID once, then ECHILD
@@ -341,11 +344,11 @@ fn sys_clone() -> isize {
         // Allocate a separate child stack and copy parent's stack content
         let arch = kor::arch::current();
         let parent_sp = (*tf)[2]; // user sp
-        const CHILD_STACK_TOP: usize = 0x20_0100_0000;
         const CHILD_STACK_SIZE: usize = 64 * 1024;
-        let child_stack_base = CHILD_STACK_TOP - CHILD_STACK_SIZE;
+        let child_stack_top = 0x20_0100_0000usize; // fixed address above user stack
+        let child_stack_base = child_stack_top - CHILD_STACK_SIZE;
         let map_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
-        for vaddr in (child_stack_base..CHILD_STACK_TOP).step_by(4096) {
+        for vaddr in (child_stack_base..child_stack_top).step_by(4096) {
             if arch.translate(vaddr).is_none() {
                 if let Some(paddr) = kor_frame::alloc_page() {
                     let _ = arch.map(vaddr, paddr, map_flags, kor::MapSize::Page4K);
@@ -355,7 +358,7 @@ fn sys_clone() -> isize {
             }
         }
         // Copy parent's stack to child's stack (page by page for speed)
-        let child_sp = CHILD_STACK_TOP - (0x10_0000_0000 - parent_sp);
+        let child_sp = child_stack_top - (0x10_0000_0000 - parent_sp);
         let copy_size = 0x10_0000_0000 - parent_sp; // from sp to stack top
         let copy_size = copy_size.min(4096 * 8); // limit to 8 pages (32 KiB)
         let mut copied = 0usize;
@@ -393,11 +396,16 @@ fn sys_getpid() -> isize {
 }
 
 static BRK_CURRENT: Mutex<usize> = Mutex::new(0);
+#[cfg(target_arch = "riscv64")]
 static MMAP_NEXT: Mutex<usize> = Mutex::new(0x20_0000_0000);
+#[cfg(target_arch = "aarch64")]
+static MMAP_NEXT: Mutex<usize> = Mutex::new(0x80_0000_0000);
 
 fn sys_brk(addr: usize) -> isize {
     let mut brk = BRK_CURRENT.lock();
-    if *brk == 0 { *brk = 0x1_0001_0000; }
+    if *brk == 0 {
+        *brk = if cfg!(target_arch = "aarch64") { 0x80_0100_0000 } else { 0x1_0001_0000 };
+    }
     if addr == 0 { return *brk as isize; }
     let old = *brk;
     if addr > old {
@@ -421,12 +429,15 @@ fn sys_brk(addr: usize) -> isize {
 }
 
 fn sys_uname(buf: usize) -> isize {
-    let names = [
+    let machine = if cfg!(target_arch = "riscv64") { "riscv64" }
+        else if cfg!(target_arch = "aarch64") { "aarch64" }
+        else { "x86_64" };
+    let names: [&str; 6] = [
         "korix\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
         "localhost\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
         "6.12.0-korix\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
         "#1 SMP korix\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
-        "aarch64\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+        machine,
         "(none)\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     ];
     for (i, name) in names.iter().enumerate() {
