@@ -68,6 +68,13 @@ pub const SYS_WRITEV: usize = 66;
 pub const SYS_READV: usize = 65;
 pub const SYS_MPROTECT: usize = 226;
 
+// Physical RAM start — used to distinguish user pages from identity-mapped kernel pages.
+#[cfg(target_arch = "riscv64")]
+pub const RAM_START: usize = 0x8000_0000;
+#[cfg(target_arch = "aarch64")]
+pub const RAM_START: usize = 0x4000_0000;
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+pub const RAM_START: usize = 0x8000_0000;
 /// Dispatch a syscall.
 /// `num` is the syscall number, `args` is up to 6 arguments.
 /// Returns the syscall result (positive = success, negative = -errno).
@@ -216,6 +223,19 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         3 => 0,   // io_cancel → no-op
         0 => -38, // io_setup → ENOSYS (no async I/O support)
         2 => -2,  // open (legacy)
+        293 => 0, // rseq → success (no-op, musl falls back gracefully)
+        261 => {   // prlimit64 → return default limits
+            if args[3] != 0 {
+                let kptr = user_to_kernel(args[3]);
+                if kptr != 0 {
+                    // struct rlimit { rlim_cur, rlim_max } — 16 bytes
+                    let rlim = unsafe { core::slice::from_raw_parts_mut(kptr as *mut u64, 2) };
+                    rlim[0] = u64::MAX; // rlim_cur = unlimited
+                    rlim[1] = u64::MAX; // rlim_max = unlimited
+                }
+            }
+            0
+        },
         _ => -38, // ENOSYS
         }
 }
@@ -459,7 +479,7 @@ fn sys_brk(addr: usize) -> isize {
         let pe = (addr + 4095) & !4095;
         let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
         for vaddr in (ps..pe).step_by(4096) {
-            let need = match arch.translate(vaddr) { Some(p) => p < 0x8000_0000, None => true };
+            let need = match arch.translate(vaddr) { Some(p) => p < RAM_START, None => true };
             if need {
                 if let Some(paddr) = kor_frame::alloc_page() {
                     let _ = arch.map(vaddr, paddr, flags, kor::MapSize::Page4K);
@@ -740,7 +760,7 @@ fn sys_mmap(_addr: usize, mut len: usize, _prot: usize, flags: usize, _fd: usize
     let page_end = (page_start + len + 4095) & !4095;
     let map_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
     for vaddr in (page_start..page_end).step_by(4096) {
-        let need = match kor::arch::current().translate(vaddr) { Some(p) => p < 0x8000_0000, None => true };
+        let need = match kor::arch::current().translate(vaddr) { Some(p) => p < RAM_START, None => true };
         if need {
             let arch = kor::arch::current();
             if let Some(paddr) = kor_frame::alloc_page() {

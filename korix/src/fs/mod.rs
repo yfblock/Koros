@@ -53,6 +53,7 @@ pub fn init_rootfs() {
     // Create /etc/passwd and /etc/group for ls/id/whoami
     let _ = write_file("/etc/passwd", b"root:x:0:0:root:/root:/bin/sh\n");
     let _ = write_file("/etc/group", b"root:x:0:\n");
+    let _ = write_file("/etc/hostname", b"korix\n");
     let _ = mkdir("/root");
 
     kor::println!("[korix] rootfs ready: /bin/busybox + {} applets", applets.len());

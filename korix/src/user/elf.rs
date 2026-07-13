@@ -75,6 +75,11 @@ pub fn is_elf(data: &[u8]) -> bool {
 /// are not RAM — they must not be reused for user segments.
 fn is_user_page(arch: &dyn kor::ArchProvider, vaddr: usize) -> bool {
     match arch.translate(vaddr) {
+        #[cfg(target_arch = "riscv64")]
+        Some(paddr) => paddr >= 0x8000_0000,
+        #[cfg(target_arch = "aarch64")]
+        Some(paddr) => paddr >= 0x4000_0000,
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
         Some(paddr) => paddr >= 0x8000_0000,
         None => false,
     }
