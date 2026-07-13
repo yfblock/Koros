@@ -126,7 +126,8 @@ fn rx_has_data() -> bool {
 static FORK_REGS: Mutex<Option<[usize; 32]>> = Mutex::new(None);
 static FORK_SEPC: Mutex<usize> = Mutex::new(0);
 static FORK_SSTATUS: Mutex<usize> = Mutex::new(0);
-static CHILD_EXIT_CODE: Mutex<i32> = Mutex::new(0);
+static FORK_TPIDR: Mutex<usize> = Mutex::new(0); // aarch64 TPIDR_EL0
+static CHILD_EXIT_CODE: Mutex<i32> = Mutex::new(-1);
 static FORK_ACTIVE: Mutex<bool> = Mutex::new(false);
 
 // Saved state for parent restoration after execve
@@ -393,6 +394,9 @@ fn sys_exit_fork(code: usize) -> isize {
                     {
                         let tf_sp = (CURRENT_TF as *mut u8).add(31 * 8) as *mut usize;
                         *tf_sp = regs[31];
+                        // Restore TPIDR_EL0 (at offset 34*8)
+                        let tf_tpidr = (CURRENT_TF as *mut u8).add(34 * 8) as *mut usize;
+                        *tf_tpidr = *FORK_TPIDR.lock();
                     }
                     // PC at offset 32*8 (sepc on riscv64, elr on aarch64)
                     let tf_pc = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
@@ -433,7 +437,9 @@ fn sys_clone() -> isize {
         let real_status = *((CURRENT_TF as *const u8).add(33 * 8) as *const usize);
         *FORK_SEPC.lock() = real_pc;
         *FORK_SSTATUS.lock() = real_status;
-
+        // On aarch64, also save TPIDR_EL0 (at offset 34*8)
+        #[cfg(target_arch = "aarch64")]
+        { *FORK_TPIDR.lock() = *((CURRENT_TF as *const u8).add(34 * 8) as *const usize); }
         // Get parent SP
         #[cfg(target_arch = "riscv64")]
         let parent_sp = *tf.add(2); // x2 = sp
@@ -669,6 +675,8 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
                 *tf_elr = entry;
                 let tf_spsr = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
                 *tf_spsr = 0; // EL0t
+                let tf_tpidr = (CURRENT_TF as *mut u8).add(34 * 8) as *mut usize;
+                *tf_tpidr = 0; // Clear TPIDR_EL0 so child reinitializes TLS
             }
         }
     }
