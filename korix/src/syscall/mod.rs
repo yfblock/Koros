@@ -130,7 +130,7 @@ static CHILD_EXIT_CODE: Mutex<i32> = Mutex::new(0);
 static FORK_ACTIVE: Mutex<bool> = Mutex::new(false);
 
 // Saved state for parent restoration after execve
-static SAVED_DATA_PAGES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static SAVED_DATA_CONTENT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 static SAVED_BRK: Mutex<usize> = Mutex::new(0);
 static SAVED_MMAP_NEXT: Mutex<usize> = Mutex::new(0);
 pub static mut CURRENT_TF: *mut u8 = core::ptr::null_mut();
@@ -347,16 +347,24 @@ fn sys_exit_fork(code: usize) -> isize {
         let saved_pc = *FORK_SEPC.lock();
         let saved_status = *FORK_SSTATUS.lock();
         *FORK_ACTIVE.lock() = false;
-        // Restore data segment pages saved by execve
-        let saved_pages = SAVED_DATA_PAGES.lock().drain(..).collect::<Vec<_>>();
-        if !saved_pages.is_empty() {
+        // Restore data segment content via memcpy
+        let saved = SAVED_DATA_CONTENT.lock();
+        if !saved.is_empty() {
             let arch = kor::arch::current();
             let ps = *crate::user::elf::DATA_SEG_PAGE_START.lock();
             let pe = *crate::user::elf::DATA_SEG_PAGE_END.lock();
-            let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
-            for (i, vaddr) in (ps..pe).step_by(4096).enumerate() {
-                if i < saved_pages.len() {
-                    let _ = arch.map(vaddr, saved_pages[i], flags, kor::MapSize::Page4K);
+            let mut offset = 0usize;
+            for vaddr in (ps..pe).step_by(4096) {
+                if offset + 4096 <= saved.len() {
+                    if let Some(paddr) = arch.translate(vaddr) {
+                        let kv = arch.phys_to_virt(paddr);
+                        unsafe {
+                            core::ptr::copy_nonoverlapping(
+                                saved.as_ptr().add(offset), kv as *mut u8, 4096,
+                            );
+                        }
+                    }
+                    offset += 4096;
                 }
             }
             #[cfg(target_arch = "riscv64")]
@@ -364,6 +372,8 @@ fn sys_exit_fork(code: usize) -> isize {
             #[cfg(target_arch = "aarch64")]
             unsafe { core::arch::asm!("tlbi vmalle1is", "dsb sy", "isb"); }
         }
+        drop(saved);
+        SAVED_DATA_CONTENT.lock().clear();
         // Restore brk and mmap_next for parent
         *BRK_CURRENT.lock() = *SAVED_BRK.lock();
         *MMAP_NEXT.lock() = *SAVED_MMAP_NEXT.lock();
@@ -515,38 +525,38 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
     let ds_ps = *crate::user::elf::DATA_SEG_PAGE_START.lock();
     let ds_pe = *crate::user::elf::DATA_SEG_PAGE_END.lock();
     if ds_ps != 0 && ds_pe != 0 {
-        // Save current data segment physical pages
-        let mut saved = SAVED_DATA_PAGES.lock();
-        saved.clear();
+        // Save current data segment content
+        let mut saved_buf: Vec<u8> = Vec::new();
         for vaddr in (ds_ps..ds_pe).step_by(4096) {
             if let Some(paddr) = arch.translate(vaddr) {
-                saved.push(paddr);
+                let kv = arch.phys_to_virt(paddr);
+                unsafe { saved_buf.extend_from_slice(core::slice::from_raw_parts(kv as *const u8, 4096)); }
             }
         }
+        *SAVED_DATA_CONTENT.lock() = saved_buf;
         // Save and reset brk/mmap so child gets fresh heap
         *SAVED_BRK.lock() = *BRK_CURRENT.lock();
         *SAVED_MMAP_NEXT.lock() = *MMAP_NEXT.lock();
-        *BRK_CURRENT.lock() = 0; // will be set to child-specific value below
+        *BRK_CURRENT.lock() = 0;
         #[cfg(target_arch = "riscv64")]
-        { *BRK_CURRENT.lock() = 0x2_0001_0000; *MMAP_NEXT.lock() = 0x30_0000_0000; } // within Sv39 256GiB
+        { *BRK_CURRENT.lock() = 0x2_0001_0000; *MMAP_NEXT.lock() = 0x30_0000_0000; }
         #[cfg(target_arch = "aarch64")]
         { *BRK_CURRENT.lock() = 0x80_0400_0000; *MMAP_NEXT.lock() = 0x80_0300_0000; }
-        // Reload data segment from ELF binary
+        // Reload data segment in place (overwrite existing pages, no remap)
         let elf = crate::user::elf::ELF_BINARY.lock();
         if let Some(elf_data) = elf.as_ref() {
             let ds_vaddr = *crate::user::elf::DATA_SEG_VADDR.lock();
             let ds_file_off = *crate::user::elf::DATA_SEG_FILE_OFFSET.lock();
             let ds_filesz = *crate::user::elf::DATA_SEG_FILESZ.lock();
             let ds_memsz = *crate::user::elf::DATA_SEG_MEMSZ.lock();
-            let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
             for vaddr in (ds_ps..ds_pe).step_by(4096) {
-                if let Some(paddr) = kor_frame::alloc_page() {
-                    let _ = arch.map(vaddr, paddr, flags, kor::MapSize::Page4K);
+                if let Some(paddr) = arch.translate(vaddr) {
                     let kv = arch.phys_to_virt(paddr);
+                    // Zero the page first
                     unsafe { core::ptr::write_bytes(kv as *mut u8, 0, 4096); }
-                    // Copy file data into this page at the correct offset
-                    let page_seg_off = ds_vaddr.saturating_sub(vaddr); // segment start within page
-                    let file_seg_off = vaddr.saturating_sub(ds_vaddr); // page offset within segment
+                    // Copy file data at the correct offset within the page
+                    let page_seg_off = ds_vaddr.saturating_sub(vaddr);
+                    let file_seg_off = vaddr.saturating_sub(ds_vaddr);
                     if file_seg_off < ds_filesz {
                         let copy_start = ds_file_off + file_seg_off;
                         let copy_len = core::cmp::min(4096 - page_seg_off, ds_filesz - file_seg_off);
