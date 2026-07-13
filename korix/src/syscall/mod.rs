@@ -129,8 +129,16 @@ static FORK_SSTATUS: Mutex<usize> = Mutex::new(0);
 static CHILD_EXIT_CODE: Mutex<i32> = Mutex::new(0);
 static FORK_ACTIVE: Mutex<bool> = Mutex::new(false);
 
+// Saved state for parent restoration after execve
+static SAVED_DATA_PAGES: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+static SAVED_BRK: Mutex<usize> = Mutex::new(0);
+static SAVED_MMAP_NEXT: Mutex<usize> = Mutex::new(0);
 pub static mut CURRENT_TF: *mut u8 = core::ptr::null_mut();
-// Fork context: saved registers for parent process
+
+// Exec info: stored at ELF load time, used by sys_execve
+pub static ENTRY_POINT: Mutex<usize> = Mutex::new(0);
+pub static PHDR_ADDR: Mutex<usize> = Mutex::new(0);
+pub static PHNUM: Mutex<usize> = Mutex::new(0);
 
 pub fn dispatch(num: usize, args: &[usize]) -> isize {
     dispatch_inner(num, args)
@@ -174,7 +182,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
         SYS_CLONE => sys_clone(),
-        SYS_EXECVE => 0, // standalone mode: no-op (applet runs directly)
+        SYS_EXECVE => sys_execve(args[0], args[1]),
         SYS_WAIT4 => {
             // Only return child PID once, then ECHILD
             let fork_was_active = *FORK_ACTIVE.lock();
@@ -339,6 +347,26 @@ fn sys_exit_fork(code: usize) -> isize {
         let saved_pc = *FORK_SEPC.lock();
         let saved_status = *FORK_SSTATUS.lock();
         *FORK_ACTIVE.lock() = false;
+        // Restore data segment pages saved by execve
+        let saved_pages = SAVED_DATA_PAGES.lock().drain(..).collect::<Vec<_>>();
+        if !saved_pages.is_empty() {
+            let arch = kor::arch::current();
+            let ps = *crate::user::elf::DATA_SEG_PAGE_START.lock();
+            let pe = *crate::user::elf::DATA_SEG_PAGE_END.lock();
+            let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
+            for (i, vaddr) in (ps..pe).step_by(4096).enumerate() {
+                if i < saved_pages.len() {
+                    let _ = arch.map(vaddr, saved_pages[i], flags, kor::MapSize::Page4K);
+                }
+            }
+            #[cfg(target_arch = "riscv64")]
+            unsafe { core::arch::asm!("sfence.vma"); }
+            #[cfg(target_arch = "aarch64")]
+            unsafe { core::arch::asm!("tlbi vmalle1is", "dsb sy", "isb"); }
+        }
+        // Restore brk and mmap_next for parent
+        *BRK_CURRENT.lock() = *SAVED_BRK.lock();
+        *MMAP_NEXT.lock() = *SAVED_MMAP_NEXT.lock();
         if let Some(regs) = regs {
             unsafe {
                 if !CURRENT_TF.is_null() {
@@ -456,6 +484,193 @@ fn sys_clone() -> isize {
     0
 }
 
+fn sys_execve(filename: usize, argv: usize) -> isize {
+    let entry = *ENTRY_POINT.lock();
+    if entry == 0 { return -2; }
+
+    // Read argv from user space
+    let mut args_vec: Vec<String> = Vec::new();
+    if argv != 0 {
+        for i in 0..16 {
+            let ptr_addr = user_to_kernel(argv + i * 8);
+            if ptr_addr == 0 { break; }
+            let ptr = unsafe { *(ptr_addr as *const usize) };
+            if ptr == 0 { break; }
+            if let Some(s) = user_to_str(ptr, 256) {
+                args_vec.push(s);
+            } else { break; }
+        }
+    }
+    if args_vec.is_empty() {
+        if let Some(s) = user_to_str(filename, 256) {
+            args_vec.push(s);
+        } else {
+            args_vec.push(String::from("/bin/sh"));
+        }
+    }
+
+    let arch = kor::arch::current();
+
+    // Save and reload the data segment so the child gets fresh musl state
+    let ds_ps = *crate::user::elf::DATA_SEG_PAGE_START.lock();
+    let ds_pe = *crate::user::elf::DATA_SEG_PAGE_END.lock();
+    if ds_ps != 0 && ds_pe != 0 {
+        // Save current data segment physical pages
+        let mut saved = SAVED_DATA_PAGES.lock();
+        saved.clear();
+        for vaddr in (ds_ps..ds_pe).step_by(4096) {
+            if let Some(paddr) = arch.translate(vaddr) {
+                saved.push(paddr);
+            }
+        }
+        // Save and reset brk/mmap so child gets fresh heap
+        *SAVED_BRK.lock() = *BRK_CURRENT.lock();
+        *SAVED_MMAP_NEXT.lock() = *MMAP_NEXT.lock();
+        *BRK_CURRENT.lock() = 0; // will be set to child-specific value below
+        #[cfg(target_arch = "riscv64")]
+        { *BRK_CURRENT.lock() = 0x2_0001_0000; *MMAP_NEXT.lock() = 0x30_0000_0000; } // within Sv39 256GiB
+        #[cfg(target_arch = "aarch64")]
+        { *BRK_CURRENT.lock() = 0x80_0400_0000; *MMAP_NEXT.lock() = 0x80_0300_0000; }
+        // Reload data segment from ELF binary
+        let elf = crate::user::elf::ELF_BINARY.lock();
+        if let Some(elf_data) = elf.as_ref() {
+            let ds_vaddr = *crate::user::elf::DATA_SEG_VADDR.lock();
+            let ds_file_off = *crate::user::elf::DATA_SEG_FILE_OFFSET.lock();
+            let ds_filesz = *crate::user::elf::DATA_SEG_FILESZ.lock();
+            let ds_memsz = *crate::user::elf::DATA_SEG_MEMSZ.lock();
+            let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
+            for vaddr in (ds_ps..ds_pe).step_by(4096) {
+                if let Some(paddr) = kor_frame::alloc_page() {
+                    let _ = arch.map(vaddr, paddr, flags, kor::MapSize::Page4K);
+                    let kv = arch.phys_to_virt(paddr);
+                    unsafe { core::ptr::write_bytes(kv as *mut u8, 0, 4096); }
+                    // Copy file data into this page at the correct offset
+                    let page_seg_off = ds_vaddr.saturating_sub(vaddr); // segment start within page
+                    let file_seg_off = vaddr.saturating_sub(ds_vaddr); // page offset within segment
+                    if file_seg_off < ds_filesz {
+                        let copy_start = ds_file_off + file_seg_off;
+                        let copy_len = core::cmp::min(4096 - page_seg_off, ds_filesz - file_seg_off);
+                        if copy_start + copy_len <= elf_data.len() {
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    elf_data[copy_start..copy_start + copy_len].as_ptr(),
+                                    (kv + page_seg_off) as *mut u8, copy_len,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Allocate a new stack for the execved program
+    #[cfg(target_arch = "riscv64")]
+    let exec_stack_top = 0x30_0000_0000usize;
+    #[cfg(target_arch = "aarch64")]
+    let exec_stack_top = 0x80_0200_0000usize;
+    let exec_stack_size = 64 * 1024;
+    let exec_stack_base = exec_stack_top - exec_stack_size;
+    let map_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
+    for vaddr in (exec_stack_base..exec_stack_top).step_by(4096) {
+        if arch.translate(vaddr).is_none() {
+            if let Some(paddr) = kor_frame::alloc_page() {
+                let _ = arch.map(vaddr, paddr, map_flags, kor::MapSize::Page4K);
+                let kv = arch.phys_to_virt(paddr);
+                unsafe { core::ptr::write_bytes(kv as *mut u8, 0, 4096); }
+            }
+        }
+    }
+
+    let phdr_addr = *PHDR_ADDR.lock();
+    let phnum = *PHNUM.lock();
+
+    // Build the stack: strings first, then argc/argv/envp/auxv array
+    let mut sp = exec_stack_top;
+    sp -= 16; sp &= !0xF;
+    let random_off = sp;
+    let rand_bytes: [u8; 16] = [0x42; 16];
+    let pa = arch.translate(random_off).expect("exec: stack");
+    unsafe { core::ptr::copy_nonoverlapping(&rand_bytes[0], arch.phys_to_virt(pa) as *mut u8, 16); }
+
+    let env0 = b"PATH=/bin\0";
+    sp -= env0.len(); sp &= !0xF;
+    let env0_off = sp;
+    let pa = arch.translate(env0_off).expect("exec: stack");
+    unsafe { core::ptr::copy_nonoverlapping(env0.as_ptr(), arch.phys_to_virt(pa) as *mut u8, env0.len()); }
+
+    let mut arg_offsets: Vec<usize> = Vec::new();
+    for arg in args_vec.iter().rev() {
+        let mut s = arg.as_bytes().to_vec();
+        s.push(0);
+        sp -= s.len(); sp &= !0xF;
+        arg_offsets.push(sp);
+        let pa = arch.translate(sp).expect("exec: stack");
+        unsafe { core::ptr::copy_nonoverlapping(s.as_ptr(), arch.phys_to_virt(pa) as *mut u8, s.len()); }
+    }
+    arg_offsets.reverse();
+
+    let argc = arg_offsets.len();
+    let array_size = (1 + argc + 1 + 2 + 14) * 8;
+    sp -= array_size; sp &= !0xF;
+    let array_base = sp;
+
+    let write_u = |off: usize, val: usize| {
+        let pa = arch.translate(off).expect("exec: stack");
+        unsafe { *(arch.phys_to_virt(pa) as *mut usize) = val; }
+    };
+    let mut i = 0;
+    write_u(array_base + i * 8, argc); i += 1;
+    for &off in &arg_offsets { write_u(array_base + i * 8, off); i += 1; }
+    write_u(array_base + i * 8, 0); i += 1;
+    write_u(array_base + i * 8, env0_off); i += 1;
+    write_u(array_base + i * 8, 0); i += 1;
+    const AT_NULL: usize = 0; const AT_PHDR: usize = 3; const AT_PHNUM: usize = 5;
+    const AT_PAGESZ: usize = 6; const AT_BASE: usize = 7; const AT_ENTRY: usize = 9;
+    const AT_RANDOM: usize = 25;
+    write_u(array_base + i * 8, AT_PHDR);   i += 1; write_u(array_base + i * 8, phdr_addr);  i += 1;
+    write_u(array_base + i * 8, AT_PHNUM);  i += 1; write_u(array_base + i * 8, phnum);      i += 1;
+    write_u(array_base + i * 8, AT_PAGESZ); i += 1; write_u(array_base + i * 8, 4096);       i += 1;
+    write_u(array_base + i * 8, AT_BASE);   i += 1; write_u(array_base + i * 8, 0);          i += 1;
+    write_u(array_base + i * 8, AT_ENTRY);  i += 1; write_u(array_base + i * 8, entry);      i += 1;
+    write_u(array_base + i * 8, AT_RANDOM); i += 1; write_u(array_base + i * 8, random_off); i += 1;
+    write_u(array_base + i * 8, AT_NULL);   i += 1; write_u(array_base + i * 8, 0);          i += 1;
+
+    // Modify TrapFrame: zero regs, set SP and PC
+    unsafe {
+        if !CURRENT_TF.is_null() {
+            #[cfg(target_arch = "riscv64")]
+            {
+                let tf = CURRENT_TF as *mut usize;
+                for j in 0..32 { *tf.add(j) = 0; }
+                *tf.add(2) = array_base;
+                let tf_sstatus = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
+                *tf_sstatus = (1 << 5) | (1 << 13); // SPIE + FS=initial
+                let tf_sepc = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
+                *tf_sepc = entry;
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                let tf = CURRENT_TF as *mut usize;
+                for j in 0..31 { *tf.add(j) = 0; }
+                let tf_sp = (CURRENT_TF as *mut u8).add(31 * 8) as *mut usize;
+                *tf_sp = array_base;
+                let tf_elr = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
+                *tf_elr = entry;
+                let tf_spsr = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
+                *tf_spsr = 0; // EL0t
+            }
+        }
+    }
+
+    #[cfg(target_arch = "riscv64")]
+    unsafe { core::arch::asm!("sfence.vma"); }
+    #[cfg(target_arch = "aarch64")]
+    unsafe { core::arch::asm!("tlbi vmalle1is", "dsb sy", "isb"); }
+
+    0
+}
+
 fn sys_getpid() -> isize {
     current_pid() as isize
 }
@@ -485,6 +700,9 @@ fn sys_brk(addr: usize) -> isize {
                     let _ = arch.map(vaddr, paddr, flags, kor::MapSize::Page4K);
                     let kv = arch.phys_to_virt(paddr);
                     unsafe { core::ptr::write_bytes(kv as *mut u8, 0, 4096); }
+                } else {
+                    // Out of memory — don't advance brk past unmapped pages
+                    return *brk as isize;
                 }
             }
         }

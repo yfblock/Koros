@@ -39,7 +39,8 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
                         tf.regs[13], tf.regs[14], tf.regs[15]];
             let ret = handler(nr, &args);
             tf.regs[10] = ret as usize;
-            tf.sepc += 4;
+            // After execve (221), sepc is set to entry point — don't skip ecall.
+            if nr != 221 { tf.sepc += 4; }
             return;
         }
     }

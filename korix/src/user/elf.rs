@@ -63,6 +63,18 @@ pub struct LoadedProgram {
     pub stack_top: usize,
 }
 
+// Stored ELF binary data for execve (reload data segment)
+use alloc::sync::Arc;
+use spin::Mutex;
+pub static ELF_BINARY: Mutex<Option<Arc<Vec<u8>>>> = Mutex::new(None);
+
+// Data segment info for execve reload
+pub static DATA_SEG_VADDR: Mutex<usize> = Mutex::new(0);
+pub static DATA_SEG_PAGE_START: Mutex<usize> = Mutex::new(0);
+pub static DATA_SEG_PAGE_END: Mutex<usize> = Mutex::new(0);
+pub static DATA_SEG_FILE_OFFSET: Mutex<usize> = Mutex::new(0);
+pub static DATA_SEG_FILESZ: Mutex<usize> = Mutex::new(0);
+pub static DATA_SEG_MEMSZ: Mutex<usize> = Mutex::new(0);
 /// Check if a buffer is a valid ELF64 binary.
 pub fn is_elf(data: &[u8]) -> bool {
     data.len() >= 4 && &data[0..4] == b"\x7fELF"
@@ -234,6 +246,32 @@ pub fn load_elf(data: &[u8]) -> Result<LoadedProgram, &'static str> {
     let phnum = ehdr.e_phnum as usize;
     let stack_top = setup_user_stack(entry, phdr_addr, phnum);
 
+    // Store exec info for sys_execve
+    *crate::syscall::ENTRY_POINT.lock() = entry;
+    *crate::syscall::PHDR_ADDR.lock() = phdr_addr;
+    *crate::syscall::PHNUM.lock() = phnum;
+
+    // Store ELF binary for execve data segment reload
+    *ELF_BINARY.lock() = Some(Arc::new(data.to_vec()));
+
+    // Find and store the writable data segment (PF_W set, PF_X clear)
+    for i in 0..ehdr.e_phnum as usize {
+        let off = ehdr.e_phoff as usize + i * core::mem::size_of::<Elf64Phdr>();
+        if off + core::mem::size_of::<Elf64Phdr>() > data.len() { continue; }
+        let ph = unsafe { &*(data[off..].as_ptr() as *const Elf64Phdr) };
+        if ph.p_type == PT_LOAD && (ph.p_flags & PF_W) != 0 {
+            let seg_vaddr = load_base + ph.p_vaddr as usize;
+            let seg_end = seg_vaddr + ph.p_memsz as usize;
+            *DATA_SEG_VADDR.lock() = seg_vaddr;
+            *DATA_SEG_PAGE_START.lock() = seg_vaddr & !(PAGE_SIZE - 1);
+            *DATA_SEG_PAGE_END.lock() = (seg_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+            *DATA_SEG_FILE_OFFSET.lock() = ph.p_offset as usize;
+            *DATA_SEG_FILESZ.lock() = ph.p_filesz as usize;
+            *DATA_SEG_MEMSZ.lock() = ph.p_memsz as usize;
+            break;
+        }
+    }
+
     #[cfg(target_arch = "riscv64")]
     unsafe { core::arch::asm!("sfence.vma"); }
     #[cfg(target_arch = "aarch64")]
@@ -244,7 +282,6 @@ pub fn load_elf(data: &[u8]) -> Result<LoadedProgram, &'static str> {
         stack_top,
     })
 }
-
 /// Helper: write bytes to a user virtual address via the kernel direct map.
 fn write_user(arch: &dyn kor::ArchProvider, uva: usize, data: &[u8]) {
     let paddr = arch.translate(uva).expect("write_user: unmapped");
