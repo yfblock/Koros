@@ -63,7 +63,8 @@ extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
                 ];
                 let ret = handler(nr, &args);
                 tf.regs[0] = ret as usize;  // x0 = return value
-                tf.elr += 4;                // skip SVC instruction
+                // On aarch64, SVC sets ELR_EL1 to SVC+4 already,
+                // so no need to increment. (riscv64's sepc points to ecall.)
                 return;
             }
         }

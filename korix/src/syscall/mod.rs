@@ -166,9 +166,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_FCNTL => 0,
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
-        SYS_CLONE => {
-            if cfg!(target_arch = "aarch64") { -38 } else { sys_clone() }
-        },
+        SYS_CLONE => sys_clone(),
         SYS_EXECVE => 0, // standalone mode: no-op (applet runs directly)
         SYS_WAIT4 => {
             // Only return child PID once, then ECHILD
@@ -203,7 +201,22 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
 
         167 => 0, // prctl
         154 => 0, // sched_getaffinity (return 0 = success, no CPUs)
-        _ => -38 // ENOSYS
+        158 => 0, // getgroups (return 0 groups)
+        156 => 1, // getsid → return sid 1
+        144 => 0, // sched_setscheduler
+        145 => 0, // sched_getscheduler
+        146 => 0, // sched_getparam
+        143 => 0, // sched_setparam
+        148 => 0, // sched_setaffinity
+        149 => 0, // sched_getaffinity
+        155 => 1, // getpgid
+        175 => 0, // geteuid
+        177 => 0, // getegid
+        178 => 1, // gettid
+        3 => 0,   // io_cancel → no-op
+        0 => -38, // io_setup → ENOSYS (no async I/O support)
+        2 => -2,  // open (legacy)
+        _ => -38, // ENOSYS
         }
 }
 
@@ -303,21 +316,32 @@ fn sys_exit_fork(code: usize) -> isize {
     if fork_active {
         *CHILD_EXIT_CODE.lock() = code as i32;
         let regs = FORK_REGS.lock().take();
-        let sepc = *FORK_SEPC.lock();
-        let sstatus = *FORK_SSTATUS.lock();
+        let saved_pc = *FORK_SEPC.lock();
+        let saved_status = *FORK_SSTATUS.lock();
         *FORK_ACTIVE.lock() = false;
         if let Some(regs) = regs {
             unsafe {
                 if !CURRENT_TF.is_null() {
-                    let tf = CURRENT_TF as *mut [usize; 32];
-                    for i in 0..32 {
-                        (*tf)[i] = regs[i];
+                    #[cfg(target_arch = "riscv64")]
+                    let nregs = 32;
+                    #[cfg(target_arch = "aarch64")]
+                    let nregs = 31;
+                    let tf = CURRENT_TF as *mut usize;
+                    for i in 0..nregs {
+                        *tf.add(i) = regs[i];
                     }
-                    // Parent stack is untouched (child used separate stack)
-                    let tf_sstatus = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
-                    *tf_sstatus = sstatus;
-                    let tf_sepc = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
-                    *tf_sepc = sepc;
+                    // On aarch64, restore SP_EL0 (at offset 31*8) from saved[31]
+                    #[cfg(target_arch = "aarch64")]
+                    {
+                        let tf_sp = (CURRENT_TF as *mut u8).add(31 * 8) as *mut usize;
+                        *tf_sp = regs[31];
+                    }
+                    // PC at offset 32*8 (sepc on riscv64, elr on aarch64)
+                    let tf_pc = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
+                    *tf_pc = saved_pc;
+                    // Status at offset 33*8 (sstatus on riscv64, spsr on aarch64)
+                    let tf_status = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
+                    *tf_status = saved_status;
                 }
             }
             return 1;
@@ -332,20 +356,39 @@ fn sys_clone() -> isize {
     if fork_active { return -38; }
     unsafe {
         if CURRENT_TF.is_null() { return -38; }
-        let tf = CURRENT_TF as *mut [usize; 32];
+        // Save parent registers
+        #[cfg(target_arch = "riscv64")]
+        let nregs = 32;
+        #[cfg(target_arch = "aarch64")]
+        let nregs = 31;
+        let tf = CURRENT_TF as *mut usize;
         let mut saved = [0usize; 32];
-        for i in 0..32 { saved[i] = (*tf)[i]; }
+        for i in 0..nregs { saved[i] = *tf.add(i); }
+        // On aarch64, also save SP_EL0 (at offset 31*8) in saved[31]
+        #[cfg(target_arch = "aarch64")]
+        {
+            saved[31] = *((CURRENT_TF as *const u8).add(31 * 8) as *const usize);
+        }
         *FORK_REGS.lock() = Some(saved);
-        let real_sstatus = *((CURRENT_TF as *const u8).add(32 * 8) as *const usize);
-        let real_sepc = *((CURRENT_TF as *const u8).add(33 * 8) as *const usize);
-        *FORK_SEPC.lock() = real_sepc;
-        *FORK_SSTATUS.lock() = real_sstatus;
+        // Save PC (offset 32*8) and status (offset 33*8)
+        let real_pc = *((CURRENT_TF as *const u8).add(32 * 8) as *const usize);
+        let real_status = *((CURRENT_TF as *const u8).add(33 * 8) as *const usize);
+        *FORK_SEPC.lock() = real_pc;
+        *FORK_SSTATUS.lock() = real_status;
 
-        // Allocate a separate child stack and copy parent's stack content
+        // Get parent SP
+        #[cfg(target_arch = "riscv64")]
+        let parent_sp = *tf.add(2); // x2 = sp
+        #[cfg(target_arch = "aarch64")]
+        let parent_sp = *((CURRENT_TF as *const u8).add(31 * 8) as *const usize); // SP_EL0
+
+        // Allocate child stack
         let arch = kor::arch::current();
-        let parent_sp = (*tf)[2]; // user sp
         const CHILD_STACK_SIZE: usize = 64 * 1024;
-        let child_stack_top = 0x20_0100_0000usize; // fixed address above user stack
+        #[cfg(target_arch = "riscv64")]
+        let (user_stack_top, child_stack_top) = (0x10_0000_0000usize, 0x20_0100_0000usize);
+        #[cfg(target_arch = "aarch64")]
+        let (user_stack_top, child_stack_top) = (0x80_0000_0000usize, 0x80_0100_0000usize);
         let child_stack_base = child_stack_top - CHILD_STACK_SIZE;
         let map_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
         for vaddr in (child_stack_base..child_stack_top).step_by(4096) {
@@ -357,10 +400,9 @@ fn sys_clone() -> isize {
                 }
             }
         }
-        // Copy parent's stack to child's stack (page by page for speed)
-        let child_sp = child_stack_top - (0x10_0000_0000 - parent_sp);
-        let copy_size = 0x10_0000_0000 - parent_sp; // from sp to stack top
-        let copy_size = copy_size.min(4096 * 8); // limit to 8 pages (32 KiB)
+        // Copy parent's stack to child's stack
+        let child_sp = child_stack_top - (user_stack_top - parent_sp);
+        let copy_size = (user_stack_top - parent_sp).min(4096 * 8);
         let mut copied = 0usize;
         while copied < copy_size {
             let src_va = parent_sp + copied;
@@ -369,7 +411,6 @@ fn sys_clone() -> isize {
             let dst_pa = match arch.translate(dst_va) { Some(p) => p, None => break };
             let src_kva = arch.phys_to_virt(src_pa);
             let dst_kva = arch.phys_to_virt(dst_pa);
-            // Copy within the current page
             let src_page_off = src_va & 4095;
             let dst_page_off = dst_va & 4095;
             let src_chunk = (4096 - src_page_off).min(copy_size - copied);
@@ -377,15 +418,19 @@ fn sys_clone() -> isize {
             let chunk = src_chunk.min(dst_chunk);
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    (src_kva) as *const u8,
-                    (dst_kva) as *mut u8,
-                    chunk,
+                    src_kva as *const u8, dst_kva as *mut u8, chunk,
                 );
             }
             copied += chunk;
         }
-        // Set child's sp
-        (*tf)[2] = child_sp;
+        // Set child's SP
+        #[cfg(target_arch = "riscv64")]
+        { *tf.add(2) = child_sp; }
+        #[cfg(target_arch = "aarch64")]
+        {
+            let tf_sp = (CURRENT_TF as *mut u8).add(31 * 8) as *mut usize;
+            *tf_sp = child_sp;
+        }
     }
     *FORK_ACTIVE.lock() = true;
     0
