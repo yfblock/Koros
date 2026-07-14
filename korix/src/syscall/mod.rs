@@ -5,7 +5,7 @@
 //!
 //! Syscall numbers follow the generic Linux syscall table (used by
 //! riscv64, aarch64). x86_64 uses a different table — handled by
-//! `arch::x86_64::syscall_translate`.
+//! arch::x86_64::syscall_translate (translate_syscall below).
 //!
 //! # Calling convention
 //! - riscv64: ecall, a7=nr, a0-a5=args, a0=return
@@ -68,15 +68,91 @@ pub const SYS_WRITEV: usize = 66;
 pub const SYS_READV: usize = 65;
 pub const SYS_MPROTECT: usize = 226;
 
+// x86_64 syscall numbers — a different table from the generic (riscv64/aarch64)
+// one used by dispatch_inner. translate_syscall() maps these to generic numbers.
+#[cfg(target_arch = "x86_64")]
+mod x86_nr {
+    pub const READ: usize = 0;
+    pub const WRITE: usize = 1;
+    pub const CLOSE: usize = 3;
+    pub const FSTAT: usize = 5;
+    pub const LSEEK: usize = 8;
+    pub const MMAP: usize = 9;
+    pub const MPROTECT: usize = 10;
+    pub const MUNMAP: usize = 11;
+    pub const BRK: usize = 12;
+    pub const RT_SIGACTION: usize = 13;
+    pub const RT_SIGPROCMASK: usize = 14;
+    pub const IOCTL: usize = 16;
+    pub const WRITEV: usize = 20;
+    pub const DUP: usize = 32;
+    pub const DUP2: usize = 33;
+    pub const NANOSLEEP: usize = 35;
+    pub const POLL: usize = 7;
+    pub const GETPID: usize = 39;
+    pub const CLONE: usize = 56;
+    pub const FORK: usize = 57;
+    pub const EXECVE: usize = 59;
+    pub const EXIT: usize = 60;
+    pub const WAIT4: usize = 61;
+    pub const KILL: usize = 62;
+    pub const UNAME: usize = 63;
+    pub const FCNTL: usize = 72;
+    pub const GETDENTS64: usize = 78;
+    pub const GETCWD: usize = 79;
+    pub const CHDIR: usize = 80;
+    pub const GETUID: usize = 102;
+    pub const GETGID: usize = 104;
+    pub const GETEUID: usize = 107;
+    pub const GETEGID: usize = 108;
+    pub const GETPPID: usize = 110;
+    pub const GETPGRP: usize = 111;
+    pub const SETSID: usize = 112;
+    pub const GETGROUPS: usize = 115;
+    pub const GETPGID: usize = 121;
+    pub const GETSID: usize = 124;
+    pub const SCHED_SETSCHEDULER: usize = 144;
+    pub const SCHED_GETSCHEDULER: usize = 145;
+    pub const SCHED_GETPARAM: usize = 159;
+    pub const SCHED_SETPARAM: usize = 142;
+    pub const SCHED_SETAFFINITY: usize = 203;
+    pub const SCHED_GETAFFINITY: usize = 204;
+    pub const PRCTL: usize = 157;
+    pub const SYNC: usize = 162;
+    pub const MOUNT: usize = 165;
+    pub const UMOUNT2: usize = 166;
+    pub const GETTID: usize = 186;
+    pub const FUTEX: usize = 202;
+    pub const SET_TID_ADDRESS: usize = 218;
+    pub const EXIT_GROUP: usize = 231;
+    pub const TGKILL: usize = 234;
+    pub const CLOCK_GETTIME: usize = 228;
+    pub const GETTIMEOFDAY: usize = 96;
+    pub const OPENAT: usize = 257;
+    pub const MKDIRAT: usize = 258;
+    pub const NEWFSTATAT: usize = 262;
+    pub const UNLINKAT: usize = 263;
+    pub const RENAMEAT: usize = 264;
+    pub const LINKAT: usize = 265;
+    pub const READLINKAT: usize = 267;
+    pub const PPOLL: usize = 271;
+    pub const SET_ROBUST_LIST: usize = 273;
+    pub const PRLIMIT64: usize = 302;
+    pub const GETRANDOM: usize = 318;
+    pub const RSEQ: usize = 334;
+}
+
 // Physical RAM start — used to distinguish user pages from identity-mapped kernel pages.
 #[cfg(target_arch = "riscv64")]
 pub const RAM_START: usize = 0x8000_0000;
 #[cfg(target_arch = "aarch64")]
 pub const RAM_START: usize = 0x4000_0000;
-#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+#[cfg(target_arch = "x86_64")]
+pub const RAM_START: usize = 0x1_0000_0000;
+#[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
 pub const RAM_START: usize = 0x8000_0000;
 /// Dispatch a syscall.
-/// `num` is the syscall number, `args` is up to 6 arguments.
+/// num is the syscall number, args is up to 6 arguments.
 /// Returns the syscall result (positive = success, negative = -errno).
 fn user_to_kernel(uva: usize) -> usize {
     let arch = kor::arch::current();
@@ -103,6 +179,8 @@ pub fn rx_fill() {
     while let Some(b) = kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000) { buf.push(b); }
     #[cfg(target_arch = "aarch64")]
     while let Some(b) = kor_arch::uart::pl011::getchar(0x0900_0000) { buf.push(b); }
+    #[cfg(target_arch = "x86_64")]
+    while let Some(b) = kor_arch::uart::ns16550a::getchar_port(0x3F8) { buf.push(b); }
 }
 
 fn rx_get() -> Option<u8> {
@@ -142,7 +220,143 @@ pub static PHDR_ADDR: Mutex<usize> = Mutex::new(0);
 pub static PHNUM: Mutex<usize> = Mutex::new(0);
 
 pub fn dispatch(num: usize, args: &[usize]) -> isize {
+    #[cfg(target_arch = "x86_64")]
+    let raw_num = num;
+    #[cfg(target_arch = "x86_64")]
+    let num = translate_syscall(num);
+    #[cfg(target_arch = "x86_64")]
+    if raw_num == 158 {
+        return sys_arch_prctl(args[0], args[1]);
+    }
     dispatch_inner(num, args)
+}
+
+/// Map an x86_64 syscall number to the generic number used by dispatch_inner.
+/// x86_64 numbers (read=0, write=1, exit=60, ...) do not align with the
+/// generic table; without translation they would hit the wrong handlers or
+/// collide dangerously (e.g. x86_64 uname=63 == generic read=63).
+#[cfg(target_arch = "x86_64")]
+fn translate_syscall(nr: usize) -> usize {
+    use x86_nr::*;
+    match nr {
+        READ               => SYS_READ,
+        WRITE              => SYS_WRITE,
+        CLOSE              => SYS_CLOSE,
+        FSTAT              => SYS_FSTAT,
+        LSEEK              => SYS_LSEEK,
+        MMAP               => SYS_MMAP,
+        MPROTECT           => SYS_MPROTECT,
+        MUNMAP             => SYS_MUNMAP,
+        BRK                => SYS_BRK,
+        RT_SIGACTION       => SYS_RT_SIGACTION,
+        RT_SIGPROCMASK     => SYS_RT_SIGPROCMASK,
+        IOCTL              => SYS_IOCTL,
+        WRITEV             => SYS_WRITEV,
+        DUP                => SYS_DUP,
+        DUP2               => SYS_DUP2,
+        NANOSLEEP          => SYS_NANOSLEEP,
+        POLL               => 73,            // poll → ppoll handler
+        GETPID             => SYS_GETPID,
+        CLONE              => SYS_CLONE,
+        FORK               => SYS_CLONE,     // fork → clone handler
+        EXECVE             => SYS_EXECVE,
+        EXIT               => SYS_EXIT,
+        WAIT4              => SYS_WAIT4,
+        KILL               => SYS_KILL,
+        UNAME              => SYS_UNAME,
+        FCNTL              => SYS_FCNTL,
+        GETDENTS64         => SYS_GETDENTS64,
+        GETCWD             => SYS_GETCWD,
+        CHDIR              => SYS_CHDIR,
+        GETUID             => SYS_GETUID,
+        GETGID             => SYS_GETGID,
+        GETEUID            => 175,
+        GETEGID            => 177,
+        GETPPID            => SYS_GETPPID,
+        GETPGRP            => 155,
+        SETSID             => 157,
+        GETGROUPS          => 158,
+        GETPGID            => 155,
+        GETSID             => 156,
+        SCHED_SETSCHEDULER => 144,
+        SCHED_GETSCHEDULER => 145,
+        SCHED_GETPARAM     => 146,
+        SCHED_SETPARAM     => 143,
+        SCHED_SETAFFINITY  => 148,
+        SCHED_GETAFFINITY  => 149,
+        PRCTL              => 167,
+        SYNC               => SYS_SYNC,
+        MOUNT              => SYS_MOUNT,
+        UMOUNT2            => SYS_UMOUNT2,
+        GETTID             => 178,
+        FUTEX              => SYS_FUTEX,
+        SET_TID_ADDRESS    => SYS_SET_TID_ADDRESS,
+        EXIT_GROUP         => SYS_EXIT_GROUP,
+        TGKILL             => SYS_TGKILL,
+        CLOCK_GETTIME      => 113,
+        GETTIMEOFDAY       => 169,
+        OPENAT             => SYS_OPENAT,
+        MKDIRAT            => SYS_MKDIRAT,
+        NEWFSTATAT         => SYS_NEWFSTATAT,
+        UNLINKAT           => SYS_UNLINKAT,
+        RENAMEAT           => SYS_RENAMEAT,
+        LINKAT             => SYS_LINKAT,
+        READLINKAT         => SYS_READLINKAT,
+        PPOLL              => 73,
+        SET_ROBUST_LIST    => SYS_SET_ROBUST_LIST,
+        PRLIMIT64          => 261,
+        GETRANDOM          => SYS_GETRANDOM,
+        RSEQ               => 293,
+        201                => 201,          // time (identity)
+        // Unknown x86_64 syscalls → ENOSYS via dispatch_inner's catch-all.
+        _ => 0xFFFF,
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn sys_arch_prctl(code: usize, addr: usize) -> isize {
+    const ARCH_SET_GS: usize = 0x1001;
+    const ARCH_SET_FS: usize = 0x1002;
+    const ARCH_GET_FS: usize = 0x1003;
+    const ARCH_GET_GS: usize = 0x1004;
+    const IA32_FS_BASE: u32 = 0xC000_0100;
+    const IA32_GS_BASE: u32 = 0xC000_0101;
+
+    unsafe fn read_msr(msr: u32) -> u64 {
+        let low: u32;
+        let high: u32;
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            lateout("eax") low,
+            lateout("edx") high,
+            options(nostack),
+        );
+        ((high as u64) << 32) | low as u64
+    }
+
+    unsafe fn write_msr(msr: u32, value: u64) {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nostack),
+        );
+    }
+
+    match code {
+        ARCH_SET_FS => unsafe { write_msr(IA32_FS_BASE, addr as u64); 0 },
+        ARCH_SET_GS => unsafe { write_msr(IA32_GS_BASE, addr as u64); 0 },
+        ARCH_GET_FS | ARCH_GET_GS => {
+            let kptr = user_to_kernel(addr);
+            if kptr == 0 { return -14; }
+            let msr = if code == ARCH_GET_FS { IA32_FS_BASE } else { IA32_GS_BASE };
+            unsafe { *(kptr as *mut u64) = read_msr(msr); }
+            0
+        }
+        _ => -22,
+    }
 }
 
 fn dispatch_inner(num: usize, args: &[usize]) -> isize {
@@ -273,7 +487,6 @@ fn alloc_pid() -> usize {
 }
 
 fn current_pid() -> usize {
-    // TODO: per-CPU current task
     1
 }
 
@@ -298,10 +511,22 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
         let slice = unsafe { core::slice::from_raw_parts_mut(kbuf as *mut u8, count) };
         let mut read = 0;
         while read == 0 {
+            #[cfg(target_arch = "x86_64")]
+            {
+                if let Some(b) = kor_arch::uart::ns16550a::getchar_port(0x3F8) {
+                    slice[read] = b;
+                    read += 1;
+                }
+            }
+            #[cfg(not(target_arch = "x86_64"))]
             if let Some(b) = rx_get() { slice[read] = b; read += 1; }
         }
         while read < count {
-            match rx_get() { Some(b) => { slice[read] = b; read += 1; } None => break, }
+            #[cfg(target_arch = "x86_64")]
+            let next = kor_arch::uart::ns16550a::getchar_port(0x3F8);
+            #[cfg(not(target_arch = "x86_64"))]
+            let next = rx_get();
+            match next { Some(b) => { slice[read] = b; read += 1; } None => break, }
         }
         read as isize
     } else {
@@ -385,6 +610,8 @@ fn sys_exit_fork(code: usize) -> isize {
                     let nregs = 32;
                     #[cfg(target_arch = "aarch64")]
                     let nregs = 31;
+                    #[cfg(target_arch = "x86_64")]
+                    let nregs = 15;
                     let tf = CURRENT_TF as *mut usize;
                     for i in 0..nregs {
                         *tf.add(i) = regs[i];
@@ -398,12 +625,29 @@ fn sys_exit_fork(code: usize) -> isize {
                         let tf_tpidr = (CURRENT_TF as *mut u8).add(34 * 8) as *mut usize;
                         *tf_tpidr = *FORK_TPIDR.lock();
                     }
+                    // On x86_64, restore rsp (offset 20*8) from saved[15]
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let tf_rsp = (CURRENT_TF as *mut u8).add(20 * 8) as *mut usize;
+                        *tf_rsp = regs[15];
+                    }
                     // PC at offset 32*8 (sepc on riscv64, elr on aarch64)
-                    let tf_pc = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
-                    *tf_pc = saved_pc;
-                    // Status at offset 33*8 (sstatus on riscv64, spsr on aarch64)
-                    let tf_status = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
-                    *tf_status = saved_status;
+                    #[cfg(not(target_arch = "x86_64"))]
+                    {
+                        let tf_pc = (CURRENT_TF as *mut u8).add(32 * 8) as *mut usize;
+                        *tf_pc = saved_pc;
+                        // Status at offset 33*8 (sstatus on riscv64, spsr on aarch64)
+                        let tf_status = (CURRENT_TF as *mut u8).add(33 * 8) as *mut usize;
+                        *tf_status = saved_status;
+                    }
+                    // On x86_64: rip at offset 17*8, rflags at offset 19*8
+                    #[cfg(target_arch = "x86_64")]
+                    {
+                        let tf_rip = (CURRENT_TF as *mut u8).add(17 * 8) as *mut usize;
+                        *tf_rip = saved_pc;
+                        let tf_rflags = (CURRENT_TF as *mut u8).add(19 * 8) as *mut usize;
+                        *tf_rflags = saved_status;
+                    }
                 }
             }
             return 1;
@@ -423,6 +667,8 @@ fn sys_clone() -> isize {
         let nregs = 32;
         #[cfg(target_arch = "aarch64")]
         let nregs = 31;
+        #[cfg(target_arch = "x86_64")]
+        let nregs = 15;
         let tf = CURRENT_TF as *mut usize;
         let mut saved = [0usize; 32];
         for i in 0..nregs { saved[i] = *tf.add(i); }
@@ -431,10 +677,21 @@ fn sys_clone() -> isize {
         {
             saved[31] = *((CURRENT_TF as *const u8).add(31 * 8) as *const usize);
         }
+        // On x86_64, also save rsp (offset 20*8) in saved[15]
+        #[cfg(target_arch = "x86_64")]
+        {
+            saved[15] = *((CURRENT_TF as *const u8).add(20 * 8) as *const usize);
+        }
         *FORK_REGS.lock() = Some(saved);
-        // Save PC (offset 32*8) and status (offset 33*8)
+        // Save PC and status (offsets differ per arch)
+        #[cfg(not(target_arch = "x86_64"))]
         let real_pc = *((CURRENT_TF as *const u8).add(32 * 8) as *const usize);
+        #[cfg(not(target_arch = "x86_64"))]
         let real_status = *((CURRENT_TF as *const u8).add(33 * 8) as *const usize);
+        #[cfg(target_arch = "x86_64")]
+        let real_pc = *((CURRENT_TF as *const u8).add(17 * 8) as *const usize); // rip
+        #[cfg(target_arch = "x86_64")]
+        let real_status = *((CURRENT_TF as *const u8).add(19 * 8) as *const usize); // rflags
         *FORK_SEPC.lock() = real_pc;
         *FORK_SSTATUS.lock() = real_status;
         // On aarch64, also save TPIDR_EL0 (at offset 34*8)
@@ -445,6 +702,8 @@ fn sys_clone() -> isize {
         let parent_sp = *tf.add(2); // x2 = sp
         #[cfg(target_arch = "aarch64")]
         let parent_sp = *((CURRENT_TF as *const u8).add(31 * 8) as *const usize); // SP_EL0
+        #[cfg(target_arch = "x86_64")]
+        let parent_sp = *((CURRENT_TF as *const u8).add(20 * 8) as *const usize); // rsp
 
         // Allocate child stack
         let arch = kor::arch::current();
@@ -453,6 +712,8 @@ fn sys_clone() -> isize {
         let (user_stack_top, child_stack_top) = (0x10_0000_0000usize, 0x20_0100_0000usize);
         #[cfg(target_arch = "aarch64")]
         let (user_stack_top, child_stack_top) = (0x80_0000_0000usize, 0x80_0100_0000usize);
+        #[cfg(target_arch = "x86_64")]
+        let (user_stack_top, child_stack_top) = (0x8_0000_0000usize, 0xC_0000_0000usize);
         let child_stack_base = child_stack_top - CHILD_STACK_SIZE;
         let map_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
         for vaddr in (child_stack_base..child_stack_top).step_by(4096) {
@@ -494,6 +755,11 @@ fn sys_clone() -> isize {
         {
             let tf_sp = (CURRENT_TF as *mut u8).add(31 * 8) as *mut usize;
             *tf_sp = child_sp;
+        }
+        #[cfg(target_arch = "x86_64")]
+        {
+            let tf_rsp = (CURRENT_TF as *mut u8).add(20 * 8) as *mut usize;
+            *tf_rsp = child_sp;
         }
     }
     *FORK_ACTIVE.lock() = true;
@@ -548,6 +814,8 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
         { *BRK_CURRENT.lock() = 0x2_0001_0000; *MMAP_NEXT.lock() = 0x30_0000_0000; }
         #[cfg(target_arch = "aarch64")]
         { *BRK_CURRENT.lock() = 0x80_0400_0000; *MMAP_NEXT.lock() = 0x80_0300_0000; }
+        #[cfg(target_arch = "x86_64")]
+        { *BRK_CURRENT.lock() = 0x10_0000_1000; *MMAP_NEXT.lock() = 0x14_0000_0000; }
         // Reload data segment in place (overwrite existing pages, no remap)
         let elf = crate::user::elf::ELF_BINARY.lock();
         if let Some(elf_data) = elf.as_ref() {
@@ -585,6 +853,8 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
     let exec_stack_top = 0x30_0000_0000usize;
     #[cfg(target_arch = "aarch64")]
     let exec_stack_top = 0x80_0200_0000usize;
+    #[cfg(target_arch = "x86_64")]
+    let exec_stack_top = 0x18_0000_0000usize;
     let exec_stack_size = 64 * 1024;
     let exec_stack_base = exec_stack_top - exec_stack_size;
     let map_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
@@ -678,6 +948,21 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
                 let tf_tpidr = (CURRENT_TF as *mut u8).add(34 * 8) as *mut usize;
                 *tf_tpidr = 0; // Clear TPIDR_EL0 so child reinitializes TLS
             }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let tf = CURRENT_TF as *mut usize;
+                for j in 0..15 { *tf.add(j) = 0; } // zero 15 GPRs
+                let tf_rsp = (CURRENT_TF as *mut u8).add(20 * 8) as *mut usize;
+                *tf_rsp = array_base;
+                let tf_rip = (CURRENT_TF as *mut u8).add(17 * 8) as *mut usize;
+                *tf_rip = entry;
+                let tf_rflags = (CURRENT_TF as *mut u8).add(19 * 8) as *mut usize;
+                *tf_rflags = 0x202; // IF flag set
+                let tf_cs = (CURRENT_TF as *mut u8).add(18 * 8) as *mut usize;
+                *tf_cs = 0x1B; // user code segment
+                let tf_ss = (CURRENT_TF as *mut u8).add(21 * 8) as *mut usize;
+                *tf_ss = 0x23; // user data segment
+            }
         }
     }
 
@@ -698,11 +983,15 @@ static BRK_CURRENT: Mutex<usize> = Mutex::new(0);
 static MMAP_NEXT: Mutex<usize> = Mutex::new(0x20_0000_0000);
 #[cfg(target_arch = "aarch64")]
 static MMAP_NEXT: Mutex<usize> = Mutex::new(0x80_0000_0000);
+#[cfg(target_arch = "x86_64")]
+static MMAP_NEXT: Mutex<usize> = Mutex::new(0x8_0000_0000);
 
 fn sys_brk(addr: usize) -> isize {
     let mut brk = BRK_CURRENT.lock();
     if *brk == 0 {
-        *brk = if cfg!(target_arch = "aarch64") { 0x80_0100_0000 } else { 0x1_0001_0000 };
+        *brk = if cfg!(target_arch = "aarch64") { 0x80_0100_0000 }
+            else if cfg!(target_arch = "x86_64") { 0x4_0000_1000 }
+            else { 0x1_0001_0000 };
     }
     if addr == 0 { return *brk as isize; }
     let old = *brk;
@@ -829,8 +1118,12 @@ fn sys_openat(_dirfd: usize, path: usize, _flags: usize, _mode: usize) -> isize 
         None => return -14,
     };
     // Special files
-    if path_str == "/dev/null" || path_str.as_str() == "/dev/tty" || path_str.as_str() == "/dev/console" {
-        return 3; // fake fd
+    if path_str == "/dev/null" { return 3; }
+    if path_str.as_str() == "/dev/tty" || path_str.as_str() == "/dev/console" {
+        #[cfg(target_arch = "x86_64")]
+        { return 0; }
+        #[cfg(not(target_arch = "x86_64"))]
+        { return 3; }
     }
     match crate::fs::resolve(&path_str) {
         Ok(inode) => {

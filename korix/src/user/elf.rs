@@ -54,7 +54,8 @@ const PAGE_SIZE: usize = 4096;
     const USER_STACK_TOP: usize = 0x10_0000_0000;
     #[cfg(target_arch = "aarch64")]
     const USER_STACK_TOP: usize = 0x80_0000_0000;
-/// User stack size (64 KiB = 16 pages).
+    #[cfg(target_arch = "x86_64")]
+    const USER_STACK_TOP: usize = 0x8_0000_0000; // Above 4 GiB identity map
 const USER_STACK_SIZE: usize = 64 * 1024;
 
 /// Result of loading an ELF binary.
@@ -91,7 +92,9 @@ fn is_user_page(arch: &dyn kor::ArchProvider, vaddr: usize) -> bool {
         Some(paddr) => paddr >= 0x8000_0000,
         #[cfg(target_arch = "aarch64")]
         Some(paddr) => paddr >= 0x4000_0000,
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+        #[cfg(target_arch = "x86_64")]
+        Some(_) => false,
+        #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
         Some(paddr) => paddr >= 0x8000_0000,
         None => false,
     }
@@ -297,8 +300,8 @@ fn write_user_usize(arch: &dyn kor::ArchProvider, uva: usize, val: usize) {
 }
 
 /// Set up the user stack: allocate pages and populate argc/argv/envp/auxv.
-/// `entry` is the program entry point, `phdr_addr` is the virtual address of
-/// the program headers, `phnum` is the number of program headers.
+/// entry is the program entry point, phdr_addr is the virtual address of
+/// the program headers, phnum is the number of program headers.
 fn setup_user_stack(entry: usize, phdr_addr: usize, phnum: usize) -> usize {
     let arch = kor::arch::current();
     let stack_base = USER_STACK_TOP - USER_STACK_SIZE;

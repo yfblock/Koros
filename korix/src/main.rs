@@ -113,12 +113,16 @@ extern "C" fn kernel_main() -> ! {
     kor_arch::riscv64::page_table::split_l2_identity();
     #[cfg(target_arch = "aarch64")]
     kor_arch::aarch64::page_table::split_identity_map();
+    #[cfg(target_arch = "x86_64")]
+    kor_arch::x86_64::page_table::split_identity_map();
 
     // Drain UART RX buffer (leftover bytes from boot).
     #[cfg(target_arch = "riscv64")]
     while kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000).is_some() {}
     #[cfg(target_arch = "aarch64")]
     while kor_arch::uart::pl011::getchar(0x0900_0000).is_some() {}
+    #[cfg(target_arch = "x86_64")]
+    while kor_arch::uart::ns16550a::getchar_port(0x3F8).is_some() {}
 
     // Verify rootfs is accessible
     match crate::fs::list_dir("/") {

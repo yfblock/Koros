@@ -122,7 +122,48 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
         unreachable!();
     }
 
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64")))]
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::asm;
+        // Build the iretq frame on the kernel stack.
+        // iretq pops (low to high): RIP, CS, RFLAGS, RSP, SS.
+        // Push in reverse order: SS, RSP, RFLAGS, CS, RIP.
+        asm!(
+            // SS: user data segment (ring 3) = 0x23
+            "push 0x23",
+            // RSP: user stack pointer
+            "push {usp}",
+            // RFLAGS: IF=1 (bit 9), reserved bit 1.
+            "push 0x202",
+            // CS: user code segment (ring 3) = 0x1B
+            "push 0x1B",
+            // RIP: entry point
+            "push {entry}",
+            // Zero all GPRs to prevent kernel value leaks
+            "xor rax, rax",
+            "xor rbx, rbx",
+            "xor rcx, rcx",
+            "xor rdx, rdx",
+            "xor rsi, rsi",
+            "xor rdi, rdi",
+            "xor rbp, rbp",
+            "xor r8, r8",
+            "xor r9, r9",
+            "xor r10, r10",
+            "xor r11, r11",
+            "xor r12, r12",
+            "xor r13, r13",
+            "xor r14, r14",
+            "xor r15, r15",
+            // Switch to ring 3
+            "iretq",
+            entry = in(reg) ctx.entry,
+            usp = in(reg) ctx.sp,
+        );
+        unreachable!();
+    }
+
+    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
     {
         let _ = ctx;
         loop { core::hint::spin_loop(); }

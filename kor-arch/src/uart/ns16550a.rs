@@ -44,3 +44,18 @@ pub fn putchar_port(base: u16, c: u8) {
         Port::<u8>::new(base + THR as u16).write(c);
     }
 }
+
+/// Read one byte from a port-I/O NS16550A at `base` (x86_64 legacy COM port).
+/// Returns `None` if no data is available (non-blocking).
+#[cfg(target_arch = "x86_64")]
+pub fn getchar_port(base: u16) -> Option<u8> {
+    use x86_64::instructions::port::Port;
+    // SAFETY: `base` is the console UART I/O port from the platform config.
+    unsafe {
+        if Port::<u8>::new(base + LSR as u16).read() & LSR_DR != 0 {
+            Some(Port::<u8>::new(base + RBR as u16).read())
+        } else {
+            None
+        }
+    }
+}
