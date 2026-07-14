@@ -20,7 +20,9 @@ ifeq ($(ARCH), riscv64)
   TARGET := riscv64gc-unknown-none-elf
   QEMU_EXEC += -machine virt
   KERNEL_IMG := target/$(TARGET)/release/$(BIN).bin
-  ifeq ($(BIN), koros)
+  ifeq ($(BIN), korix)
+    EXT2_IMG := os-images/korix-riscv64.img
+  else ifeq ($(BIN), koros)
     EXT2_IMG := os-images/ext2-test.img
   endif
 else ifeq ($(ARCH), aarch64)
@@ -31,7 +33,9 @@ else ifeq ($(ARCH), aarch64)
     QEMU_EXEC += -cpu cortex-a72 -machine virt
   endif
   KERNEL_IMG := target/$(TARGET)/release/$(BIN).bin
-  ifeq ($(BIN), koros)
+  ifeq ($(BIN), korix)
+    EXT2_IMG := os-images/korix-aarch64.img
+  else ifeq ($(BIN), koros)
     EXT2_IMG := os-images/ext2-test.img
   endif
 else ifeq ($(ARCH), loongarch64)
@@ -52,7 +56,9 @@ else ifeq ($(ARCH), x86_64)
   endif
   # x86_64 multiboot needs the ELF, not the raw binary.
   KERNEL_IMG := target/$(TARGET)/release/$(BIN)
-  ifeq ($(BIN), koros)
+  ifeq ($(BIN), korix)
+    EXT2_IMG := os-images/korix-x86_64.img
+  else ifeq ($(BIN), koros)
     EXT2_IMG := os-images/ext2-test.img
   endif
 else
@@ -103,6 +109,15 @@ os-images/ext2-test.img:
 	@mkdir -p $(dir $@)
 	dd if=/dev/zero of=$@ bs=1M count=4 2>/dev/null
 	mkfs.ext2 -b 1024 -q $@
+
+os-images/korix-riscv64.img: korix/busybox-riscv64 scripts/mk-korix-rootfs.py
+	scripts/mk-korix-rootfs.py riscv64 $@
+
+os-images/korix-aarch64.img: korix/busybox-aarch64 scripts/mk-korix-rootfs.py
+	scripts/mk-korix-rootfs.py aarch64 $@
+
+os-images/korix-x86_64.img: korix/busybox-x86_64 scripts/mk-korix-rootfs.py
+	scripts/mk-korix-rootfs.py x86_64 $@
 
 debug: build
 	$(QEMU_EXEC) -s -S

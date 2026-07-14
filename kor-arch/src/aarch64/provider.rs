@@ -55,6 +55,24 @@ impl ArchProvider for Aarch64Provider {
     fn dynamic_maps_supported(&self) -> bool {
         super::page_table::dynamic_maps_supported()
     }
+    fn unmap(&self, vaddr: usize, size: MapSize) -> Result<usize, MapError> {
+        super::page_table::unmap(vaddr, size)
+    }
+    fn address_space_root(&self) -> usize {
+        super::page_table::root()
+    }
+    unsafe fn activate_address_space(&self, root: usize) {
+        unsafe { super::page_table::activate(root) }
+    }
+    fn clone_address_space(&self) -> Result<usize, MapError> {
+        super::page_table::clone_active()
+    }
+    fn new_address_space(&self) -> Result<usize, MapError> {
+        super::page_table::new_user()
+    }
+    unsafe fn destroy_address_space(&self, root: usize) {
+        unsafe { super::page_table::destroy(root) }
+    }
 
     fn trap_init(&self) {
         super::trap::init();
@@ -88,7 +106,7 @@ impl ArchProvider for Aarch64Provider {
     }
 
     fn task_context_zero(&self) -> TaskContext {
-        TaskContext { _storage: [0; 16] }
+        TaskContext { _storage: [0; 32] }
     }
     fn task_context_init(&self, ctx: &mut TaskContext, entry: usize, stack_top: usize) {
         // SAFETY: `super::context::TaskContext` (13 usizes) fits in the 16-usize

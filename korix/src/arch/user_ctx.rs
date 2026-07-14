@@ -18,12 +18,12 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
     {
         use core::arch::asm;
 
+        kor_arch::riscv64::trap::prepare_user_entry(current_stack_pointer());
         asm!(
-            // 1. Save kernel sp to sscratch.
-            "csrw    sscratch, sp",
+            // 1. Trap scratch was prepared before entering this non-returning asm.
             // 2. Set sepc and sp BEFORE zeroing (entry/usp might be in any reg).
-            "csrw    sepc, {entry}",
-            "mv      sp, {usp}",
+            "csrw    sepc, a0",
+            "mv      sp, a1",
             // 3. Zero all GP registers except x0 and sp.
             "mv      ra, zero",
             "mv      gp, zero",
@@ -55,19 +55,19 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
             "mv      t4, zero",
             "mv      t5, zero",
             "mv      t6, zero",
-            // 4. Set SPP=0 (U-mode) and SPIE=1 (interrupts on).
-            "li      {tmp}, (1 << 5)",
-            "csrs    sstatus, {tmp}",
-            "li      {tmp}, (1 << 8)",
-            "csrc    sstatus, {tmp}",
+            // 4. Set SPP=0, SPIE=1, and FS=Dirty for user floating-point state.
+            "li      t6, ((1 << 5) | (3 << 13))",
+            "csrs    sstatus, t6",
+            "li      t6, (1 << 8)",
+            "csrc    sstatus, t6",
+            "mv      t6, zero",
             // 5. Flush TLB and enter user mode.
             "sfence.vma",
             "sret",
-            entry = in(reg) ctx.entry,
-            usp = in(reg) ctx.sp,
-            tmp = out(reg) _,
+            in("a0") ctx.entry,
+            in("a1") ctx.sp,
+            options(noreturn),
         );
-        unreachable!();
     }
     #[cfg(target_arch = "aarch64")]
     {
@@ -76,9 +76,9 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
         // SPSR_EL1 for EL0h: M=0 (EL0t), all interrupts unmasked
         const SPSR_EL0H: usize = 0; // M[3:0]=0 → EL0t
         asm!(
-            "msr     elr_el1, {entry}",
-            "msr     sp_el0, {usp}",
-            "msr     spsr_el1, {spsr}",
+            "msr     elr_el1, x0",
+            "msr     sp_el0, x1",
+            "msr     spsr_el1, x2",
             // Zero all GP registers
             "mov     x0, xzr",
             "mov     x1, xzr",
@@ -115,11 +115,11 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
             "dsb     sy",
             "isb",
             "eret",
-            entry = in(reg) ctx.entry,
-            usp = in(reg) ctx.sp,
-            spsr = in(reg) SPSR_EL0H,
+            in("x0") ctx.entry,
+            in("x1") ctx.sp,
+            in("x2") SPSR_EL0H,
+            options(noreturn),
         );
-        unreachable!();
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -167,5 +167,13 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
     {
         let _ = ctx;
         loop { core::hint::spin_loop(); }
+
     }
+}
+
+#[cfg(target_arch = "riscv64")]
+fn current_stack_pointer() -> usize {
+    let sp: usize;
+    unsafe { core::arch::asm!("mv {}, sp", out(reg) sp) };
+    sp
 }

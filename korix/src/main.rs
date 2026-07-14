@@ -11,6 +11,9 @@ mod fs;
 mod heap;
 mod mm;
 mod panic;
+mod registries;
+mod virtio;
+mod sched;
 pub mod syscall;
 mod user;
 
@@ -51,11 +54,14 @@ impl kor::TrapCallbacks for KernelTrapCallbacks {
     fn on_timer(&self) {
         kor::time::increment_tick();
         kor::arch::current().handle_tick();
-        // Drain UART RX FIFO into kernel buffer to prevent overflow during user init
+        if kor_sched::is_ready() {
+            kor_sched::timer_tick();
+            kor_sched::preempt();
+        }
         #[cfg(target_arch = "riscv64")]
         crate::syscall::rx_fill();
     }
-    fn on_external(&self, _irq: u32) {}
+    fn on_external(&self, irq: u32) { registries::IRQS.handle(irq); }
 }
 
 static TRAP_CB: KernelTrapCallbacks = KernelTrapCallbacks;
@@ -74,7 +80,6 @@ extern "C" fn kernel_main() -> ! {
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
     kor::arch::current().trap_init();
-    crate::arch::trap::init();
 
     kor::cmdline::init_from(kor::arch::current().boot_cmdline().unwrap_or_default());
     let mut collected = kor::regions::RegionCollector::new();
@@ -101,7 +106,7 @@ extern "C" fn kernel_main() -> ! {
         kor_frame::available_frames() * 4);
     kor::println!("cmdline: {:?}", kor::cmdline::raw());
 
-    crate::arch::probe_devices();
+    probe_devices();
     kor::smp::boot_secondaries();
     crate::fs::init_rootfs();
 
@@ -129,25 +134,39 @@ extern "C" fn kernel_main() -> ! {
         Ok(entries) => kor::println!("[korix] root / has {} entries", entries.len()),
         Err(e) => kor::println!("[korix] root / list failed: {:?}", e),
     }
+    crate::sched::init();
 
-    crate::user::init::spawn_init();
+    let init = crate::sched::process(1).expect("init process missing");
+    crate::sched::spawn_process(&init, crate::user::init::spawn_init);
+    kor_sched::idle_loop()
+}
 
-    // If spawn_init returns (e.g., ELF load failed), idle.
-    kor::println!("[korix] init returned, entering idle loop");
-    loop {
-        kor::arch::current().wait_for_interrupt();
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
+fn probe_devices() {
+    use kor::driver::{probe_fdt, DeviceDriver};
+    let drivers: &[&dyn DeviceDriver] = &[&virtio::VIRTIO_MMIO_DRIVER];
+    let dtb = kor::arch::current().dtb_ptr();
+    if dtb != 0 {
+        kor::println!("[korix] probing FDT at {:#x}", dtb);
+        probe_fdt(dtb, drivers);
     }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn probe_devices() {
+    virtio::probe_pci_and_register();
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(cpu_id: usize) -> ! {
-    crate::arch::trap::init();
     let ic = kor_arch::interrupt_controller();
     ic.init();
     kor::arch::current().timer_init();
     kor::arch::current().irq_enable();
     kor::smp::register_online();
-    loop {
-        kor::arch::current().wait_for_interrupt();
+    while !kor_sched::is_ready() {
+        core::hint::spin_loop();
     }
+    kor_sched::init_this_cpu();
+    kor_sched::idle_loop()
 }

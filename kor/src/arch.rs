@@ -12,11 +12,12 @@ use crate::mapping::{MapError, MapSize, MappingFlags};
 /// Opaque callee-saved register storage, large enough for every supported arch.
 ///
 /// Arch providers cast this buffer to their internal layout with
-/// `&mut *(ctx as *mut _ as *mut ArchTaskContext)`.  16 `usize`s (128 bytes)
-/// hold riscv64 (14), aarch64 (13), loongarch64 (12) and x86_64 (1).
+/// `&mut *(ctx as *mut _ as *mut ArchTaskContext)`.  32 `usize`s (256 bytes)
+/// accommodate integer and callee-saved floating-point task state on all
+/// supported architectures.
 #[repr(C, align(16))]
 pub struct TaskContext {
-    pub _storage: [usize; 16],
+    pub _storage: [usize; 32],
 }
 
 /// The architecture-specific service surface, installed once at boot.
@@ -34,6 +35,24 @@ pub trait ArchProvider: Send + Sync {
     fn map(&self, vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError>;
     fn translate(&self, vaddr: usize) -> Option<usize>;
     fn dynamic_maps_supported(&self) -> bool;
+    fn unmap(&self, vaddr: usize, size: MapSize) -> Result<usize, MapError>;
+    /// Physical root of the active address space.
+    fn address_space_root(&self) -> usize;
+    /// Activate an address space root and invalidate stale translations.
+    ///
+    /// # Safety
+    /// `root` must identify a valid architecture page-table root containing
+    /// the kernel mappings required by the current execution context.
+    unsafe fn activate_address_space(&self, root: usize);
+    /// Clone the active address space, deeply copying user pages.
+    fn clone_address_space(&self) -> Result<usize, MapError>;
+    /// Create an empty user address space retaining required kernel mappings.
+    fn new_address_space(&self) -> Result<usize, MapError>;
+    /// Destroy an inactive address space and release its user pages and tables.
+    ///
+    /// # Safety
+    /// `root` must not be active on any CPU.
+    unsafe fn destroy_address_space(&self, root: usize);
 
     // Trap install
     fn trap_init(&self);

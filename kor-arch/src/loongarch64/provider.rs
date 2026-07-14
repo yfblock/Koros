@@ -55,6 +55,20 @@ impl ArchProvider for Loongarch64Provider {
     fn dynamic_maps_supported(&self) -> bool {
         super::page_table::dynamic_maps_supported()
     }
+    fn unmap(&self, _vaddr: usize, _size: MapSize) -> Result<usize, MapError> {
+        Err(MapError::Unsupported)
+    }
+    fn address_space_root(&self) -> usize {
+        0
+    }
+    unsafe fn activate_address_space(&self, _root: usize) {}
+    fn clone_address_space(&self) -> Result<usize, MapError> {
+        Err(MapError::Unsupported)
+    }
+    fn new_address_space(&self) -> Result<usize, MapError> {
+        Err(MapError::Unsupported)
+    }
+    unsafe fn destroy_address_space(&self, _root: usize) {}
 
     fn trap_init(&self) {
         super::trap::init();
@@ -88,7 +102,7 @@ impl ArchProvider for Loongarch64Provider {
     }
 
     fn task_context_zero(&self) -> TaskContext {
-        TaskContext { _storage: [0; 16] }
+        TaskContext { _storage: [0; 32] }
     }
     fn task_context_init(&self, ctx: &mut TaskContext, entry: usize, stack_top: usize) {
         // SAFETY: `super::context::TaskContext` (12 usizes) fits in the 16-usize

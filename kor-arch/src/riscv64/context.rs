@@ -2,19 +2,20 @@
 
 use core::arch::naked_asm;
 
-/// Saved state for a cooperative context switch: return address, stack
-/// pointer, and the callee-saved registers `s0`–`s11`.
+/// Saved cooperative context: integer and floating-point callee-saved state.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TaskContext {
     ra: usize,
     sp: usize,
     s: [usize; 12],
+    fs: [u64; 12],
+    fcsr: usize,
 }
 
 impl TaskContext {
     pub const fn zero() -> Self {
-        Self { ra: 0, sp: 0, s: [0; 12] }
+        Self { ra: 0, sp: 0, s: [0; 12], fs: [0; 12], fcsr: 0 }
     }
 
     /// Prepare a fresh context so the first switch into it starts executing at
@@ -23,6 +24,8 @@ impl TaskContext {
         self.ra = entry;
         self.sp = stack_top;
         self.s = [0; 12];
+        self.fs = [0; 12];
+        self.fcsr = 0;
     }
 }
 
@@ -33,6 +36,8 @@ impl TaskContext {
 pub unsafe extern "C" fn context_switch(prev: *mut TaskContext, next: *const TaskContext) {
     // a0 = prev, a1 = next
     naked_asm!(
+        ".option push",
+        ".option arch, +d",
         "sd  ra,  0*8(a0)",
         "sd  sp,  1*8(a0)",
         "sd  s0,  2*8(a0)",
@@ -47,6 +52,20 @@ pub unsafe extern "C" fn context_switch(prev: *mut TaskContext, next: *const Tas
         "sd  s9,  11*8(a0)",
         "sd  s10, 12*8(a0)",
         "sd  s11, 13*8(a0)",
+        "fsd fs0,  14*8(a0)",
+        "fsd fs1,  15*8(a0)",
+        "fsd fs2,  16*8(a0)",
+        "fsd fs3,  17*8(a0)",
+        "fsd fs4,  18*8(a0)",
+        "fsd fs5,  19*8(a0)",
+        "fsd fs6,  20*8(a0)",
+        "fsd fs7,  21*8(a0)",
+        "fsd fs8,  22*8(a0)",
+        "fsd fs9,  23*8(a0)",
+        "fsd fs10, 24*8(a0)",
+        "fsd fs11, 25*8(a0)",
+        "csrr t0, fcsr",
+        "sd t0, 26*8(a0)",
         "ld  ra,  0*8(a1)",
         "ld  sp,  1*8(a1)",
         "ld  s0,  2*8(a1)",
@@ -61,6 +80,21 @@ pub unsafe extern "C" fn context_switch(prev: *mut TaskContext, next: *const Tas
         "ld  s9,  11*8(a1)",
         "ld  s10, 12*8(a1)",
         "ld  s11, 13*8(a1)",
+        "fld fs0,  14*8(a1)",
+        "fld fs1,  15*8(a1)",
+        "fld fs2,  16*8(a1)",
+        "fld fs3,  17*8(a1)",
+        "fld fs4,  18*8(a1)",
+        "fld fs5,  19*8(a1)",
+        "fld fs6,  20*8(a1)",
+        "fld fs7,  21*8(a1)",
+        "fld fs8,  22*8(a1)",
+        "fld fs9,  23*8(a1)",
+        "fld fs10, 24*8(a1)",
+        "fld fs11, 25*8(a1)",
+        "ld t0, 26*8(a1)",
+        "csrw fcsr, t0",
         "ret",
+        ".option pop",
     )
 }

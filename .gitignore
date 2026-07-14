@@ -7,6 +7,7 @@ opencode.jsonc
 session-*.md
 /os-images/ext2-test.img
 /os-images/mount/
+/os-images/korix-*.img
 ext2-plan.md
 roadmap.md
 korhv/linux-demo/Image

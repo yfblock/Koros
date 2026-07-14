@@ -13,7 +13,21 @@ use kor_fs::mount;
 
 /// Mount the root filesystem and populate it with busybox and standard dirs.
 pub fn init_rootfs() {
+    #[cfg(target_arch = "riscv64")]
+    let embedded_busybox: &[u8] = include_bytes!("../../busybox-riscv64");
+    #[cfg(target_arch = "aarch64")]
+    let embedded_busybox: &[u8] = include_bytes!("../../busybox-aarch64");
+    #[cfg(target_arch = "x86_64")]
+    let embedded_busybox: &[u8] = include_bytes!("../../busybox-x86_64");
     let mounts = &crate::MOUNTS;
+    let mounted_ext2 = crate::registries::BLOCKS.first().and_then(|device| {
+        kor_ext2::Ext2Fs::open(device).ok().and_then(|fs| mounts.lock().mount("/", fs).ok())
+    }).is_some();
+    if mounted_ext2 {
+        if read_file("/bin/busybox").is_ok_and(|data| data == embedded_busybox) { return; }
+        kor::println!("[korix] ext2 lacks /bin/busybox; using ramfs root");
+        let _ = mounts.lock().unmount("/");
+    }
     match kor_fs::registry::mount_named(mounts, "ramfs", None, "/") {
         Ok(_) => kor::println!("[korix] mounted ramfs on /"),
         Err(e) => { kor::println!("[korix] ramfs mount failed: {:?}", e); return; }
@@ -24,15 +38,8 @@ pub fn init_rootfs() {
         let _ = mkdir(dir);
     }
 
-    // Write busybox binary to /bin/busybox
-    #[cfg(target_arch = "riscv64")]
-    let busybox: &[u8] = include_bytes!("../../busybox-riscv64");
-    #[cfg(target_arch = "aarch64")]
-    let busybox: &[u8] = include_bytes!("../../busybox-aarch64");
-    #[cfg(target_arch = "x86_64")]
-    let busybox: &[u8] = include_bytes!("../../busybox-x86_64");
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
-    let busybox: &[u8] = &[0u8; 0];
+    // Write busybox binary to /bin/busybox.
+    let busybox = embedded_busybox;
     match write_file("/bin/busybox", busybox) {
         Ok(_) => kor::println!("[korix] /bin/busybox ({} bytes)", busybox.len()),
         Err(e) => kor::println!("[korix] failed to write /bin/busybox: {:?}", e),
@@ -53,7 +60,9 @@ pub fn init_rootfs() {
     // /bin/[ needs special handling — create as regular name
 
     // Create /etc/passwd and /etc/group for ls/id/whoami
+    #[cfg(not(target_arch = "x86_64"))]
     let _ = write_file("/etc/passwd", b"root:x:0:0:root:/root:/bin/sh\n");
+    #[cfg(not(target_arch = "x86_64"))]
     let _ = write_file("/etc/group", b"root:x:0:\n");
     let _ = write_file("/etc/hostname", b"korix\n");
     let _ = mkdir("/root");

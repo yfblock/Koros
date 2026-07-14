@@ -174,3 +174,33 @@ exception_vector_base:
 
     add     sp, sp, TF_SIZE
     eret
+
+// Resume an owned UserTrapContext. x0 points to the context.
+.global aarch64_resume_user
+aarch64_resume_user:
+    mov     x30, x0
+    ldr     x9, [x30, #(32 * 8)]
+    msr     elr_el1, x9
+    mov     x9, xzr
+    msr     spsr_el1, x9
+    ldr     x9, [x30, #(34 * 8)]
+    msr     sp_el0, x9
+    ldr     x9, [x30, #(35 * 8)]
+    msr     tpidr_el0, x9
+    ldp     x0,  x1,  [x30, #(0 * 8)]
+    ldp     x2,  x3,  [x30, #(2 * 8)]
+    ldp     x4,  x5,  [x30, #(4 * 8)]
+    ldp     x6,  x7,  [x30, #(6 * 8)]
+    ldp     x8,  x9,  [x30, #(8 * 8)]
+    ldp     x10, x11, [x30, #(10 * 8)]
+    ldp     x12, x13, [x30, #(12 * 8)]
+    ldp     x14, x15, [x30, #(14 * 8)]
+    ldp     x16, x17, [x30, #(16 * 8)]
+    ldp     x18, x19, [x30, #(18 * 8)]
+    ldp     x20, x21, [x30, #(20 * 8)]
+    ldp     x22, x23, [x30, #(22 * 8)]
+    ldp     x24, x25, [x30, #(24 * 8)]
+    ldp     x26, x27, [x30, #(26 * 8)]
+    ldp     x28, x29, [x30, #(28 * 8)]
+    ldr     x30,      [x30, #(30 * 8)]
+    eret

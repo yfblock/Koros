@@ -20,6 +20,61 @@ struct TrapFrame {
     tpidr: usize,
 }
 
+const USER_PSTATE_MASK: usize = 0xf000_0000;
+const INSTRUCTION_ALIGN: usize = 4;
+const STACK_ALIGN: usize = 16;
+
+/// Capture the integer user context represented by `frame`.
+///
+/// # Safety
+/// `frame` must point to a live [`TrapFrame`].
+pub unsafe fn capture_user_context(frame: *mut u8) -> Option<crate::UserTrapContext> {
+    let frame = unsafe { (frame as *const TrapFrame).as_ref()? };
+    let mut regs = [0usize; 32];
+    regs[..31].copy_from_slice(&frame.regs);
+    Some(crate::UserTrapContext { regs, pc: frame.elr, status: frame.spsr & USER_PSTATE_MASK, sp: frame.sp, tls: frame.tpidr, fp_callee: [0; 12], fcsr: 0 })
+}
+
+/// Restore an integer user context into `frame` after privilege sanitization.
+///
+/// # Safety
+/// `frame` must point to a live [`TrapFrame`].
+pub unsafe fn restore_user_context(frame: *mut u8, context: &crate::UserTrapContext) -> bool {
+    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else { return false };
+    if context.pc % INSTRUCTION_ALIGN != 0 || context.sp % STACK_ALIGN != 0 { return false; }
+    frame.regs.copy_from_slice(&context.regs[..31]);
+    frame.sp = context.sp;
+    frame.elr = context.pc;
+    frame.spsr = context.status & USER_PSTATE_MASK;
+    frame.tpidr = context.tls;
+    true
+}
+
+/// Set AArch64 signal handler arguments, link register, PC, and stack.
+///
+/// # Safety
+/// `frame` must point to a live user [`TrapFrame`].
+pub unsafe fn setup_user_signal(frame: *mut u8, handler: usize, restorer: usize, signal_frame: usize, signal: usize, siginfo: usize, ucontext: usize) -> bool {
+    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else { return false };
+    if handler % INSTRUCTION_ALIGN != 0 || restorer % INSTRUCTION_ALIGN != 0 || signal_frame % STACK_ALIGN != 0 { return false; }
+    frame.regs[0] = signal;
+    frame.regs[1] = siginfo;
+    frame.regs[2] = ucontext;
+    frame.regs[30] = restorer;
+    frame.sp = signal_frame;
+    frame.elr = handler;
+    true
+}
+
+/// Resume a detached AArch64 user context.
+///
+/// # Safety
+/// The matching user address space must be active.
+pub unsafe fn resume_user_context(context: &crate::UserTrapContext) -> ! {
+    unsafe extern "C" { fn aarch64_resume_user(context: *const crate::UserTrapContext) -> !; }
+    unsafe { aarch64_resume_user(context) }
+}
+
 global_asm!(include_str!("trap.S"));
 
 unsafe extern "C" {
@@ -50,21 +105,17 @@ extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
             if let Some(handler) = kor::trap_callbacks::syscall_handler() {
                 unsafe extern "Rust" {
                     fn korix_set_current_tf(tf: *mut u8);
+                    fn korix_deliver_pending_signal(tf: *mut u8);
                 }
                 unsafe { korix_set_current_tf(tf as *mut TrapFrame as *mut u8); }
-                let nr = tf.regs[8];       // x8 = syscall number
-                let args = [
-                    tf.regs[0],            // x0
-                    tf.regs[1],            // x1
-                    tf.regs[2],            // x2
-                    tf.regs[3],            // x3
-                    tf.regs[4],            // x4
-                    tf.regs[5],            // x5
-                ];
+                let nr = tf.regs[8];
+                let args = [tf.regs[0], tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5]];
                 let ret = handler(nr, &args);
-                tf.regs[0] = ret as usize;  // x0 = return value
-                // On aarch64, SVC sets ELR_EL1 to SVC+4 already,
-                // so no need to increment. (riscv64's sepc points to ecall.)
+                tf.regs[0] = ret as usize;
+                unsafe {
+                    korix_deliver_pending_signal(tf as *mut TrapFrame as *mut u8);
+                    korix_set_current_tf(core::ptr::null_mut());
+                }
                 return;
             }
         }

@@ -190,6 +190,9 @@ _test_idt:
 .code64
 .global _init_idt
 _init_idt:
+    push    r12
+    push    r13
+    push    r14
     # r12 = IDT base address
     lea     r12, _test_idt[rip]
     # r13 = trap_handler_table
@@ -232,6 +235,9 @@ _init_idt:
     lidt    [rsp]
     add     rsp, 16
 
+    pop     r14
+    pop     r13
+    pop     r12
     ret
 
 # -----------------------------------------------------------------------

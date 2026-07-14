@@ -9,10 +9,3 @@
 
 pub mod elf;
 pub mod init;
-
-/// A user process (placeholder — full process abstraction TBD).
-pub struct Process {
-    pub pid: usize,
-    pub entry: usize,
-    pub sp: usize,
-}

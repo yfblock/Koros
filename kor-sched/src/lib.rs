@@ -23,7 +23,7 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use spin::Mutex;
 
@@ -64,6 +64,8 @@ pub struct Task {
     entry: fn(),
     state: AtomicU8,
     wake_tick: AtomicU64,
+    user_context: AtomicPtr<u8>,
+    address_space_root: AtomicUsize,
 }
 
 // SAFETY: a task's `ctx` is only touched by the CPU currently running it (or
@@ -71,6 +73,17 @@ pub struct Task {
 // ensures no task is enqueued until its context is saved.
 unsafe impl Send for Task {}
 unsafe impl Sync for Task {}
+
+/// Clears a task-local user trap pointer on every exit path from its scope.
+pub struct UserContextGuard {
+    task: Arc<Task>,
+}
+
+impl Drop for UserContextGuard {
+    fn drop(&mut self) {
+        self.task.clear_user_context();
+    }
+}
 
 impl Task {
     fn new(entry: fn()) -> Arc<Self> {
@@ -85,6 +98,8 @@ impl Task {
             entry,
             state: AtomicU8::new(READY),
             wake_tick: AtomicU64::new(0),
+            user_context: AtomicPtr::new(core::ptr::null_mut()),
+            address_space_root: AtomicUsize::new(kor::arch::current().address_space_root()),
         })
     }
 
@@ -98,11 +113,48 @@ impl Task {
             entry: || {},
             state: AtomicU8::new(RUNNING),
             wake_tick: AtomicU64::new(0),
+            user_context: AtomicPtr::new(core::ptr::null_mut()),
+            address_space_root: AtomicUsize::new(kor::arch::current().address_space_root()),
         })
     }
 
     fn is_idle(&self) -> bool {
         self.id == 0
+    }
+
+    /// Set the active user trap frame. Callers that cannot retain the scoped
+    /// guard must pair this with [`Task::clear_user_context`] on every return.
+    pub fn set_user_context(&self, context: *mut u8) {
+        self.user_context.store(context, Ordering::Release);
+    }
+
+    /// Record the active trap frame while this task is handling a user trap.
+    /// The returned guard clears it on every return path. The pointer belongs
+    /// to the task's kernel stack and remains valid while a blocking syscall
+    /// migrates the task between CPUs.
+    pub fn user_context_scope(self: &Arc<Self>, context: *mut u8) -> UserContextGuard {
+        self.user_context.store(context, Ordering::Release);
+        UserContextGuard { task: self.clone() }
+    }
+
+    /// Clear the task's active user trap frame.
+    pub fn clear_user_context(&self) {
+        self.user_context.store(core::ptr::null_mut(), Ordering::Release);
+    }
+
+    /// Run `f` with this task's active user trap frame, when it has one.
+    pub fn with_user_context<R>(&self, f: impl FnOnce(*mut u8) -> R) -> Option<R> {
+        let context = self.user_context.load(Ordering::Acquire);
+        (!context.is_null()).then(|| f(context))
+    }
+
+    /// Attach the address space that must be active whenever this task runs.
+    pub fn set_address_space_root(&self, root: usize) {
+        self.address_space_root.store(root, Ordering::Release);
+    }
+
+    fn address_space_root(&self) -> usize {
+        self.address_space_root.load(Ordering::Acquire)
     }
 }
 
@@ -146,7 +198,6 @@ static SCHED_READY: AtomicBool = AtomicBool::new(false);
 pub fn current() -> Arc<Task> {
     this_cpu().current.lock().clone().expect("scheduler not initialised on this CPU")
 }
-
 /// Whether the scheduler has been initialised (by the boot CPU).
 pub fn is_ready() -> bool {
     SCHED_READY.load(Ordering::Acquire)
@@ -170,8 +221,20 @@ pub fn init_this_cpu() {
 
 /// Create a new ready kernel task running `entry`.
 pub fn spawn(entry: fn()) -> usize {
+    spawn_configured(entry, kor::arch::current().address_space_root(), |_| {})
+}
+
+/// Create a task whose address space and external metadata are fully
+/// configured before it becomes visible to another CPU's ready queue.
+pub fn spawn_configured(
+    entry: fn(),
+    address_space_root: usize,
+    configure: impl FnOnce(usize),
+) -> usize {
     let task = Task::new(entry);
+    task.set_address_space_root(address_space_root);
     let id = task.id;
+    configure(id);
     READY_QUEUE.lock().push_back(task);
     id
 }
@@ -240,6 +303,12 @@ fn schedule(prev_action: u8, wait_ptr: usize) {
         (prev.ctx.get(), next.ctx.get() as *const TaskContext)
     };
 
+    let root = next.address_space_root();
+    if kor::arch::current().address_space_root() != root {
+        // SAFETY: each configured task retains ownership of this root for its
+        // lifetime, and all kernel stacks are mapped in every address space.
+        unsafe { kor::arch::current().activate_address_space(root) };
+    }
     // SAFETY: prev is kept alive via `cpu.prev`, next via `cpu.current`.
     unsafe { kor::arch::current().context_switch(prev_ctx, next_ctx) };
     finish_switch();
@@ -395,30 +464,60 @@ impl WaitQueue {
     fn block_locked(&self) {
         schedule(TO_WAIT, self as *const _ as usize);
     }
+    /// Block the current task until another context wakes this queue.
+    pub fn wait(&self) {
+        let enabled = kor::irq::is_enabled();
+        kor::irq::disable();
+        self.raw_lock();
+        self.block_locked();
+        if enabled { kor::irq::enable(); }
+    }
 
-    /// Wake one blocked task, if any.
-    pub fn wake_one(&self) {
+    /// Atomically test an event predicate and block only while it is true.
+    /// Returns `true` after blocking and `false` when the predicate rejected
+    /// the wait. This closes the check-to-sleep lost-wakeup window.
+    pub fn wait_if(&self, should_wait: impl FnOnce() -> bool) -> bool {
+        let enabled = kor::irq::is_enabled();
+        kor::irq::disable();
+        self.raw_lock();
+        if !should_wait() {
+            self.raw_unlock();
+            if enabled { kor::irq::enable(); }
+            return false;
+        }
+        self.block_locked();
+        if enabled { kor::irq::enable(); }
+        true
+    }
+
+    /// Wake one blocked task, returning whether a waiter was actually woken.
+    pub fn wake_one(&self) -> bool {
         kor::irq::without(|| {
             self.raw_lock();
             let task = unsafe { (*self.list.get()).pop_front() };
             self.raw_unlock();
             if let Some(task) = task {
                 make_ready(task);
+                true
+            } else {
+                false
             }
-        });
+        })
     }
 
-    /// Wake all blocked tasks.
-    pub fn wake_all(&self) {
+    /// Wake all blocked tasks, returning the number actually woken.
+    pub fn wake_all(&self) -> usize {
         kor::irq::without(|| {
             self.raw_lock();
             let mut drained = VecDeque::new();
             core::mem::swap(unsafe { &mut *self.list.get() }, &mut drained);
             self.raw_unlock();
+            let count = drained.len();
             for task in drained {
                 make_ready(task);
             }
-        });
+            count
+        })
     }
 }
 

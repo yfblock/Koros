@@ -52,6 +52,24 @@ impl ArchProvider for Aarch64Provider {
     fn dynamic_maps_supported(&self) -> bool {
         false
     }
+    fn unmap(&self, _vaddr: usize, _size: MapSize) -> Result<usize, MapError> {
+        Err(MapError::Unsupported)
+    }
+    fn address_space_root(&self) -> usize {
+        let root: usize;
+        unsafe { asm!("mrs {}, ttbr0_el2", out(reg) root); }
+        root & 0x0000_FFFF_FFFF_F000
+    }
+    unsafe fn activate_address_space(&self, root: usize) {
+        unsafe { asm!("msr ttbr0_el2, {}", "isb", in(reg) root); }
+    }
+    fn clone_address_space(&self) -> Result<usize, MapError> {
+        Err(MapError::Unsupported)
+    }
+    fn new_address_space(&self) -> Result<usize, MapError> {
+        Err(MapError::Unsupported)
+    }
+    unsafe fn destroy_address_space(&self, _root: usize) {}
 
     fn trap_init(&self) {
         super::hyp::trap_init();
