@@ -6,7 +6,8 @@ fn main() -> Result<()> {
 
 fn gen_linker_script() -> Result<()> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("can't find target");
-    let fname = format!("linker_{}.lds", arch);
+    let package = env::var("CARGO_PKG_NAME").expect("can't find package name");
+    let fname = format!("linker_{}_{}.lds", package, arch);
     let (output_arch, kernel_base) = if arch == "x86_64" {
         ("i386:x86-64", "0xffff800000200000")
     } else if arch.contains("riscv64") {
@@ -21,9 +22,7 @@ fn gen_linker_script() -> Result<()> {
     let ld_content = ld_content.replace("%KERNEL_BASE%", kernel_base);
 
     let out_dir = env::var("OUT_DIR").unwrap();
-    let target_dir: std::path::PathBuf = [&out_dir, "..", "..", "..", "..", ".."]
-        .iter()
-        .collect();
+    let target_dir: std::path::PathBuf = [&out_dir, "..", "..", "..", "..", ".."].iter().collect();
     let ld_path = target_dir.join(&fname);
     std::fs::write(&ld_path, ld_content)?;
     println!("cargo:rustc-link-arg=-T{}", ld_path.display());

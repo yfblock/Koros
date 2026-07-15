@@ -3,8 +3,8 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::string::{String, ToString};
+use alloc::sync::Arc;
 use spin::Mutex;
 
 use crate::mm::AddressSpace;
@@ -26,6 +26,10 @@ pub struct ProcessState {
     pub mmap_next: usize,
     pub executable: String,
     pub clear_child_tid: usize,
+    pub files: BTreeMap<usize, crate::syscall::SharedFile>,
+    pub robust_list: usize,
+    pub robust_list_len: usize,
+    pub name: [u8; 16],
 }
 
 impl ProcessState {
@@ -41,9 +45,13 @@ impl ProcessState {
             fork_context: None,
             signals: crate::syscall::SignalState::new(),
             brk: 0,
-            mmap_next: default_mmap_base(),
+            mmap_next: crate::user::layout::MMAP_BASE,
             executable: "/bin/busybox".to_string(),
             clear_child_tid: 0,
+            files: BTreeMap::new(),
+            robust_list: 0,
+            robust_list_len: 0,
+            name: [0; 16],
         }
     }
 
@@ -55,9 +63,12 @@ impl ProcessState {
         self.fork_context.take()
     }
 
-
     pub fn address_space(&self) -> Option<&AddressSpace> {
         self.address_space.as_ref()
+    }
+
+    pub fn address_space_mut(&mut self) -> Option<&mut AddressSpace> {
+        self.address_space.as_mut()
     }
 
     pub fn activate_address_space(&self) {
@@ -68,16 +79,13 @@ impl ProcessState {
 
     /// Install an already-active replacement and return the old owned space.
     pub fn replace_address_space(&mut self, address_space: AddressSpace) -> Option<AddressSpace> {
-        assert!(address_space.is_active(), "replacement address space must be active");
+        assert!(
+            address_space.is_active(),
+            "replacement address space must be active"
+        );
         kor_sched::current().set_address_space_root(address_space.root());
         self.address_space.replace(address_space)
     }
-
-}
-fn default_mmap_base() -> usize {
-    if cfg!(target_arch = "riscv64") { 0x20_0000_0000 }
-    else if cfg!(target_arch = "aarch64") { 0x80_0000_0000 }
-    else { 0x8_0000_0000 }
 }
 
 static NEXT_PID: Mutex<usize> = Mutex::new(1);
@@ -89,7 +97,11 @@ pub fn init() {
     kor_sched::init();
     PROCESSES.lock().insert(
         1,
-        Arc::new(Mutex::new(ProcessState::new(1, 0, AddressSpace::adopt_active()))),
+        Arc::new(Mutex::new(ProcessState::new(
+            1,
+            0,
+            AddressSpace::adopt_active(),
+        ))),
     );
 }
 
@@ -106,7 +118,10 @@ pub fn alloc_process(parent: usize, address_space: AddressSpace) -> Arc<Mutex<Pr
 pub fn spawn_process(process: &Arc<Mutex<ProcessState>>, entry: fn()) -> usize {
     let (pid, root) = {
         let process = process.lock();
-        let root = process.address_space().expect("process has no address space").root();
+        let root = process
+            .address_space()
+            .expect("process has no address space")
+            .root();
         (process.pid, root)
     };
     kor_sched::spawn_configured(entry, root, |task| {
@@ -129,21 +144,29 @@ pub fn current_process() -> Option<Arc<Mutex<ProcessState>>> {
     process(current_pid()?)
 }
 
-
 pub fn matching_child(parent: usize, requested: isize) -> Option<Arc<Mutex<ProcessState>>> {
-    PROCESSES.lock().values().find(|process| {
-        let process = process.lock();
-        process.parent == parent && (requested == -1 || requested > 0 && process.pid == requested as usize)
-    }).cloned()
+    PROCESSES
+        .lock()
+        .values()
+        .find(|process| {
+            let process = process.lock();
+            process.parent == parent
+                && (requested == -1 || requested > 0 && process.pid == requested as usize)
+        })
+        .cloned()
 }
 
 pub fn matching_zombie(parent: usize, requested: isize) -> Option<Arc<Mutex<ProcessState>>> {
-    PROCESSES.lock().values().find(|process| {
-        let process = process.lock();
-        process.parent == parent
-            && process.state == STATE_ZOMBIE
-            && (requested == -1 || requested > 0 && process.pid == requested as usize)
-    }).cloned()
+    PROCESSES
+        .lock()
+        .values()
+        .find(|process| {
+            let process = process.lock();
+            process.parent == parent
+                && process.state == STATE_ZOMBIE
+                && (requested == -1 || requested > 0 && process.pid == requested as usize)
+        })
+        .cloned()
 }
 
 pub fn child_wait_queue(pid: usize) -> Option<Arc<kor_sched::Semaphore>> {
@@ -158,26 +181,63 @@ pub fn reap(pid: usize) -> Option<Arc<Mutex<ProcessState>>> {
 pub fn exit_current(code: i32) -> ! {
     let task_id = kor_sched::current().id;
     let current = current_process().expect("exiting task is not a process");
-    let (parent, clear_child_tid, address_space_root) = {
+    let (pid, requested_parent, clear_child_tid, address_space_root) = {
         let mut process = current.lock();
         process.exit_code = code;
         process.state = STATE_ZOMBIE;
-        (process.parent, process.clear_child_tid, process.address_space().map(|space| space.root()))
+        process.files.clear();
+        (
+            process.pid,
+            process.parent,
+            process.clear_child_tid,
+            process.address_space().map(|space| space.root()),
+        )
     };
     if clear_child_tid != 0 {
         if let Some(root) = address_space_root {
             let old = kor::arch::current().address_space_root();
-            if old != root { unsafe { kor::arch::current().activate_address_space(root) }; }
+            if old != root {
+                unsafe { kor::arch::current().activate_address_space(root) };
+            }
             if let Some(paddr) = kor::arch::current().translate(clear_child_tid) {
-                unsafe { *(kor::arch::current().phys_to_virt(paddr) as *mut u32) = 0; }
+                unsafe {
+                    *(kor::arch::current().phys_to_virt(paddr) as *mut u32) = 0;
+                }
             }
         }
         crate::syscall::wake_futex(clear_child_tid, 1);
     }
+
+    let init = process(1);
+    let children: alloc::vec::Vec<_> = PROCESSES
+        .lock()
+        .values()
+        .filter(|candidate| {
+            let candidate = candidate.lock();
+            candidate.parent == pid && candidate.pid != pid
+        })
+        .cloned()
+        .collect();
+    let mut adopted_zombie = false;
+    for child in children {
+        let mut child = child.lock();
+        child.parent = 1;
+        adopted_zombie |= child.state == STATE_ZOMBIE;
+    }
+    if adopted_zombie {
+        if let Some(init) = &init {
+            let mut init = init.lock();
+            init.child_events.post();
+            init.signals.enqueue(17);
+            init.signal_events.post();
+        }
+    }
+
     TASK_PROCESSES.lock().remove(&task_id);
-    if let Some(parent) = process(parent) {
-        parent.lock().child_events.post();
+    let parent = process(requested_parent).or(init);
+    if let Some(parent) = parent {
         let mut parent = parent.lock();
+        parent.child_events.post();
         parent.signals.enqueue(17);
         parent.signal_events.post();
     }

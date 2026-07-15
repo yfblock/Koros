@@ -3,8 +3,8 @@
 //! Sets `VBAR_EL1` to a hand-written vector table in assembly that
 //! saves registers, calls the Rust handler, then restores and `eret`.
 
-use kor::println;
 use core::arch::{asm, global_asm};
+use kor::println;
 
 #[repr(C)]
 struct TrapFrame {
@@ -20,6 +20,9 @@ struct TrapFrame {
     tpidr: usize,
 }
 
+const _: () = assert!(core::mem::size_of::<TrapFrame>() == 280);
+const _: () = assert!(core::mem::align_of::<TrapFrame>() == core::mem::align_of::<usize>());
+
 const USER_PSTATE_MASK: usize = 0xf000_0000;
 const INSTRUCTION_ALIGN: usize = 4;
 const STACK_ALIGN: usize = 16;
@@ -32,7 +35,15 @@ pub unsafe fn capture_user_context(frame: *mut u8) -> Option<crate::UserTrapCont
     let frame = unsafe { (frame as *const TrapFrame).as_ref()? };
     let mut regs = [0usize; 32];
     regs[..31].copy_from_slice(&frame.regs);
-    Some(crate::UserTrapContext { regs, pc: frame.elr, status: frame.spsr & USER_PSTATE_MASK, sp: frame.sp, tls: frame.tpidr, fp_callee: [0; 12], fcsr: 0 })
+    Some(crate::UserTrapContext {
+        regs,
+        pc: frame.elr,
+        status: frame.spsr & USER_PSTATE_MASK,
+        sp: frame.sp,
+        tls: frame.tpidr,
+        fp_callee: [0; 12],
+        fcsr: 0,
+    })
 }
 
 /// Restore an integer user context into `frame` after privilege sanitization.
@@ -40,8 +51,12 @@ pub unsafe fn capture_user_context(frame: *mut u8) -> Option<crate::UserTrapCont
 /// # Safety
 /// `frame` must point to a live [`TrapFrame`].
 pub unsafe fn restore_user_context(frame: *mut u8, context: &crate::UserTrapContext) -> bool {
-    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else { return false };
-    if context.pc % INSTRUCTION_ALIGN != 0 || context.sp % STACK_ALIGN != 0 { return false; }
+    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else {
+        return false;
+    };
+    if context.pc % INSTRUCTION_ALIGN != 0 || context.sp % STACK_ALIGN != 0 {
+        return false;
+    }
     frame.regs.copy_from_slice(&context.regs[..31]);
     frame.sp = context.sp;
     frame.elr = context.pc;
@@ -54,9 +69,24 @@ pub unsafe fn restore_user_context(frame: *mut u8, context: &crate::UserTrapCont
 ///
 /// # Safety
 /// `frame` must point to a live user [`TrapFrame`].
-pub unsafe fn setup_user_signal(frame: *mut u8, handler: usize, restorer: usize, signal_frame: usize, signal: usize, siginfo: usize, ucontext: usize) -> bool {
-    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else { return false };
-    if handler % INSTRUCTION_ALIGN != 0 || restorer % INSTRUCTION_ALIGN != 0 || signal_frame % STACK_ALIGN != 0 { return false; }
+pub unsafe fn setup_user_signal(
+    frame: *mut u8,
+    handler: usize,
+    restorer: usize,
+    signal_frame: usize,
+    signal: usize,
+    siginfo: usize,
+    ucontext: usize,
+) -> bool {
+    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else {
+        return false;
+    };
+    if handler % INSTRUCTION_ALIGN != 0
+        || restorer % INSTRUCTION_ALIGN != 0
+        || signal_frame % STACK_ALIGN != 0
+    {
+        return false;
+    }
     frame.regs[0] = signal;
     frame.regs[1] = siginfo;
     frame.regs[2] = ucontext;
@@ -71,7 +101,9 @@ pub unsafe fn setup_user_signal(frame: *mut u8, handler: usize, restorer: usize,
 /// # Safety
 /// The matching user address space must be active.
 pub unsafe fn resume_user_context(context: &crate::UserTrapContext) -> ! {
-    unsafe extern "C" { fn aarch64_resume_user(context: *const crate::UserTrapContext) -> !; }
+    unsafe extern "C" {
+        fn aarch64_resume_user(context: *const crate::UserTrapContext) -> !;
+    }
     unsafe { aarch64_resume_user(context) }
 }
 
@@ -103,18 +135,17 @@ extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
         // SVC from AArch64 (EC=0x15) — syscall
         if ec == 0x15 && source == 2 {
             if let Some(handler) = kor::trap_callbacks::syscall_handler() {
-                unsafe extern "Rust" {
-                    fn korix_set_current_tf(tf: *mut u8);
-                    fn korix_deliver_pending_signal(tf: *mut u8);
+                unsafe {
+                    kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
                 }
-                unsafe { korix_set_current_tf(tf as *mut TrapFrame as *mut u8); }
                 let nr = tf.regs[8];
-                let args = [tf.regs[0], tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5]];
+                let args = [
+                    tf.regs[0], tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5],
+                ];
                 let ret = handler(nr, &args);
                 tf.regs[0] = ret as usize;
                 unsafe {
-                    korix_deliver_pending_signal(tf as *mut TrapFrame as *mut u8);
-                    korix_set_current_tf(core::ptr::null_mut());
+                    kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
                 }
                 return;
             }
@@ -122,7 +153,12 @@ extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
 
         println!("");
         println!("=== TRAP ===");
-        println!("ESR_EL1 = {:#x} (EC={:#x}, ISS={:#x})", esr, ec, esr & 0xFFFFFF);
+        println!(
+            "ESR_EL1 = {:#x} (EC={:#x}, ISS={:#x})",
+            esr,
+            ec,
+            esr & 0xFFFFFF
+        );
         println!("FAR_EL1 = {:#x}", far);
         println!("ELR_EL1 = {:#x}", tf.elr);
         println!("SPSR_EL1 = {:#x}", tf.spsr);
@@ -143,5 +179,8 @@ pub fn init() {
         asm!("isb");
         asm!("msr vbar_el1, {0}", in(reg) exception_vector_base as *const () as u64);
     }
-    println!("trap: VBAR_EL1 set to {:#x}", exception_vector_base as *const () as usize);
+    println!(
+        "trap: VBAR_EL1 set to {:#x}",
+        exception_vector_base as *const () as usize
+    );
 }

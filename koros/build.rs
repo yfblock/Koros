@@ -6,7 +6,8 @@ fn main() -> Result<()> {
 
 fn gen_linker_script() -> Result<()> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("can't find target");
-    let fname = format!("linker_{}.lds", arch);
+    let package = env::var("CARGO_PKG_NAME").expect("can't find package name");
+    let fname = format!("linker_{}_{}.lds", package, arch);
     // Kernel load addresses — must match QEMU's physical load address
     // for each architecture so that PC-relative code works correctly.
     let (output_arch, kernel_base) = if arch == "x86_64" {
@@ -27,9 +28,7 @@ fn gen_linker_script() -> Result<()> {
     let out_dir = env::var("OUT_DIR").unwrap();
     // Go from OUT_DIR (target/<target>/release/build/<crate>-<hash>/out)
     // up to the target directory.
-    let target_dir: std::path::PathBuf = [&out_dir, "..", "..", "..", "..", ".."]
-        .iter()
-        .collect();
+    let target_dir: std::path::PathBuf = [&out_dir, "..", "..", "..", "..", ".."].iter().collect();
     let ld_path = target_dir.join(&fname);
     std::fs::write(&ld_path, ld_content)?;
     println!("cargo:rustc-link-arg=-T{}", ld_path.display());

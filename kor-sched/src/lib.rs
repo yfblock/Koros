@@ -23,7 +23,9 @@ use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{
+    AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
+};
 
 use spin::Mutex;
 
@@ -90,7 +92,11 @@ impl Task {
         let stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
         let stack_top = (stack.as_ptr() as usize + STACK_SIZE) & !0xF;
         let mut ctx = kor::arch::current().task_context_zero();
-        kor::arch::current().task_context_init(&mut ctx, task_bootstrap as *const () as usize, stack_top);
+        kor::arch::current().task_context_init(
+            &mut ctx,
+            task_bootstrap as *const () as usize,
+            stack_top,
+        );
         Arc::new(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             ctx: UnsafeCell::new(ctx),
@@ -139,7 +145,8 @@ impl Task {
 
     /// Clear the task's active user trap frame.
     pub fn clear_user_context(&self) {
-        self.user_context.store(core::ptr::null_mut(), Ordering::Release);
+        self.user_context
+            .store(core::ptr::null_mut(), Ordering::Release);
     }
 
     /// Run `f` with this task's active user trap frame, when it has one.
@@ -196,7 +203,13 @@ static SCHED_READY: AtomicBool = AtomicBool::new(false);
 
 /// The task currently running on this CPU.
 pub fn current() -> Arc<Task> {
-    this_cpu().current.lock().clone().expect("scheduler not initialised on this CPU")
+    kor::irq::without(|| {
+        this_cpu()
+            .current
+            .lock()
+            .clone()
+            .expect("scheduler not initialised on this CPU")
+    })
 }
 /// Whether the scheduler has been initialised (by the boot CPU).
 pub fn is_ready() -> bool {
@@ -215,8 +228,10 @@ pub fn init() {
 pub fn init_this_cpu() {
     let idle = Task::idle();
     let cpu = this_cpu();
-    *cpu.idle.lock() = Some(idle.clone());
-    *cpu.current.lock() = Some(idle);
+    kor::irq::without(|| {
+        *cpu.idle.lock() = Some(idle.clone());
+        *cpu.current.lock() = Some(idle);
+    });
 }
 
 /// Create a new ready kernel task running `entry`.
@@ -235,11 +250,12 @@ pub fn spawn_configured(
     task.set_address_space_root(address_space_root);
     let id = task.id;
     configure(id);
-    READY_QUEUE.lock().push_back(task);
+    kor::irq::without(|| READY_QUEUE.lock().push_back(task));
     id
 }
 
-/// The head of the shared ready queue, or this CPU's idle task.
+/// The head of the shared ready queue, or this CPU's idle task. Interrupts
+/// must be disabled by the scheduling caller.
 fn pick_next(cpu: &PerCpu) -> Arc<Task> {
     READY_QUEUE
         .lock()
@@ -343,7 +359,7 @@ pub fn exit() -> ! {
 /// Move a blocked/parked task back to the ready queue.
 fn make_ready(task: Arc<Task>) {
     task.state.store(READY, Ordering::Relaxed);
-    READY_QUEUE.lock().push_back(task);
+    kor::irq::without(|| READY_QUEUE.lock().push_back(task));
 }
 
 /// Free the stacks of exited tasks (called from a live task).
@@ -470,7 +486,9 @@ impl WaitQueue {
         kor::irq::disable();
         self.raw_lock();
         self.block_locked();
-        if enabled { kor::irq::enable(); }
+        if enabled {
+            kor::irq::enable();
+        }
     }
 
     /// Atomically test an event predicate and block only while it is true.
@@ -482,11 +500,15 @@ impl WaitQueue {
         self.raw_lock();
         if !should_wait() {
             self.raw_unlock();
-            if enabled { kor::irq::enable(); }
+            if enabled {
+                kor::irq::enable();
+            }
             return false;
         }
         self.block_locked();
-        if enabled { kor::irq::enable(); }
+        if enabled {
+            kor::irq::enable();
+        }
         true
     }
 
@@ -533,7 +555,10 @@ unsafe impl Send for Semaphore {}
 
 impl Semaphore {
     pub const fn new(initial: isize) -> Self {
-        Self { wq: WaitQueue::new(), count: UnsafeCell::new(initial) }
+        Self {
+            wq: WaitQueue::new(),
+            count: UnsafeCell::new(initial),
+        }
     }
 
     /// Decrement the count, blocking while it is zero.
@@ -587,7 +612,9 @@ impl Default for Mutex2 {
 
 impl Mutex2 {
     pub const fn new() -> Self {
-        Self { sem: Semaphore::new(1) }
+        Self {
+            sem: Semaphore::new(1),
+        }
     }
 
     pub fn lock(&self) {
@@ -598,6 +625,5 @@ impl Mutex2 {
         self.sem.post();
     }
 }
-
 
 pub mod sync;

@@ -11,10 +11,10 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use kor::{FsError, FileType, INode, Metadata};
+use kor::{FileType, FsError, INode, Metadata};
 
 use super::xattr;
-use super::{Ext2Fs, EXT2_ROOT_INO};
+use super::{EXT2_ROOT_INO, Ext2Fs};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -142,9 +142,7 @@ impl Ext2INode {
 
         // Locate the inode table for this block group.
         let groups = fs.block_groups();
-        let bg = groups
-            .get(group as usize)
-            .ok_or(FsError::InvalidInput)?;
+        let bg = groups.get(group as usize).ok_or(FsError::InvalidInput)?;
         let inode_table_block = bg.bg_inode_table as usize;
 
         // Byte offset of this inode within the inode table.
@@ -184,7 +182,7 @@ impl Ext2INode {
     ///
     /// Returns a [`spin::MutexGuard`] so callers can read (and, internally,
     /// write) inode fields through auto-deref.
-    pub fn raw(&self) -> spin::MutexGuard<'_, RawInode> {
+    pub(crate) fn raw(&self) -> spin::MutexGuard<'_, RawInode> {
         self.raw.lock()
     }
 
@@ -284,12 +282,7 @@ impl Ext2INode {
     }
 
     /// Write a single `u32` block pointer into an indirect block at `index`.
-    fn write_indirect_entry(
-        &self,
-        block_id: u32,
-        index: u32,
-        value: u32,
-    ) -> Result<(), FsError> {
+    fn write_indirect_entry(&self, block_id: u32, index: u32, value: u32) -> Result<(), FsError> {
         let block_size = self.fs.block_size();
         let mut buf = vec![0u8; block_size];
         read_fs_block(&self.fs, block_id as usize, &mut buf)?;
@@ -521,9 +514,7 @@ impl Ext2INode {
         let index = (self.inode_num - 1) % inodes_per_group;
 
         let groups = self.fs.block_groups();
-        let bg = groups
-            .get(group as usize)
-            .ok_or(FsError::InvalidInput)?;
+        let bg = groups.get(group as usize).ok_or(FsError::InvalidInput)?;
         let inode_table_block = bg.bg_inode_table as usize;
         drop(groups);
 
@@ -652,7 +643,7 @@ impl Ext2INode {
 
     /// Free every data and indirect block owned by this inode and reset the
     /// block pointers / `i_blocks` to zero.
-    pub fn free_all_blocks(&self) -> Result<(), FsError> {
+    pub(super) fn free_all_blocks(&self) -> Result<(), FsError> {
         let direct = { self.raw.lock().i_block };
         for &b in direct.iter().take(DIRECT_BLOCKS) {
             if b != 0 {
@@ -725,7 +716,8 @@ impl Ext2INode {
                 let p2 = ptrs_per_block * ptrs_per_block;
                 let l2 = self.read_indirect_entry(l1, rem / p2)?;
                 if l2 != 0 {
-                    let l3 = self.read_indirect_entry(l2, (rem / ptrs_per_block) % ptrs_per_block)?;
+                    let l3 =
+                        self.read_indirect_entry(l2, (rem / ptrs_per_block) % ptrs_per_block)?;
                     if l3 != 0 {
                         self.write_indirect_entry(l3, rem % ptrs_per_block, 0)?;
                     }
@@ -851,7 +843,7 @@ impl Ext2INode {
             }
             self.write_inode_to_disk()
         } else {
-            self.write_at(0, bytes)?;
+            self.write_at_locked(0, bytes)?;
             Ok(())
         }
     }
@@ -901,11 +893,7 @@ impl Ext2INode {
     /// ancestor of, the directory `start_ino` — walking up via `..` to the
     /// filesystem root.  Used to reject directory renames that would create a
     /// cycle.
-    fn dir_is_ancestor_or_self(
-        &self,
-        ancestor_ino: u32,
-        start_ino: u32,
-    ) -> Result<bool, FsError> {
+    fn dir_is_ancestor_or_self(&self, ancestor_ino: u32, start_ino: u32) -> Result<bool, FsError> {
         let mut cur = start_ino;
         // The tree depth is bounded by the number of inodes; cap iterations to
         // avoid spinning forever on a pre-existing corrupt cycle.
@@ -936,12 +924,7 @@ impl Ext2INode {
     /// * privately-owned block: overwrite in place.
     ///
     /// Updates `i_file_acl` accordingly.
-    fn store_xattr_block(
-        &self,
-        acl: u32,
-        shared: bool,
-        new_buf: &[u8],
-    ) -> Result<(), FsError> {
+    fn store_xattr_block(&self, acl: u32, shared: bool, new_buf: &[u8]) -> Result<(), FsError> {
         if acl == 0 {
             let block = self.fs.alloc_block_goal(self.block_group())?;
             write_fs_block(&self.fs, block as usize, new_buf)?;
@@ -1033,6 +1016,158 @@ impl Ext2INode {
 
         Ok(new_inode as Arc<dyn INode>)
     }
+
+    /// Write file data while the caller holds the filesystem metadata
+    /// transaction guard.
+    pub(super) fn write_at_locked(&self, offset: usize, buf: &[u8]) -> Result<usize, FsError> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let block_size = self.fs.block_size();
+        let end_offset = offset + buf.len();
+        let mut bytes_written = 0usize;
+        let mut new_fs_blocks = 0u32;
+
+        while bytes_written < buf.len() {
+            let file_offset = offset + bytes_written;
+            let logical_block = file_offset / block_size;
+            let block_offset = file_offset % block_size;
+            let remaining = buf.len() - bytes_written;
+
+            if block_offset == 0 && remaining >= block_size {
+                let (first_phys, allocated) =
+                    self.allocate_block_for_offset(logical_block as u32, false)?;
+                new_fs_blocks += allocated;
+
+                let max_run = core::cmp::min(remaining / block_size, MAX_BULK_BLOCKS);
+                let mut run_start = first_phys;
+                let mut run_len = 1usize;
+                let mut done_in_region = 0usize;
+
+                while done_in_region + run_len < max_run {
+                    let next_logical = logical_block + done_in_region + run_len;
+                    let (next_physical, allocated) =
+                        self.allocate_block_for_offset(next_logical as u32, false)?;
+                    new_fs_blocks += allocated;
+                    if next_physical == run_start + run_len as u32 {
+                        run_len += 1;
+                    } else {
+                        let buffer_offset = bytes_written + done_in_region * block_size;
+                        self.fs.write_fs_blocks(
+                            run_start as usize,
+                            run_len,
+                            &buf[buffer_offset..buffer_offset + run_len * block_size],
+                        )?;
+                        done_in_region += run_len;
+                        run_start = next_physical;
+                        run_len = 1;
+                    }
+                }
+                let buffer_offset = bytes_written + done_in_region * block_size;
+                self.fs.write_fs_blocks(
+                    run_start as usize,
+                    run_len,
+                    &buf[buffer_offset..buffer_offset + run_len * block_size],
+                )?;
+                done_in_region += run_len;
+                bytes_written += done_in_region * block_size;
+                continue;
+            }
+
+            let chunk = core::cmp::min(remaining, block_size - block_offset);
+            let (physical_block, allocated) =
+                self.allocate_block_for_offset(logical_block as u32, true)?;
+            new_fs_blocks += allocated;
+
+            let mut block_buf = vec![0u8; block_size];
+            read_fs_block(&self.fs, physical_block as usize, &mut block_buf)?;
+            block_buf[block_offset..block_offset + chunk]
+                .copy_from_slice(&buf[bytes_written..bytes_written + chunk]);
+            write_fs_block(&self.fs, physical_block as usize, &block_buf)?;
+            bytes_written += chunk;
+        }
+
+        if end_offset as u64 > self.size() {
+            self.set_size(end_offset as u64);
+        }
+        {
+            let mut raw = self.raw.lock();
+            raw.i_mtime = 0;
+            if new_fs_blocks > 0 {
+                let sectors = new_fs_blocks * self.sectors_per_block();
+                raw.i_blocks = raw.i_blocks.saturating_add(sectors);
+            }
+        }
+        self.write_inode_to_disk()?;
+        Ok(bytes_written)
+    }
+
+    /// Remove a non-directory child while the metadata transaction is held.
+    fn unlink_locked(&self, name: &str) -> Result<(), FsError> {
+        let child_inode_num = super::dir::lookup(self, name)?;
+        let child_inode = self.fs.get_inode(child_inode_num)?;
+        if child_inode.raw().i_mode & EXT2_S_IFMT == EXT2_S_IFDIR {
+            return Err(FsError::IsDirectory);
+        }
+
+        super::dir::remove_dir_entry(self, name)?;
+        let should_free = {
+            let mut raw = child_inode.raw();
+            raw.i_links_count = raw.i_links_count.saturating_sub(1);
+            raw.i_links_count == 0
+        };
+
+        if should_free {
+            child_inode.free_all_blocks()?;
+            child_inode.release_xattr_block()?;
+            child_inode.raw().i_dtime = 0;
+            child_inode.write_inode_to_disk()?;
+            self.fs.free_inode(child_inode_num)?;
+        } else {
+            child_inode.write_inode_to_disk()?;
+        }
+        Ok(())
+    }
+
+    /// Remove an empty directory while the metadata transaction is held.
+    fn rmdir_locked(&self, name: &str) -> Result<(), FsError> {
+        if name == "." || name == ".." {
+            return Err(FsError::InvalidInput);
+        }
+        let child_inode_num = super::dir::lookup(self, name)?;
+        let child_inode = self.fs.get_inode(child_inode_num)?;
+        if child_inode.raw().i_mode & EXT2_S_IFMT != EXT2_S_IFDIR {
+            return Err(FsError::NotDirectory);
+        }
+
+        let entries = super::dir::list(&child_inode)?;
+        if entries
+            .iter()
+            .any(|(entry_name, _)| entry_name.as_str() != "." && entry_name.as_str() != "..")
+        {
+            return Err(FsError::NotEmpty);
+        }
+
+        super::dir::remove_dir_entry(self, name)?;
+        {
+            let mut raw = self.raw();
+            raw.i_links_count = raw.i_links_count.saturating_sub(1);
+        }
+        self.write_inode_to_disk()?;
+
+        child_inode.free_all_blocks()?;
+        child_inode.release_xattr_block()?;
+        {
+            let mut raw = child_inode.raw();
+            raw.i_links_count = 0;
+            raw.i_dtime = 0;
+        }
+        child_inode.write_inode_to_disk()?;
+        self.fs.adjust_used_dirs(child_inode_num, -1);
+        self.fs.free_inode(child_inode_num)?;
+        Ok(())
+    }
 }
 
 /// Encode a device number into the `(i_block[0], i_block[1])` pair the way
@@ -1122,105 +1257,8 @@ impl INode for Ext2INode {
     }
 
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize, FsError> {
-        if buf.is_empty() {
-            return Ok(0);
-        }
-
-        let block_size = self.fs.block_size();
-        let end_offset = offset + buf.len();
-        let mut bytes_written = 0usize;
-        // Filesystem blocks newly allocated during this write, tracked so
-        // `i_blocks` can be updated incrementally rather than rescanned.
-        let mut new_fs_blocks = 0u32;
-
-        while bytes_written < buf.len() {
-            let file_offset = offset + bytes_written;
-            let logical_block = file_offset / block_size;
-            let block_offset = file_offset % block_size;
-            let remaining = buf.len() - bytes_written;
-
-            // Fast path: block-aligned with at least one full block to write.
-            // Allocate blocks without pre-zeroing (we overwrite them fully) and
-            // flush physically-contiguous runs in single multi-block requests.
-            if block_offset == 0 && remaining >= block_size {
-                let (first_phys, a0) =
-                    self.allocate_block_for_offset(logical_block as u32, false)?;
-                new_fs_blocks += a0;
-
-                let max_run = core::cmp::min(remaining / block_size, MAX_BULK_BLOCKS);
-                let mut run_start = first_phys;
-                let mut run_len = 1usize;
-                let mut done_in_region = 0usize; // full blocks already flushed
-
-                while done_in_region + run_len < max_run {
-                    let next_logical = logical_block + done_in_region + run_len;
-                    let (np, an) =
-                        self.allocate_block_for_offset(next_logical as u32, false)?;
-                    new_fs_blocks += an;
-                    if np == run_start + run_len as u32 {
-                        run_len += 1;
-                    } else {
-                        // Contiguity broke: flush the current run and start anew.
-                        let off = bytes_written + done_in_region * block_size;
-                        self.fs.write_fs_blocks(
-                            run_start as usize,
-                            run_len,
-                            &buf[off..off + run_len * block_size],
-                        )?;
-                        done_in_region += run_len;
-                        run_start = np;
-                        run_len = 1;
-                    }
-                }
-                let off = bytes_written + done_in_region * block_size;
-                self.fs.write_fs_blocks(
-                    run_start as usize,
-                    run_len,
-                    &buf[off..off + run_len * block_size],
-                )?;
-                done_in_region += run_len;
-                bytes_written += done_in_region * block_size;
-                continue;
-            }
-
-            // Slow path: partial (head/tail) block — read-modify-write via the
-            // cache.  A newly-allocated block is zeroed first so the untouched
-            // part is well-defined.
-            let chunk = core::cmp::min(remaining, block_size - block_offset);
-            let (phys_block, allocated) =
-                self.allocate_block_for_offset(logical_block as u32, true)?;
-            new_fs_blocks += allocated;
-
-            let mut block_buf = vec![0u8; block_size];
-            read_fs_block(&self.fs, phys_block as usize, &mut block_buf)?;
-            block_buf[block_offset..block_offset + chunk]
-                .copy_from_slice(&buf[bytes_written..bytes_written + chunk]);
-            write_fs_block(&self.fs, phys_block as usize, &block_buf)?;
-
-            bytes_written += chunk;
-        }
-
-        // Grow the logical size if we wrote past the current EOF.
-        if end_offset as u64 > self.size() {
-            self.set_size(end_offset as u64);
-        }
-        {
-            let mut raw = self.raw.lock();
-            // TODO: use real wall-clock time once the timer subsystem exists.
-            raw.i_mtime = 0;
-            // Add only the blocks allocated by this write to i_blocks; the
-            // starting value already accounts for pre-existing data, indirect
-            // and xattr blocks.
-            if new_fs_blocks > 0 {
-                let sectors = new_fs_blocks * self.sectors_per_block();
-                raw.i_blocks = raw.i_blocks.saturating_add(sectors);
-            }
-        }
-
-        // Persist inode to disk.
-        self.write_inode_to_disk()?;
-
-        Ok(bytes_written)
+        let _transaction = self.fs.lock_metadata_transaction();
+        self.write_at_locked(offset, buf)
     }
 
     fn lookup(&self, name: &str) -> Result<Arc<dyn INode>, FsError> {
@@ -1234,6 +1272,7 @@ impl INode for Ext2INode {
         file_type: FileType,
         mode: u32,
     ) -> Result<Arc<dyn INode>, FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         // Directories must go through `mkdir` (which sets up "." / "..").
         if file_type == FileType::Directory {
             return Err(FsError::InvalidInput);
@@ -1242,44 +1281,12 @@ impl INode for Ext2INode {
     }
 
     fn unlink(&self, name: &str) -> Result<(), FsError> {
-        let child_inode_num = super::dir::lookup(self, name)?;
-
-        let child_inode = self.fs.get_inode(child_inode_num)?;
-        {
-            let raw = child_inode.raw();
-            if raw.i_mode & EXT2_S_IFMT == EXT2_S_IFDIR {
-                return Err(FsError::IsDirectory);
-            }
-        }
-
-        super::dir::remove_dir_entry(self, name)?;
-
-        let should_free = {
-            let mut raw = child_inode.raw();
-            raw.i_links_count = raw.i_links_count.saturating_sub(1);
-            raw.i_links_count == 0
-        };
-
-        if should_free {
-            // Release the file's data blocks and any extended-attribute block
-            // before returning the inode to the free pool, and record the
-            // deletion time.
-            child_inode.free_all_blocks()?;
-            child_inode.release_xattr_block()?;
-            {
-                let mut raw = child_inode.raw();
-                raw.i_dtime = 0; // TODO: real wall-clock time once available.
-            }
-            child_inode.write_inode_to_disk()?;
-            self.fs.free_inode(child_inode_num)?;
-        } else {
-            child_inode.write_inode_to_disk()?;
-        }
-
-        Ok(())
+        let _transaction = self.fs.lock_metadata_transaction();
+        self.unlink_locked(name)
     }
 
     fn mkdir(&self, name: &str, mode: u32) -> Result<Arc<dyn INode>, FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         if super::dir::lookup(self, name).is_ok() {
             return Err(FsError::AlreadyExists);
         }
@@ -1291,7 +1298,9 @@ impl INode for Ext2INode {
             return Err(e);
         }
 
-        if let Err(e) = super::dir::add_dir_entry(self, name, new_inode_num, super::dir::TYPE_DIRECTORY) {
+        if let Err(e) =
+            super::dir::add_dir_entry(self, name, new_inode_num, super::dir::TYPE_DIRECTORY)
+        {
             let _ = self.fs.free_inode(new_inode_num);
             return Err(e);
         }
@@ -1320,50 +1329,8 @@ impl INode for Ext2INode {
     }
 
     fn rmdir(&self, name: &str) -> Result<(), FsError> {
-        if name == "." || name == ".." {
-            return Err(FsError::InvalidInput);
-        }
-        let child_inode_num = super::dir::lookup(self, name)?;
-
-        let child_inode = self.fs.get_inode(child_inode_num)?;
-        {
-            let raw = child_inode.raw();
-            if raw.i_mode & EXT2_S_IFMT != EXT2_S_IFDIR {
-                return Err(FsError::NotDirectory);
-            }
-        }
-
-        let entries = super::dir::list(&child_inode)?;
-        let has_children = entries
-            .iter()
-            .any(|(n, _)| n.as_str() != "." && n.as_str() != "..");
-        if has_children {
-            return Err(FsError::NotEmpty);
-        }
-
-        super::dir::remove_dir_entry(self, name)?;
-
-        // The parent loses the child's ".." backlink.
-        {
-            let mut raw = self.raw();
-            raw.i_links_count = raw.i_links_count.saturating_sub(1);
-        }
-        self.write_inode_to_disk()?;
-
-        // Release the directory's own data blocks and xattr block, then the
-        // inode.
-        child_inode.free_all_blocks()?;
-        child_inode.release_xattr_block()?;
-        {
-            let mut raw = child_inode.raw();
-            raw.i_links_count = 0;
-            raw.i_dtime = 0;
-        }
-        child_inode.write_inode_to_disk()?;
-        self.fs.adjust_used_dirs(child_inode_num, -1);
-        self.fs.free_inode(child_inode_num)?;
-
-        Ok(())
+        let _transaction = self.fs.lock_metadata_transaction();
+        self.rmdir_locked(name)
     }
 
     fn getattr(&self) -> Result<Metadata, FsError> {
@@ -1385,6 +1352,7 @@ impl INode for Ext2INode {
     }
 
     fn setattr(&self, metadata: &Metadata) -> Result<(), FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         {
             let mut raw = self.raw.lock();
             raw.i_mode = metadata.mode as u16;
@@ -1421,6 +1389,7 @@ impl INode for Ext2INode {
     }
 
     fn symlink(&self, name: &str, target: &str) -> Result<Arc<dyn INode>, FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         let node = self.create_child(name, FileType::Symlink, 0o777, 0)?;
         // Downcast to write the target inline / into a data block.
         let ext2: &Ext2INode = node
@@ -1432,6 +1401,7 @@ impl INode for Ext2INode {
     }
 
     fn link(&self, name: &str, target: &Arc<dyn INode>) -> Result<(), FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         if super::dir::lookup(self, name).is_ok() {
             return Err(FsError::AlreadyExists);
         }
@@ -1439,6 +1409,9 @@ impl INode for Ext2INode {
             .as_any()
             .downcast_ref::<Ext2INode>()
             .ok_or(FsError::CrossDevice)?;
+        if !Arc::ptr_eq(&self.fs, &target_ext2.fs) {
+            return Err(FsError::CrossDevice);
+        }
 
         // Hard links to directories are not permitted.
         let (target_ino, dir_ft) = {
@@ -1463,10 +1436,14 @@ impl INode for Ext2INode {
         new_parent: &Arc<dyn INode>,
         new_name: &str,
     ) -> Result<(), FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         let new_dir = new_parent
             .as_any()
             .downcast_ref::<Ext2INode>()
             .ok_or(FsError::CrossDevice)?;
+        if !Arc::ptr_eq(&self.fs, &new_dir.fs) {
+            return Err(FsError::CrossDevice);
+        }
 
         let child_ino = super::dir::lookup(self, old_name)?;
         let child = self.fs.get_inode(child_ino)?;
@@ -1495,9 +1472,9 @@ impl INode for Ext2INode {
                 {
                     return Err(FsError::NotEmpty);
                 }
-                new_dir.rmdir(new_name)?;
+                new_dir.rmdir_locked(new_name)?;
             } else {
-                new_dir.unlink(new_name)?;
+                new_dir.unlink_locked(new_name)?;
             }
         }
 
@@ -1526,6 +1503,7 @@ impl INode for Ext2INode {
     }
 
     fn truncate(&self, size: usize) -> Result<(), FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         {
             let raw = self.raw.lock();
             if raw.i_mode & EXT2_S_IFMT != EXT2_S_IFREG {
@@ -1542,11 +1520,11 @@ impl INode for Ext2INode {
         mode: u32,
         rdev: u32,
     ) -> Result<Arc<dyn INode>, FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         match file_type {
-            FileType::BlockDevice
-            | FileType::CharDevice
-            | FileType::Fifo
-            | FileType::Socket => self.create_child(name, file_type, mode, rdev),
+            FileType::BlockDevice | FileType::CharDevice | FileType::Fifo | FileType::Socket => {
+                self.create_child(name, file_type, mode, rdev)
+            }
             _ => Err(FsError::InvalidInput),
         }
     }
@@ -1584,6 +1562,7 @@ impl INode for Ext2INode {
     }
 
     fn setxattr(&self, name: &str, value: &[u8]) -> Result<(), FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         let (index, suffix) = xattr::split_name(name).ok_or(FsError::InvalidInput)?;
         let block_size = self.fs.block_size();
 
@@ -1611,6 +1590,7 @@ impl INode for Ext2INode {
     }
 
     fn removexattr(&self, name: &str) -> Result<(), FsError> {
+        let _transaction = self.fs.lock_metadata_transaction();
         let (index, suffix) = xattr::split_name(name).ok_or(FsError::InvalidInput)?;
         let block_size = self.fs.block_size();
 

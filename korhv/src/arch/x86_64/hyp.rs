@@ -120,42 +120,149 @@ unsafe fn rdmsr(msr: u32) -> u64 {
     ((hi as u64) << 32) | (lo as u64)
 }
 
-/// Build a 3-level NPT (PML4 -> PDPT -> PD) identity-mapping GPA [0, 1 GiB) to
-/// HPA [0, 1 GiB) using 2 MiB pages.  Returns the PML4 physical address.
-fn build_npt() -> usize {
-    let pml4 = kor_frame::alloc_page().expect("npt pml4");
-    let pdpt = kor_frame::alloc_page().expect("npt pdpt");
-    let pd = kor_frame::alloc_page().expect("npt pd");
-    let pml4_v = kor::arch::current().phys_to_virt(pml4) as *mut u64;
-    let pdpt_v = kor::arch::current().phys_to_virt(pdpt) as *mut u64;
-    let pd_v = kor::arch::current().phys_to_virt(pd) as *mut u64;
-    unsafe {
-        // PML4[0] -> PDPT (P|RW|US)
-        pml4_v.add(0).write_volatile((pdpt as u64) | 0x07);
-        // PDPT[0] -> PD (P|RW|US)
-        pdpt_v.add(0).write_volatile((pd as u64) | 0x07);
-        // PD[i] = (i*2MiB) | 0x87  (P|RW|US|PS, 2 MiB leaf)
-        for i in 0..512u64 {
-            pd_v.add(i as usize).write_volatile((i * 0x20_0000) | 0x87);
-        }
-    }
-    pml4
+const GUEST_GPA_BASE: usize = 0;
+const GUEST_FRAMES: usize = 512;
+const GUEST_SIZE: usize = GUEST_FRAMES * kor_frame::PAGE_SIZE;
+
+struct GuestMemory {
+    host_phys: usize,
 }
+
+impl GuestMemory {
+    fn allocate() -> Self {
+        let host_phys = kor_frame::alloc_frames(GUEST_FRAMES).expect("guest ram");
+        assert_eq!(
+            host_phys & (GUEST_SIZE - 1),
+            0,
+            "guest RAM must be 2 MiB aligned"
+        );
+        Self { host_phys }
+    }
+
+    fn host_ptr(&self) -> *mut u8 {
+        kor::arch::current().phys_to_virt(self.host_phys) as *mut u8
+    }
+}
+
+impl Drop for GuestMemory {
+    fn drop(&mut self) {
+        kor_frame::free_frames(self.host_phys, GUEST_FRAMES);
+    }
+}
+
+struct NptRoot {
+    pml4: usize,
+    pdpt: usize,
+    pd: usize,
+}
+
+impl NptRoot {
+    /// Map only GPA 0..2 MiB to the frames owned by `memory`.
+    fn new(memory: &GuestMemory) -> Self {
+        let pml4 = kor_frame::alloc_page().expect("npt pml4");
+        let pdpt = kor_frame::alloc_page().expect("npt pdpt");
+        let pd = kor_frame::alloc_page().expect("npt pd");
+        let pml4_v = kor::arch::current().phys_to_virt(pml4) as *mut u64;
+        let pdpt_v = kor::arch::current().phys_to_virt(pdpt) as *mut u64;
+        let pd_v = kor::arch::current().phys_to_virt(pd) as *mut u64;
+        unsafe {
+            core::ptr::write_bytes(pml4_v.cast::<u8>(), 0, 4096);
+            core::ptr::write_bytes(pdpt_v.cast::<u8>(), 0, 4096);
+            core::ptr::write_bytes(pd_v.cast::<u8>(), 0, 4096);
+            pml4_v.write_volatile((pdpt as u64) | 0x07);
+            pdpt_v.write_volatile((pd as u64) | 0x07);
+            // P|RW|US|PS. Every other GPA remains non-present.
+            pd_v.write_volatile((memory.host_phys as u64) | 0x87);
+        }
+        Self { pml4, pdpt, pd }
+    }
+
+    fn root(&self) -> usize {
+        self.pml4
+    }
+}
+
+impl Drop for NptRoot {
+    fn drop(&mut self) {
+        kor_frame::free_frames(self.pd, 1);
+        kor_frame::free_frames(self.pdpt, 1);
+        kor_frame::free_frames(self.pml4, 1);
+    }
+}
+#[repr(C)]
+struct SvmGprs {
+    rcx: u64,
+    rdx: u64,
+    rbx: u64,
+    rbp: u64,
+    rsi: u64,
+    rdi: u64,
+    r8: u64,
+    r9: u64,
+    r10: u64,
+    r11: u64,
+    r12: u64,
+    r13: u64,
+    r14: u64,
+    r15: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<SvmGprs>() == 14 * 8);
+
 /// save area.
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
-unsafe extern "C" fn svm_vmrun(vmcb_phys: u64, out: *mut u64) {
+unsafe extern "C" fn svm_vmrun(vmcb_phys: u64, gprs: *mut SvmGprs) {
     naked_asm!(
-        "push rbx", "push rbp", "push r12", "push r13", "push r14", "push r15",
-        "push rsi",                 // save out ptr
-        "mov rax, rdi",             // rax = VMCB phys for VMRUN
+        // Preserve host ABI state and retain the save-area pointer on the
+        // host stack restored by SVM on every VMEXIT.
+        "push rbx",
+        "push rbp",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        "push rsi",
+        "mov rax, rdi",
+        "mov rcx, [rsi + 0]",
+        "mov rdx, [rsi + 8]",
+        "mov rbx, [rsi + 16]",
+        "mov rbp, [rsi + 24]",
+        "mov rdi, [rsi + 40]",
+        "mov r8, [rsi + 48]",
+        "mov r9, [rsi + 56]",
+        "mov r10, [rsi + 64]",
+        "mov r11, [rsi + 72]",
+        "mov r12, [rsi + 80]",
+        "mov r13, [rsi + 88]",
+        "mov r14, [rsi + 96]",
+        "mov r15, [rsi + 104]",
+        "mov rsi, [rsi + 32]",
         "vmrun",
-        // After #VMEXIT the host save area restored host RAX/RIP/RSP/etc.
-        // GP regs other than RAX still hold guest values: capture guest RDI.
-        "mov rcx, [rsp]",           // out ptr
-        "mov [rcx], rdi",           // out[0] = guest rdi (hypercall arg0)
+        // RAX is transferred through the VMCB; all other guest GPRs remain in
+        // registers and are copied to the explicit vCPU state before reuse.
+        "mov rax, [rsp]",
+        "mov [rax + 0], rcx",
+        "mov [rax + 8], rdx",
+        "mov [rax + 16], rbx",
+        "mov [rax + 24], rbp",
+        "mov [rax + 32], rsi",
+        "mov [rax + 40], rdi",
+        "mov [rax + 48], r8",
+        "mov [rax + 56], r9",
+        "mov [rax + 64], r10",
+        "mov [rax + 72], r11",
+        "mov [rax + 80], r12",
+        "mov [rax + 88], r13",
+        "mov [rax + 96], r14",
+        "mov [rax + 104], r15",
         "add rsp, 8",
-        "pop r15", "pop r14", "pop r13", "pop r12", "pop rbp", "pop rbx",
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbp",
+        "pop rbx",
         "ret",
     );
 }
@@ -169,16 +276,13 @@ global_asm!(
     "guest_img_start:",
     ".code32",
     "mov eax, 1",
-    "mov edi, 0x48",       // 'H'
+    "mov edi, 0x48", // 'H'
     "vmmcall",
     "mov eax, 1",
-    "mov edi, 0x69",       // 'i'
+    "mov edi, 0x69", // 'i'
     "vmmcall",
     "mov eax, 1",
-    "mov edi, 0x21",       // '!'
-    "vmmcall",
-    "mov eax, 1",
-    "mov edi, 0x0a",       // newline
+    "mov edi, 0x21", // '!'
     "vmmcall",
     "mov eax, 2",
     "xor edi, edi",
@@ -198,10 +302,9 @@ unsafe extern "C" {
 pub fn run() {
     let arch = kor::arch::current();
 
-    // 1. Guest RAM: 2 MiB contiguous (power-of-two frames).
-    let guest_phys = kor_frame::alloc_frames(512).expect("guest ram"); // 2 MiB
-    let guest_size: usize = 512 * 4096;
-    let guest_v = arch.phys_to_virt(guest_phys) as *mut u8;
+    // 1. Guest RAM is an owned 2 MiB extent; the guest sees it at GPA zero.
+    let guest_memory = GuestMemory::allocate();
+    let guest_v = guest_memory.host_ptr();
 
     // 2. Copy the guest image to the start of guest RAM.
     let img_len = unsafe {
@@ -210,15 +313,11 @@ pub fn run() {
         e - s
     };
     unsafe {
-        core::ptr::copy_nonoverlapping(
-            core::ptr::addr_of!(guest_img_start),
-            guest_v,
-            img_len,
-        );
+        core::ptr::copy_nonoverlapping(core::ptr::addr_of!(guest_img_start), guest_v, img_len);
     }
 
-    // 3. Stage-2 (NPT) identity map.
-    let npt_root = build_npt();
+    // 3. NPT maps only the owned guest extent.
+    let npt = NptRoot::new(&guest_memory);
 
     // 4. VMCB (one 4 KiB frame).
     let vmcb_phys = kor_frame::alloc_page().expect("vmcb");
@@ -236,7 +335,7 @@ pub fn run() {
 
         // Nested paging: NP_ENABLE in nested_ctl, N_CR3 = NPT root.
         w64(vmcb, NESTED_CTL, NP_ENABLE);
-        w64(vmcb, NESTED_CR3, npt_root as u64);
+        w64(vmcb, NESTED_CR3, npt.root() as u64);
 
         // --- Guest state: 32-bit protected mode, paging off ---
         // Segments (selector/attr/limit/base).
@@ -260,24 +359,40 @@ pub fn run() {
         w64(vmcb, O_DR7, 0);
         w64(vmcb, O_RFLAGS, 0x2);
         w64(vmcb, O_G_PAT, 0x0007_0406_0007_0406);
-        w64(vmcb, O_RIP, guest_phys as u64); // entry = guest RAM base GPA
-        w64(vmcb, O_RSP, (guest_phys + guest_size - 0x100) as u64);
+        w64(vmcb, O_RIP, GUEST_GPA_BASE as u64);
+        w64(vmcb, O_RSP, (GUEST_GPA_BASE + GUEST_SIZE - 0x100) as u64);
         w64(vmcb, O_RAX, 0);
     }
 
     kor::println!(
-        "svm: vmcb={:#x} npt={:#x} guest={:#x} ({:#x} bytes), entry rip={:#x}",
-        vmcb_phys, npt_root, guest_phys, img_len, guest_phys
+        "svm: vmcb={:#x} npt={:#x} guest_hpa={:#x} ({:#x} bytes), GPA entry=0",
+        vmcb_phys,
+        npt.root(),
+        guest_memory.host_phys,
+        img_len
     );
 
-    // 5. VMRUN / #VMEXIT loop.
-    let mut out = [0u64; 1];
+    // 5. VMRUN / #VMEXIT loop with explicit ownership of every non-VMCB GPR.
+    let mut gprs = SvmGprs {
+        rcx: 0,
+        rdx: 0,
+        rbx: 0,
+        rbp: 0,
+        rsi: 0,
+        rdi: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+    };
     loop {
-        // SAFETY: svm_vmrun enters the guest; on #VMEXIT the guest's rdi is
-        // captured in out[0].  The exit code and guest rax live in the VMCB.
-        unsafe { svm_vmrun(vmcb_phys as u64, out.as_mut_ptr()) };
+        unsafe { svm_vmrun(vmcb_phys as u64, &mut gprs) };
         let exit_code = unsafe { r64(vmcb, EXIT_CODE) };
-        let guest_rdi = out[0];
+        let guest_rdi = gprs.rdi;
         let guest_rax = unsafe { r64(vmcb, O_RAX) };
 
         if exit_code == VMEXIT_ERR {
@@ -310,7 +425,11 @@ pub fn run() {
             VMEXIT_NPF => {
                 let info1 = unsafe { r64(vmcb, EXIT_INFO1) };
                 let info2 = unsafe { r64(vmcb, EXIT_INFO2) };
-                kor::println!("\nsvm: nested page fault (info1={:#x} info2={:#x})", info1, info2);
+                kor::println!(
+                    "KORHV: unexpected NPF info1={:#x} info2={:#x}",
+                    info1,
+                    info2
+                );
                 break;
             }
             other => {

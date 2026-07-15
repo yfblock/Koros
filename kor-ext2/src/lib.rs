@@ -20,12 +20,12 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 use kor::BlockDevice;
-use kor_fs::block_cache::BlockCache;
 use kor::{FsError, FsInfo, INode, SuperBlock as SuperBlockTrait};
+use kor_fs::block_cache::BlockCache;
 
 use block_group::BlockGroupDescriptor;
 use inode::Ext2INode;
-use super_block::{RawSuperBlock, SuperBlock, EXT2_VALID_FS};
+use super_block::{EXT2_VALID_FS, RawSuperBlock, SuperBlock};
 
 /// Byte offset of the ext2 superblock from the start of the device.
 const SUPERBLOCK_OFFSET: usize = 1024;
@@ -47,9 +47,9 @@ const INODE_CACHE_PRUNE_THRESHOLD: usize = 256;
 
 /// An ext2 filesystem instance.
 ///
-/// Mutable metadata (superblock, block group descriptors) is wrapped in
-/// [`spin::Mutex`] so that allocation methods can update bookkeeping
-/// through shared `&self` references.
+/// Metadata changes are serialized by `metadata_transaction`.  Fine-grained
+/// locks still protect individual in-memory objects, while the transaction
+/// lock keeps multi-object on-disk updates from interleaving.
 pub struct Ext2Fs {
     /// The underlying block device.
     device: Arc<dyn BlockDevice>,
@@ -57,6 +57,8 @@ pub struct Ext2Fs {
     cache: Mutex<BlockCache>,
     super_block: Mutex<SuperBlock>,
     block_groups: Mutex<Vec<BlockGroupDescriptor>>,
+    /// Filesystem-wide serialization boundary for metadata transactions.
+    metadata_transaction: Mutex<()>,
     /// Filesystem block size in bytes (derived from `super_block.log_block_size`).
     block_size: usize,
     /// When `true`, all mutating operations are rejected (the filesystem has
@@ -161,6 +163,7 @@ impl Ext2Fs {
             cache: Mutex::new(cache),
             super_block: Mutex::new(super_block),
             block_groups: Mutex::new(block_groups),
+            metadata_transaction: Mutex::new(()),
             block_size,
             read_only,
             self_ref: Mutex::new(Weak::new()),
@@ -168,6 +171,13 @@ impl Ext2Fs {
         });
         *fs.self_ref.lock() = Arc::downgrade(&fs);
         Ok(fs)
+    }
+    /// Enter the filesystem-wide metadata transaction boundary.
+    ///
+    /// Callers must acquire this exactly once at a mutation entrypoint and
+    /// keep the guard alive while invoking crate-internal mutation helpers.
+    pub(crate) fn lock_metadata_transaction(&self) -> spin::MutexGuard<'_, ()> {
+        self.metadata_transaction.lock()
     }
 
     /// The filesystem block size in bytes.
@@ -181,12 +191,12 @@ impl Ext2Fs {
     }
 
     /// A reference to the parsed superblock.
-    pub fn super_block(&self) -> spin::MutexGuard<'_, SuperBlock> {
+    pub(crate) fn super_block(&self) -> spin::MutexGuard<'_, SuperBlock> {
         self.super_block.lock()
     }
 
     /// The block group descriptor table.
-    pub fn block_groups(&self) -> spin::MutexGuard<'_, Vec<BlockGroupDescriptor>> {
+    pub(crate) fn block_groups(&self) -> spin::MutexGuard<'_, Vec<BlockGroupDescriptor>> {
         self.block_groups.lock()
     }
 
@@ -227,7 +237,7 @@ impl Ext2Fs {
 
     /// Write `buf` (exactly `block_size` bytes) to filesystem block
     /// `fs_block` via the block cache.
-    pub fn write_fs_block(&self, fs_block: usize, buf: &[u8]) -> Result<(), FsError> {
+    pub(crate) fn write_fs_block(&self, fs_block: usize, buf: &[u8]) -> Result<(), FsError> {
         if self.read_only {
             return Err(FsError::ReadOnly);
         }
@@ -273,7 +283,7 @@ impl Ext2Fs {
     ///
     /// Any cached copies of the range are discarded first (the whole range is
     /// overwritten).  `buf.len()` must equal `count * block_size`.
-    pub fn write_fs_blocks(
+    pub(crate) fn write_fs_blocks(
         &self,
         start_fs_block: usize,
         count: usize,
@@ -299,7 +309,7 @@ impl Ext2Fs {
 
     /// Write the in-memory superblock counters back to the primary superblock
     /// and every backup copy.
-    pub fn write_super_block(&self) -> Result<(), FsError> {
+    pub(crate) fn write_super_block(&self) -> Result<(), FsError> {
         if self.read_only {
             return Ok(());
         }
@@ -308,7 +318,11 @@ impl Ext2Fs {
 
         // Primary superblock: at byte 1024. For 1 KiB blocks that is block 1
         // at offset 0; for larger blocks it is block 0 at offset 1024.
-        let (primary_block, primary_off) = if block_size == 1024 { (1, 0) } else { (0, 1024) };
+        let (primary_block, primary_off) = if block_size == 1024 {
+            (1, 0)
+        } else {
+            (0, 1024)
+        };
         self.patch_super_block_copy(&sb, primary_block, primary_off, 0)?;
 
         // Backup superblocks live at the first block of each backup group.
@@ -336,14 +350,18 @@ impl Ext2Fs {
         let block_size = self.block_size;
         let mut buf = vec![0u8; block_size];
         self.read_fs_block(fs_block, &mut buf)?;
-        sb.patch_into(&mut buf[offset_in_block..offset_in_block + 1024], group_nr, 0);
+        sb.patch_into(
+            &mut buf[offset_in_block..offset_in_block + 1024],
+            group_nr,
+            0,
+        );
         self.write_fs_block(fs_block, &buf)?;
         Ok(())
     }
 
     /// Write the block group descriptor table back to the primary location
     /// and every backup copy.
-    pub fn write_block_group_descriptors(&self) -> Result<(), FsError> {
+    pub(crate) fn write_block_group_descriptors(&self) -> Result<(), FsError> {
         if self.read_only {
             return Ok(());
         }
@@ -447,7 +465,7 @@ impl Ext2Fs {
 
     /// Adjust `bg_used_dirs_count` for the group owning `inode_num` by
     /// `delta` (+1 on directory creation, -1 on removal).
-    pub fn adjust_used_dirs(&self, inode_num: u32, delta: i32) {
+    pub(crate) fn adjust_used_dirs(&self, inode_num: u32, delta: i32) {
         let inodes_per_group = self.super_block.lock().inodes_per_group;
         if inodes_per_group == 0 {
             return;
@@ -458,8 +476,7 @@ impl Ext2Fs {
             if delta >= 0 {
                 bg.bg_used_dirs_count = bg.bg_used_dirs_count.saturating_add(delta as u16);
             } else {
-                bg.bg_used_dirs_count =
-                    bg.bg_used_dirs_count.saturating_sub((-delta) as u16);
+                bg.bg_used_dirs_count = bg.bg_used_dirs_count.saturating_sub((-delta) as u16);
             }
         }
     }
@@ -475,35 +492,71 @@ impl SuperBlockTrait for Ext2Fs {
             .expect("ext2 root inode (2) must be readable") as Arc<dyn INode>
     }
 
-    fn sync(&self) {
-        // Persist metadata into the cache, then flush the cache to disk.
-        let _ = self.write_super_block();
-        let _ = self.write_block_group_descriptors();
-        let _ = self.cache.lock().sync();
+    fn sync(&self) -> Result<(), FsError> {
+        let _transaction = self.lock_metadata_transaction();
+        self.write_super_block()?;
+        self.write_block_group_descriptors()?;
+        self.cache.lock().sync().map_err(|_| FsError::IoError)
     }
 
-    fn on_mount(&self) {
+    fn on_mount(&self) -> Result<(), FsError> {
         if self.read_only {
-            return;
+            return Ok(());
         }
-        // Clear the "cleanly unmounted" bit and bump the mount count so a
-        // crash before unmount is detectable by fsck.
-        {
+        let _transaction = self.lock_metadata_transaction();
+        let previous = {
             let mut sb = self.super_block.lock();
+            let previous = (sb.state, sb.mnt_count);
             sb.state &= !EXT2_VALID_FS;
             sb.mnt_count = sb.mnt_count.saturating_add(1);
+            previous
+        };
+        let result = self
+            .write_super_block()
+            .and_then(|()| self.cache.lock().sync().map_err(|_| FsError::IoError));
+        if result.is_err() {
+            {
+                let mut sb = self.super_block.lock();
+                sb.state = previous.0;
+                sb.mnt_count = previous.1;
+            }
+            // Keep the cached image consistent with the restored in-memory
+            // state even when the device barrier failed.
+            let _ = self.write_super_block();
         }
-        let _ = self.write_super_block();
-        let _ = self.cache.lock().sync();
+        result
     }
 
-    fn on_unmount(&self) {
-        if !self.read_only {
-            // Mark the filesystem cleanly unmounted.
-            self.super_block.lock().state |= EXT2_VALID_FS;
+    fn on_unmount(&self) -> Result<(), FsError> {
+        let _transaction = self.lock_metadata_transaction();
+
+        // Make every mutation durable while the filesystem still carries its
+        // unclean marker.  Only then publish and flush the clean marker.
+        self.write_super_block()?;
+        self.write_block_group_descriptors()?;
+        self.cache.lock().sync().map_err(|_| FsError::IoError)?;
+        if self.read_only {
+            return Ok(());
         }
-        // Flush all metadata and dirty blocks.
-        self.sync();
+
+        let previous_state = {
+            let mut sb = self.super_block.lock();
+            let previous = sb.state;
+            sb.state |= EXT2_VALID_FS;
+            previous
+        };
+        let result = self
+            .write_super_block()
+            .and_then(|()| self.cache.lock().sync().map_err(|_| FsError::IoError));
+        if result.is_err() {
+            // The mount remains active after an unmount failure.  Restore the
+            // unclean marker both in memory and in the write-back cache so a
+            // later eviction cannot publish a stale clean marker.  Keep the
+            // rollback dirty on failure; the next unmount can retry it.
+            self.super_block.lock().state = previous_state;
+            let _ = self.write_super_block();
+        }
+        result
     }
 
     fn info(&self) -> FsInfo {
@@ -589,8 +642,13 @@ pub struct Ext2Driver;
 pub static EXT2_DRIVER: Ext2Driver = Ext2Driver;
 
 impl kor::FileSystemDriver for Ext2Driver {
-    fn name(&self) -> &'static str { "ext2" }
-    fn mount(&self, device: Option<Arc<dyn kor::BlockDevice>>) -> Result<Arc<dyn kor::SuperBlock>, FsError> {
+    fn name(&self) -> &'static str {
+        "ext2"
+    }
+    fn mount(
+        &self,
+        device: Option<Arc<dyn kor::BlockDevice>>,
+    ) -> Result<Arc<dyn kor::SuperBlock>, FsError> {
         let device = device.ok_or(FsError::InvalidInput)?;
         let fs: Arc<dyn kor::SuperBlock> = Ext2Fs::open(device)?;
         Ok(fs)

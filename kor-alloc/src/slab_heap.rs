@@ -135,8 +135,14 @@ impl SlabHeap {
     /// # Safety
     /// `[start, start + size)` must be unused, page-aligned at `start`, and valid for `'static`.
     pub unsafe fn new(start: usize, size: usize) -> Self {
-        assert!(start % MIN_SLAB_BYTES == 0, "heap start {start:#x} not page-aligned");
-        assert!(size >= MIN_HEAP_BYTES, "heap size {size:#x} below minimum {MIN_HEAP_BYTES:#x}");
+        assert!(
+            start % MIN_SLAB_BYTES == 0,
+            "heap start {start:#x} not page-aligned"
+        );
+        assert!(
+            size >= MIN_HEAP_BYTES,
+            "heap size {size:#x} below minimum {MIN_HEAP_BYTES:#x}"
+        );
         assert!(
             size % MIN_HEAP_BYTES == 0,
             "heap size must be a multiple of {MIN_HEAP_BYTES:#x}"
@@ -158,7 +164,7 @@ impl SlabHeap {
     }
 
     fn class_for(layout: &Layout) -> SlabClass {
-        if layout.size() > 4096 {
+        if layout.size() > PAGE_SIZE || layout.align() > PAGE_SIZE {
             SlabClass::Large
         } else if layout.size() <= 64 && layout.align() <= 64 {
             SlabClass::Bytes64
@@ -207,9 +213,10 @@ impl SlabHeap {
     }
 
     fn alloc_large(layout: Layout) -> Option<NonNull<u8>> {
-        let pages = layout.size().div_ceil(PAGE_SIZE).max(1);
-        let phys = kor_frame::alloc_frames(pages)?;
+        let frames = large_extent_frames(layout)?;
+        let phys = kor_frame::alloc_frames(frames)?;
         let va = kor::arch::phys_to_virt(phys);
+        debug_assert_eq!(va & (layout.align() - 1), 0);
         Some(unsafe { NonNull::new_unchecked(va as *mut u8) })
     }
 
@@ -227,14 +234,20 @@ impl SlabHeap {
     }
 
     fn dealloc_large(ptr: NonNull<u8>, layout: Layout) {
-        let pages = layout.size().div_ceil(PAGE_SIZE).max(1);
+        let frames = large_extent_frames(layout).expect("valid allocation layout");
         let phys = kor::arch::virt_to_phys(ptr.as_ptr() as usize);
-        kor_frame::free_frames(phys, pages);
+        kor_frame::free_frames(phys, frames);
     }
 
     pub fn frame_backed_bytes(&self) -> usize {
         self.frame_bytes
     }
+}
+
+fn large_extent_frames(layout: Layout) -> Option<usize> {
+    let size_frames = layout.size().max(1).checked_add(PAGE_SIZE - 1)? / PAGE_SIZE;
+    let align_frames = layout.align().max(PAGE_SIZE) / PAGE_SIZE;
+    Some(size_frames.max(align_frames))
 }
 
 /// Spin-locked slab heap suitable for `#[global_allocator]`.
@@ -276,14 +289,17 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let class = SlabHeap::class_for(&layout);
 
-        // Large allocations go directly to the frame allocator, bypassing the
-        // slab mutex.  This is critical because `alloc_frames` may trigger
-        // re-entrant allocations via the buddy allocator's internal BTreeSet
-        // operations — holding the slab spin-lock during that would deadlock.
+        // Large or over-aligned allocations go directly to the allocation-free
+        // frame allocator, bypassing the slab mutex. The frame allocator
+        // rounds the requested extent to a power of two and aligns it to the
+        // same boundary, satisfying every power-of-two Rust Layout alignment.
         if class == SlabClass::Large {
-            let pages = layout.size().div_ceil(PAGE_SIZE).max(1);
-            if let Some(phys) = kor_frame::alloc_frames(pages) {
-                return kor::arch::phys_to_virt(phys) as *mut u8;
+            if let Some(frames) = large_extent_frames(layout)
+                && let Some(phys) = kor_frame::alloc_frames(frames)
+            {
+                let pointer = kor::arch::phys_to_virt(phys);
+                debug_assert_eq!(pointer & (layout.align() - 1), 0);
+                return pointer as *mut u8;
             }
             return core::ptr::null_mut();
         }
@@ -309,11 +325,11 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
         if let Some(nn) = NonNull::new(ptr) {
             let class = SlabHeap::class_for(&layout);
             if class == SlabClass::Large {
-                // Large deallocation — same reasoning as alloc: avoid holding
-                // the slab lock while calling into the frame allocator.
-                let pages = layout.size().div_ceil(PAGE_SIZE).max(1);
+                // Use the identical extent calculation as allocation so the
+                // frame allocator releases the full aligned reservation.
+                let frames = large_extent_frames(layout).expect("valid allocation layout");
                 let phys = kor::arch::virt_to_phys(ptr as usize);
-                kor_frame::free_frames(phys, pages);
+                kor_frame::free_frames(phys, frames);
             } else {
                 let mut guard = self.0.lock();
                 if let Some(heap) = guard.as_mut() {

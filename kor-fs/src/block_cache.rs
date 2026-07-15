@@ -6,8 +6,8 @@
 
 extern crate alloc;
 
-use alloc::{sync::Arc, vec::Vec, collections::BTreeMap};
 use super::{BlockDevice, BlockError};
+use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
 
 // ---------------------------------------------------------------------------
 // Cached block
@@ -65,11 +65,7 @@ impl BlockCache {
     /// On a cache hit the data is copied directly from memory; on a miss the
     /// block is fetched from the device, inserted into the cache (possibly
     /// evicting the LRU entry), and then copied to `buf`.
-    pub fn read_block_cached(
-        &mut self,
-        block_id: usize,
-        buf: &mut [u8],
-    ) -> Result<(), BlockError> {
+    pub fn read_block_cached(&mut self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError> {
         let bs = self.device.block_size();
         if buf.len() != bs {
             return Err(BlockError::InvalidBlock);
@@ -87,9 +83,16 @@ impl BlockCache {
 
         // Insert into cache (may evict).
         let data = Vec::from(buf);
-        self.cache.insert(block_id, CachedBlock { block_id, data, dirty: false });
+        self.cache.insert(
+            block_id,
+            CachedBlock {
+                block_id,
+                data,
+                dirty: false,
+            },
+        );
         self.access_order.push(block_id);
-        self.evict_if_needed();
+        self.evict_if_needed()?;
 
         Ok(())
     }
@@ -99,11 +102,7 @@ impl BlockCache {
     /// The cached copy is updated and marked dirty.  The data is **not**
     /// written to the device until [`sync`](BlockCache::sync) is called (or the
     /// block is evicted).
-    pub fn write_block_cached(
-        &mut self,
-        block_id: usize,
-        buf: &[u8],
-    ) -> Result<(), BlockError> {
+    pub fn write_block_cached(&mut self, block_id: usize, buf: &[u8]) -> Result<(), BlockError> {
         let bs = self.device.block_size();
         if buf.len() != bs {
             return Err(BlockError::InvalidBlock);
@@ -119,9 +118,16 @@ impl BlockCache {
 
         // Cache miss — insert new dirty entry.
         let data = Vec::from(buf);
-        self.cache.insert(block_id, CachedBlock { block_id, data, dirty: true });
+        self.cache.insert(
+            block_id,
+            CachedBlock {
+                block_id,
+                data,
+                dirty: true,
+            },
+        );
         self.access_order.push(block_id);
-        self.evict_if_needed();
+        self.evict_if_needed()?;
 
         Ok(())
     }
@@ -132,10 +138,15 @@ impl BlockCache {
     /// device).
     pub fn flush_range(&mut self, start_block: usize, count: usize) -> Result<(), BlockError> {
         for id in start_block..start_block + count {
-            if let Some(entry) = self.cache.get_mut(&id)
+            if let Some(entry) = self.cache.get(&id)
                 && entry.dirty
             {
                 self.device.write_block(id, &entry.data)?;
+            }
+        }
+        self.device.flush()?;
+        for id in start_block..start_block + count {
+            if let Some(entry) = self.cache.get_mut(&id) {
                 entry.dirty = false;
             }
         }
@@ -157,13 +168,16 @@ impl BlockCache {
     }
 
     /// Flush every dirty block to the underlying device and clear the dirty
-    /// flags.
+    /// flags only after the device confirms the persistence barrier.
     pub fn sync(&mut self) -> Result<(), BlockError> {
-        for entry in self.cache.values_mut() {
+        for entry in self.cache.values() {
             if entry.dirty {
                 self.device.write_block(entry.block_id, &entry.data)?;
-                entry.dirty = false;
             }
+        }
+        self.device.flush()?;
+        for entry in self.cache.values_mut() {
+            entry.dirty = false;
         }
         Ok(())
     }
@@ -180,29 +194,28 @@ impl BlockCache {
         self.access_order.push(block_id);
     }
 
-    /// Evict the least-recently-used entry when the cache exceeds capacity.
+    /// Evict least-recently-used entries until the cache is within capacity.
     ///
-    /// If the evicted block is dirty it is written back to the device first.
-    fn evict_if_needed(&mut self) {
+    /// A dirty victim remains cached and dirty unless both its write and the
+    /// device persistence barrier succeed, allowing a later operation to
+    /// retry the writeback.
+    fn evict_if_needed(&mut self) -> Result<(), BlockError> {
         while self.cache.len() > self.max_blocks {
-            // The front of access_order is the LRU entry.
             let victim_id = match self.access_order.first().copied() {
                 Some(id) => id,
                 None => break,
             };
 
-            // Remove from access_order.
-            self.access_order.remove(0);
-
-            // Remove from cache, flushing if dirty.
-            if let Some(entry) = self.cache.remove(&victim_id)
+            if let Some(entry) = self.cache.get(&victim_id)
                 && entry.dirty
             {
-                // Best-effort flush — ignore error during eviction to avoid
-                // panicking in a non-recoverable path.  A real kernel would
-                // log this.
-                let _ = self.device.write_block(entry.block_id, &entry.data);
+                self.device.write_block(entry.block_id, &entry.data)?;
+                self.device.flush()?;
             }
+
+            self.cache.remove(&victim_id);
+            self.access_order.remove(0);
         }
+        Ok(())
     }
 }

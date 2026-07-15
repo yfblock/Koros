@@ -44,15 +44,14 @@ Linux boots all the way to PID 1 and runs /init:
    `dtc -I dts -O dtb virt.dts -o virt.dtb`
 4. Run: `./run.sh` (override $KORHV / $IMAGE / $DTB if needed).
 
+
 ## Notes / limitations
 
-- No memory isolation: stage-2 (VTTBR) is disabled, so the guest uses host
-  physical addresses directly. The hypervisor's frame allocator is clipped to
-  0x40094000..0x40200000 and the guest /memory starts at 0x40200000 so the two
-  do not overlap, but nothing enforces it.
-- QEMU's TCG intercepts PSCI SMCs in its machine layer, so they do not trap to
-  EL2 here; the hypervisor's SMC/PSCI handler (see `src/arch/aarch64/hyp.rs`)
-  is in place for environments where SMC traps to EL2. On this host the
-  hypervisor is effectively an ERET shim with full device passthrough.
-- Single CPU (-smp 1); no virtual interrupt controller, no virtio, no root fs
-  beyond the built-in initramfs.
+- The current EL2 implementation uses owned stage-2 roots for two guests,
+  virtualizes the GIC and UART, validates virtio descriptor GPAs before
+  temporarily translating them for DMA, and routes one private block device to
+  each guest. These boundaries require hardware qualification in addition to
+  QEMU testing.
+- QEMU TCG may handle platform details differently from physical EL2/SVM
+  implementations and is not a substitute for hardware qualification.
+- The Linux demo artifacts (`Image`, DTBs, and ext2 disks) remain optional.

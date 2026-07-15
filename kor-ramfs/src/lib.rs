@@ -113,7 +113,11 @@ impl RamINode {
             metadata: Mutex::new(Metadata {
                 size,
                 mode: 0o777,
-                uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0,
+                uid: 0,
+                gid: 0,
+                atime: 0,
+                mtime: 0,
+                ctime: 0,
                 file_type: FileType::Symlink,
             }),
             self_ref: Mutex::new(None),
@@ -204,11 +208,7 @@ impl INode for RamINode {
         if self.file_type != FileType::Directory {
             return Err(FsError::NotDirectory);
         }
-        let self_weak = self
-            .self_ref
-            .lock()
-            .clone()
-            .ok_or(FsError::IoError)?;
+        let self_weak = self.self_ref.lock().clone().ok_or(FsError::IoError)?;
 
         let mut children = self.children.lock();
         if children.contains_key(name) {
@@ -242,11 +242,7 @@ impl INode for RamINode {
         if self.file_type != FileType::Directory {
             return Err(FsError::NotDirectory);
         }
-        let self_weak = self
-            .self_ref
-            .lock()
-            .clone()
-            .ok_or(FsError::IoError)?;
+        let self_weak = self.self_ref.lock().clone().ok_or(FsError::IoError)?;
 
         let mut children = self.children.lock();
         if children.contains_key(name) {
@@ -358,8 +354,9 @@ impl SuperBlock for RamFs {
         Arc::clone(&self.root) as Arc<dyn INode>
     }
 
-    fn sync(&self) {
+    fn sync(&self) -> Result<(), FsError> {
         // No-op: everything is in memory.
+        Ok(())
     }
 
     fn info(&self) -> FsInfo {
@@ -384,8 +381,13 @@ pub struct RamFsDriver;
 pub static RAMFS_DRIVER: RamFsDriver = RamFsDriver;
 
 impl kor::FileSystemDriver for RamFsDriver {
-    fn name(&self) -> &'static str { "ramfs" }
-    fn mount(&self, _device: Option<Arc<dyn kor::BlockDevice>>) -> Result<Arc<dyn kor::SuperBlock>, FsError> {
+    fn name(&self) -> &'static str {
+        "ramfs"
+    }
+    fn mount(
+        &self,
+        _device: Option<Arc<dyn kor::BlockDevice>>,
+    ) -> Result<Arc<dyn kor::SuperBlock>, FsError> {
         let fs: Arc<dyn kor::SuperBlock> = Arc::new(RamFs::new());
         Ok(fs)
     }

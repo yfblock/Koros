@@ -105,6 +105,7 @@ endif
 run: build $(EXT2_IMG)
 	$(QEMU_EXEC)
 
+
 os-images/ext2-test.img:
 	@mkdir -p $(dir $@)
 	dd if=/dev/zero of=$@ bs=1M count=4 2>/dev/null

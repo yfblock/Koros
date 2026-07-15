@@ -18,9 +18,9 @@ mod registries;
 mod virtio;
 
 use kor::cmdline;
-use kor::config::{self, Console as ConsoleCfg, PlatformConfig};
 #[cfg(target_arch = "loongarch64")]
 use kor::config::PciEcam;
+use kor::config::{self, Console as ConsoleCfg, PlatformConfig};
 
 /// Board / platform configuration for the QEMU targets.
 fn platform_config() -> PlatformConfig {
@@ -110,7 +110,9 @@ extern "C" fn kernel_main() -> ! {
         fw => core::cmp::min(fw, ks),
     };
     collected.each(|start, end| {
-        kor::regions::clip_region(start, end, hole_start, ke, |s, e| kor_frame::add_region(s, e));
+        kor::regions::clip_region(start, end, hole_start, ke, |s, e| {
+            kor_frame::add_region(s, e)
+        });
     });
     heap::self_test();
     kor::arch::current().page_table_init();
@@ -215,9 +217,13 @@ extern "C" fn secondary_entry(cpu_id: usize) -> ! {
 // Driver probing
 // ---------------------------------------------------------------------------
 
-#[cfg(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "loongarch64"))]
+#[cfg(any(
+    target_arch = "riscv64",
+    target_arch = "aarch64",
+    target_arch = "loongarch64"
+))]
 fn probe_devices() {
-    use kor::driver::{probe_fdt, DeviceDriver};
+    use kor::driver::{DeviceDriver, probe_fdt};
     use virtio::VIRTIO_MMIO_DRIVER;
 
     static DRIVERS: &[&dyn DeviceDriver] = &[&VIRTIO_MMIO_DRIVER];
@@ -225,7 +231,11 @@ fn probe_devices() {
     // firmware-passed register captured at boot.
     let fdt = {
         let c = config::config_dtb();
-        if c != 0 { c } else { kor::arch::current().dtb_ptr() }
+        if c != 0 {
+            c
+        } else {
+            kor::arch::current().dtb_ptr()
+        }
     };
     probe_fdt(fdt, DRIVERS);
 
@@ -270,7 +280,11 @@ fn demo_producer() {
     for i in 0..5 {
         kor_sched::sleep_ms(150);
         DEMO_CHAN.send(i * 10);
-        kor::println!("[producer cpu{}] sent {}", kor::arch::current().cpu_id(), i * 10);
+        kor::println!(
+            "[producer cpu{}] sent {}",
+            kor::arch::current().cpu_id(),
+            i * 10
+        );
     }
 }
 
@@ -299,7 +313,11 @@ fn busy_work() {
 fn demo_task_c() {
     for round in 0..6 {
         busy_work();
-        kor::println!("[task C cpu{}] round {}", kor::arch::current().cpu_id(), round);
+        kor::println!(
+            "[task C cpu{}] round {}",
+            kor::arch::current().cpu_id(),
+            round
+        );
     }
     kor::println!("[task C] done");
 }
@@ -307,14 +325,22 @@ fn demo_task_c() {
 fn demo_task_d() {
     for round in 0..6 {
         busy_work();
-        kor::println!("[task D cpu{}] round {}", kor::arch::current().cpu_id(), round);
+        kor::println!(
+            "[task D cpu{}] round {}",
+            kor::arch::current().cpu_id(),
+            round
+        );
     }
     kor::println!("[task D] done");
 }
 
 fn demo_task_a() {
     for i in 0..5 {
-        kor::println!("[task A cpu{}] iteration {}", kor::arch::current().cpu_id(), i);
+        kor::println!(
+            "[task A cpu{}] iteration {}",
+            kor::arch::current().cpu_id(),
+            i
+        );
         kor_sched::sleep_ms(200);
     }
     kor::println!("[task A] done");

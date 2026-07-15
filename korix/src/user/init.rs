@@ -29,7 +29,7 @@ pub fn spawn_init() {
         return;
     }
 
-    let address_space = match AddressSpace::empty() {
+    let mut address_space = match AddressSpace::empty() {
         Ok(address_space) => address_space,
         Err(error) => {
             kor::println!("[korix] cannot create init address space: {:?}", error);
@@ -37,11 +37,12 @@ pub fn spawn_init() {
         }
     };
     let argv = [String::from("/bin/sh")];
-    match elf::load_elf(&address_space, &busybox, &argv) {
+    match elf::load_elf(&mut address_space, &busybox, &argv) {
         Ok(prog) => {
             kor::println!(
                 "[korix] loaded: entry={:#x}, sp={:#x}",
-                prog.entry, prog.stack_top
+                prog.entry,
+                prog.stack_top
             );
 
             address_space.activate();

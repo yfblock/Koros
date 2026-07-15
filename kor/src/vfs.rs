@@ -4,11 +4,11 @@
 //! the [`SuperBlock`] and [`INode`] traits defined here and register a
 //! [`FileSystemDriver`] with `kor-fs` at boot.
 
+use crate::BlockDevice;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::any::Any;
-use crate::BlockDevice;
 
 /// Classification of a filesystem entry.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -66,11 +66,17 @@ pub enum FsError {
 /// A mounted filesystem instance.
 pub trait SuperBlock: Send + Sync {
     fn root_inode(&self) -> Arc<dyn INode>;
-    fn sync(&self);
+    fn sync(&self) -> Result<(), FsError>;
     fn info(&self) -> FsInfo;
-    fn on_mount(&self) {}
-    fn on_unmount(&self) {}
-    fn read_only(&self) -> bool { false }
+    fn on_mount(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn on_unmount(&self) -> Result<(), FsError> {
+        Ok(())
+    }
+    fn read_only(&self) -> bool {
+        false
+    }
 }
 
 /// A single file, directory, or special file within a filesystem.
@@ -78,7 +84,8 @@ pub trait INode: Send + Sync {
     fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, FsError>;
     fn write_at(&self, offset: usize, buf: &[u8]) -> Result<usize, FsError>;
     fn lookup(&self, name: &str) -> Result<Arc<dyn INode>, FsError>;
-    fn create(&self, name: &str, file_type: FileType, mode: u32) -> Result<Arc<dyn INode>, FsError>;
+    fn create(&self, name: &str, file_type: FileType, mode: u32)
+    -> Result<Arc<dyn INode>, FsError>;
     fn unlink(&self, name: &str) -> Result<(), FsError>;
     fn mkdir(&self, name: &str, mode: u32) -> Result<Arc<dyn INode>, FsError>;
     fn rmdir(&self, name: &str) -> Result<(), FsError>;
@@ -88,16 +95,47 @@ pub trait INode: Send + Sync {
     fn ino(&self) -> u32;
     fn as_any(&self) -> &dyn Any;
 
-    fn readlink(&self) -> Result<String, FsError> { Err(FsError::Unsupported) }
-    fn symlink(&self, _name: &str, _target: &str) -> Result<Arc<dyn INode>, FsError> { Err(FsError::Unsupported) }
-    fn link(&self, _name: &str, _target: &Arc<dyn INode>) -> Result<(), FsError> { Err(FsError::Unsupported) }
-    fn rename(&self, _old_name: &str, _new_parent: &Arc<dyn INode>, _new_name: &str) -> Result<(), FsError> { Err(FsError::Unsupported) }
-    fn truncate(&self, _size: usize) -> Result<(), FsError> { Err(FsError::Unsupported) }
-    fn mknod(&self, _name: &str, _file_type: FileType, _mode: u32, _rdev: u32) -> Result<Arc<dyn INode>, FsError> { Err(FsError::Unsupported) }
-    fn getxattr(&self, _name: &str) -> Result<Vec<u8>, FsError> { Err(FsError::Unsupported) }
-    fn setxattr(&self, _name: &str, _value: &[u8]) -> Result<(), FsError> { Err(FsError::Unsupported) }
-    fn listxattr(&self) -> Result<Vec<String>, FsError> { Ok(Vec::new()) }
-    fn removexattr(&self, _name: &str) -> Result<(), FsError> { Err(FsError::Unsupported) }
+    fn readlink(&self) -> Result<String, FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn symlink(&self, _name: &str, _target: &str) -> Result<Arc<dyn INode>, FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn link(&self, _name: &str, _target: &Arc<dyn INode>) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn rename(
+        &self,
+        _old_name: &str,
+        _new_parent: &Arc<dyn INode>,
+        _new_name: &str,
+    ) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn truncate(&self, _size: usize) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn mknod(
+        &self,
+        _name: &str,
+        _file_type: FileType,
+        _mode: u32,
+        _rdev: u32,
+    ) -> Result<Arc<dyn INode>, FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn getxattr(&self, _name: &str) -> Result<Vec<u8>, FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn setxattr(&self, _name: &str, _value: &[u8]) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
+    fn listxattr(&self) -> Result<Vec<String>, FsError> {
+        Ok(Vec::new())
+    }
+    fn removexattr(&self, _name: &str) -> Result<(), FsError> {
+        Err(FsError::Unsupported)
+    }
 }
 
 // ---------------------------------------------------------------------------

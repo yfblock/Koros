@@ -9,7 +9,8 @@
 .set PTE_AF,         (1 << 10)
 .set PTE_ATTR_INDX,  (1 << 2)       // MAIR index 1 = Normal WB
 
-.set L1_BLOCK_FLAGS, (PTE_VALID | PTE_AF | PTE_ATTR_INDX)
+.set L1_DEVICE_FLAGS, (PTE_VALID | PTE_AF)
+.set L1_NORMAL_FLAGS, (PTE_VALID | PTE_AF | PTE_ATTR_INDX)
 .set L0_TABLE_FLAGS, (PTE_VALID | PTE_TYPE_TABLE)
 
 .section .data.boot_page_table
@@ -44,12 +45,13 @@ _start:
     orr     x1, x1, #L0_TABLE_FLAGS
     str     x1, [x0]                 // L0[0] = L1 | table
     add     x2, x0, #0x1000          // L1 base
-    movz    x3, #L1_BLOCK_FLAGS
-    str     x3, [x2]                 // L1[0] = 0x00000000 block (devices, low)
+    movz    x3, #L1_DEVICE_FLAGS
+    str     x3, [x2]                 // L1[0] = low MMIO, Device-nGnRnE
     movz    x4, #0x0000
     movk    x4, #0x4000, lsl #16     // x4 = 0x40000000
-    orr     x5, x4, x3
-    str     x5, [x2, #8]             // L1[1] = 0x40000000 block (RAM)
+    movz    x5, #L1_NORMAL_FLAGS
+    orr     x5, x4, x5
+    str     x5, [x2, #8]             // L1[1] = RAM, Normal-WB
 
     // --- MAIR_EL2: Attr0=Device(0x00), Attr1=Normal-WB(0xFF) ---
     movz    x0, #0xFF00

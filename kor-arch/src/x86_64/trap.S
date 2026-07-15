@@ -44,34 +44,22 @@ _trap_handlers:
     .set i, i + 1
 .endr
 
-.section .bss
-.balign 16
-.global syscall_stack
-syscall_stack:
-    .skip 16384
-.global syscall_stack_top
-syscall_stack_top:
-
-.section .data
-.balign 8
-.global syscall_user_rsp
-syscall_user_rsp:
-    .quad 0
 
 .section .text
 .code64
 .global syscall_entry
 syscall_entry:
-    # SYSCALL leaves RSP pointing at the user stack. Save it before using the
-    # dedicated kernel syscall stack. RCX is the user return RIP; R11 is RFLAGS.
-    mov     [rip + syscall_user_rsp], rsp
-    lea     rsp, [rip + syscall_stack_top]
+    # IA32_KERNEL_GS_BASE points at this CPU's SyscallCpuState. swapgs gives
+    # access to it without clobbering any user register before the save frame.
+    swapgs
+    mov     qword ptr gs:[0], rsp
+    mov     rsp, qword ptr gs:[8]
 
     # Build the same CPU frame as a ring-3 interrupt, followed by a synthetic
     # error code and vector 0x100. The Rust handler distinguishes this native
     # SYSCALL path from the int 0x80 compatibility gate.
     push    0x23
-    push    qword ptr [rip + syscall_user_rsp]
+    push    qword ptr gs:[0]
     push    r11
     push    0x1b
     push    rcx
@@ -113,6 +101,7 @@ syscall_entry:
     pop     r14
     pop     r15
     add     rsp, 16
+    swapgs
     iretq
 
 .Ltrap_common:

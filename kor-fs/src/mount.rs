@@ -4,7 +4,6 @@
 //! provides lookup by longest-prefix match.
 
 use alloc::collections::BTreeMap;
-use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use spin::Mutex;
@@ -146,18 +145,31 @@ impl Default for MountTable {
 // ---------------------------------------------------------------------------
 
 /// Mount `fs` at the absolute path `path`.
-pub fn mount(mounts: &Mutex<MountTable>, path: &str, fs: Arc<dyn SuperBlock>) -> Result<(), FsError> {
+pub fn mount(
+    mounts: &Mutex<MountTable>,
+    path: &str,
+    fs: Arc<dyn SuperBlock>,
+) -> Result<(), FsError> {
     mounts.lock().mount(path, Arc::clone(&fs))?;
-    // Notify the filesystem so it can mark itself "mounted" on disk.
-    fs.on_mount();
+    // Roll back the table entry if marking the filesystem mounted fails.
+    if let Err(error) = fs.on_mount() {
+        let _ = mounts.lock().unmount(path);
+        return Err(error);
+    }
     Ok(())
 }
 
 /// Unmount whatever is mounted at `path`.
 pub fn unmount(mounts: &Mutex<MountTable>, path: &str) -> Result<(), FsError> {
-    let fs = mounts.lock().resolve_mount(path).ok_or(FsError::NotFound)?;
-    // Flush and mark clean before detaching.
-    fs.on_unmount();
+    let canonical = canonicalize_mount_path(path);
+    let fs = mounts
+        .lock()
+        .table
+        .get(&canonical)
+        .cloned()
+        .ok_or(FsError::NotFound)?;
+    // Keep the filesystem attached if flushing or marking it clean fails.
+    fs.on_unmount()?;
     mounts.lock().unmount(path)
 }
 
@@ -179,10 +191,11 @@ pub fn resolve(mounts: &Mutex<MountTable>, path: &str) -> Result<Arc<dyn INode>,
 }
 
 /// Flush every mounted filesystem to its backing store.
-pub fn sync_all(mounts: &Mutex<MountTable>) {
+pub fn sync_all(mounts: &Mutex<MountTable>) -> Result<(), FsError> {
     for fs in mounts.lock().table.values() {
-        fs.sync();
+        fs.sync()?;
     }
+    Ok(())
 }
 
 /// Normalize a mount path: strip trailing slashes and ensure a leading `/`.

@@ -5,8 +5,11 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use kor::{MapSize, MappingFlags};
+use kor::MappingFlags;
 
+use super::layout::{
+    ADDRESS_LIMIT, LOAD_BASE, PAGE_SIZE, STACK_SIZE as USER_STACK_SIZE, STACK_TOP as USER_STACK_TOP,
+};
 use crate::mm::AddressSpace;
 
 /// ELF header (first 64 bytes of an ELF64 file)
@@ -45,21 +48,20 @@ pub const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
+const ELFCLASS64: u8 = 2;
+const EM_X86_64: u16 = 62;
+const EM_AARCH64: u16 = 183;
+const EM_RISCV: u16 = 243;
 
-/// Base address for PIE executables (after clearing boot identity map).
-const LOAD_BASE: usize = 0x0001_0000; // 64 KiB
-
-const PAGE_SIZE: usize = 4096;
-
-/// User stack top (256 GiB — well above any program).
-// Above identity-mapped region (512 GiB on aarch64, 4 GiB on riscv64)
-    #[cfg(target_arch = "riscv64")]
-    const USER_STACK_TOP: usize = 0x10_0000_0000;
-    #[cfg(target_arch = "aarch64")]
-    const USER_STACK_TOP: usize = 0x80_0000_0000;
-    #[cfg(target_arch = "x86_64")]
-    const USER_STACK_TOP: usize = 0x8_0000_0000; // Above 4 GiB identity map
-const USER_STACK_SIZE: usize = 64 * 1024;
+fn expected_machine() -> u16 {
+    if cfg!(target_arch = "riscv64") {
+        EM_RISCV
+    } else if cfg!(target_arch = "aarch64") {
+        EM_AARCH64
+    } else {
+        EM_X86_64
+    }
+}
 
 pub struct LoadedProgram {
     pub entry: usize,
@@ -73,7 +75,7 @@ pub fn is_elf(data: &[u8]) -> bool {
 /// Load an ELF image into `address_space` without replacing the caller's
 /// currently active image.
 pub fn load_elf(
-    address_space: &AddressSpace,
+    address_space: &mut AddressSpace,
     data: &[u8],
     argv: &[String],
 ) -> Result<LoadedProgram, &'static str> {
@@ -86,29 +88,41 @@ pub fn load_elf(
 
     let ehdr = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
 
-    // Check ELF class (64-bit)
-    if ehdr.ident[4] != 2 {
-        return Err("not ELF64");
+    if ehdr.ident[4] != ELFCLASS64 || ehdr.e_machine != expected_machine() {
+        return Err("wrong ELF architecture");
+    }
+    if ehdr.e_ehsize as usize != core::mem::size_of::<Elf64Ehdr>()
+        || ehdr.e_phentsize as usize != core::mem::size_of::<Elf64Phdr>()
+    {
+        return Err("invalid ELF header sizes");
     }
 
     // ET_DYN (3) = PIE, needs a base address. ET_EXEC (2) = non-PIE, use addresses as-is.
     let load_base = match ehdr.e_type {
-        3 => LOAD_BASE,  // ET_DYN — position-independent, add base
-        2 => 0,          // ET_EXEC — absolute addresses
+        3 => LOAD_BASE,
+        2 => 0,
         _ => return Err("unsupported ELF type"),
     };
+    let program_header_bytes = (ehdr.e_phnum as usize)
+        .checked_mul(core::mem::size_of::<Elf64Phdr>())
+        .ok_or("program header overflow")?;
+    let program_header_end = (ehdr.e_phoff as usize)
+        .checked_add(program_header_bytes)
+        .ok_or("program header overflow")?;
+    if program_header_end > data.len() {
+        return Err("program headers outside image");
+    }
 
-    address_space.with_active(|| load_active(address_space, data, argv, ehdr, load_base))
+    load_active(address_space, data, argv, ehdr, load_base)
 }
 
 fn load_active(
-    address_space: &AddressSpace,
+    address_space: &mut AddressSpace,
     data: &[u8],
     argv: &[String],
     ehdr: &Elf64Ehdr,
     load_base: usize,
 ) -> Result<LoadedProgram, &'static str> {
-    let arch = kor::arch::current();
     let phdr_size = core::mem::size_of::<Elf64Phdr>();
 
     for i in 0..ehdr.e_phnum as usize {
@@ -134,30 +148,40 @@ fn load_active(
             flags = flags | MappingFlags::X;
         }
 
-        // Virtual address range
-        let seg_vaddr = load_base + phdr.p_vaddr as usize;
-        let seg_end = seg_vaddr + phdr.p_memsz as usize;
+        // Validate the complete segment before allocating or touching pages.
+        let seg_vaddr = load_base
+            .checked_add(phdr.p_vaddr as usize)
+            .ok_or("segment address overflow")?;
+        let seg_end = seg_vaddr
+            .checked_add(phdr.p_memsz as usize)
+            .ok_or("segment address overflow")?;
+        if phdr.p_filesz > phdr.p_memsz {
+            return Err("segment file size exceeds memory size");
+        }
+        let file_end = (phdr.p_offset as usize)
+            .checked_add(phdr.p_filesz as usize)
+            .ok_or("segment file overflow")?;
+        if file_end > data.len() || seg_vaddr >= ADDRESS_LIMIT || seg_end > ADDRESS_LIMIT {
+            return Err("segment outside user address space");
+        }
         let page_start = seg_vaddr & !(PAGE_SIZE - 1);
-        let page_end = (seg_end + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let page_end = seg_end
+            .checked_add(PAGE_SIZE - 1)
+            .ok_or("segment address overflow")?
+            & !(PAGE_SIZE - 1);
 
         // Map and fill each page
         for vaddr in (page_start..page_end).step_by(PAGE_SIZE) {
-            // Check if this page was already mapped BY A PREVIOUS ELF SEGMENT
-            // (has U bit set). Identity-mapped boot pages (no U bit) must NOT
-            // be reused — their physical address is not RAM.
-            let kvaddr = if let Some(paddr) = arch.translate(vaddr) {
-                // Reuse existing user-mapped page (shared between segments)
-                arch.phys_to_virt(paddr)
+            // Reuse only pages recorded in this process's authoritative VM
+            // map. A translation inherited from the kernel root is never a
+            // valid ELF page.
+            let kvaddr = if let Some(paddr) = address_space.translate(vaddr) {
+                kor::arch::current().phys_to_virt(paddr)
             } else {
-                // Allocate and map a new page
-                let paddr = kor_frame::alloc_page().ok_or("out of memory")?;
-                if arch.map(vaddr, paddr, flags, MapSize::Page4K).is_err() {
-                    kor_frame::free_frames(paddr, 1);
-                    return Err("map failed");
-                }
-                let kv = arch.phys_to_virt(paddr);
-                unsafe { core::ptr::write_bytes(kv as *mut u8, 0, PAGE_SIZE); }
-                kv
+                let paddr = address_space
+                    .map_zeroed(vaddr, flags)
+                    .map_err(|_| "map failed")?;
+                kor::arch::current().phys_to_virt(paddr)
             };
 
             // Copy file data that falls within this page.
@@ -195,15 +219,10 @@ fn load_active(
                 let bss_start = seg_start_in_page + data_in_page;
                 let bss_end = seg_start_in_page + mem_in_page;
                 unsafe {
-                    core::ptr::write_bytes(
-                        (kvaddr + bss_start) as *mut u8,
-                        0,
-                        bss_end - bss_start,
-                    );
+                    core::ptr::write_bytes((kvaddr + bss_start) as *mut u8, 0, bss_end - bss_start);
                 }
             }
         }
-
     }
 
     let entry = load_base + ehdr.e_entry as usize;
@@ -212,11 +231,15 @@ fn load_active(
     let mut phdr_addr = load_base + ehdr.e_phoff as usize; // fallback
     for i in 0..ehdr.e_phnum as usize {
         let off = ehdr.e_phoff as usize + i * core::mem::size_of::<Elf64Phdr>();
-        if off + core::mem::size_of::<Elf64Phdr>() > data.len() { continue; }
+        if off + core::mem::size_of::<Elf64Phdr>() > data.len() {
+            continue;
+        }
         let ph = unsafe { &*(data[off..].as_ptr() as *const Elf64Phdr) };
         if ph.p_type == PT_LOAD {
             let file_off = ehdr.e_phoff as usize;
-            if file_off >= ph.p_offset as usize && file_off < ph.p_offset as usize + ph.p_filesz as usize {
+            if file_off >= ph.p_offset as usize
+                && file_off < ph.p_offset as usize + ph.p_filesz as usize
+            {
                 phdr_addr = load_base + ph.p_vaddr as usize + (file_off - ph.p_offset as usize);
                 break;
             }
@@ -225,14 +248,11 @@ fn load_active(
     let phnum = ehdr.e_phnum as usize;
     let stack_top = setup_user_stack(address_space, entry, phdr_addr, phnum, argv)?;
 
-    Ok(LoadedProgram {
-        entry,
-        stack_top,
-    })
+    Ok(LoadedProgram { entry, stack_top })
 }
 /// Set up the Linux argc/argv/envp/auxv stack in `address_space`.
 fn setup_user_stack(
-    address_space: &AddressSpace,
+    address_space: &mut AddressSpace,
     entry: usize,
     phdr_addr: usize,
     phnum: usize,
@@ -241,7 +261,9 @@ fn setup_user_stack(
     let stack_base = USER_STACK_TOP - USER_STACK_SIZE;
     let flags = MappingFlags::U | MappingFlags::R | MappingFlags::W;
     for vaddr in (stack_base..USER_STACK_TOP).step_by(PAGE_SIZE) {
-        address_space.map_zeroed(vaddr, flags).map_err(|_| "map user stack failed")?;
+        address_space
+            .map_zeroed(vaddr, flags)
+            .map_err(|_| "map user stack failed")?;
     }
 
     const AT_NULL: usize = 0;
@@ -256,17 +278,25 @@ fn setup_user_stack(
     let mut sp = USER_STACK_TOP;
     sp = (sp - 16) & !0xF;
     let random_off = sp;
-    address_space.write(random_off, &[0x42; 16]).map_err(|_| "write random")?;
+    address_space
+        .write(random_off, &[0x42; 16])
+        .map_err(|_| "write random")?;
     sp = (sp - env0.len()) & !0xF;
     let env0_off = sp;
-    address_space.write(env0_off, env0).map_err(|_| "write environment")?;
+    address_space
+        .write(env0_off, env0)
+        .map_err(|_| "write environment")?;
 
     let mut arg_offsets = Vec::with_capacity(argv.len());
     for arg in argv.iter().rev() {
         let bytes = arg.as_bytes();
         sp = (sp - bytes.len() - 1) & !0xF;
-        address_space.write(sp, bytes).map_err(|_| "write argument")?;
-        address_space.write(sp + bytes.len(), &[0]).map_err(|_| "terminate argument")?;
+        address_space
+            .write(sp, bytes)
+            .map_err(|_| "write argument")?;
+        address_space
+            .write(sp + bytes.len(), &[0])
+            .map_err(|_| "terminate argument")?;
         arg_offsets.push(sp);
     }
     arg_offsets.reverse();
@@ -281,17 +311,14 @@ fn setup_user_stack(
     words.push(env0_off);
     words.push(0);
     words.extend_from_slice(&[
-        AT_PHDR, phdr_addr,
-        AT_PHNUM, phnum,
-        AT_PAGESZ, PAGE_SIZE,
-        AT_BASE, 0,
-        AT_ENTRY, entry,
-        AT_RANDOM, random_off,
-        AT_NULL, 0,
+        AT_PHDR, phdr_addr, AT_PHNUM, phnum, AT_PAGESZ, PAGE_SIZE, AT_BASE, 0, AT_ENTRY, entry,
+        AT_RANDOM, random_off, AT_NULL, 0,
     ]);
     let bytes = unsafe {
         core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * word_size)
     };
-    address_space.write(array_base, bytes).map_err(|_| "write initial stack")?;
+    address_space
+        .write(array_base, bytes)
+        .map_err(|_| "write initial stack")?;
     Ok(array_base)
 }

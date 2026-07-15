@@ -29,7 +29,9 @@ pub fn dynamic_maps_supported() -> bool {
 /// process running on another CPU must never observe a shared cached root.
 pub fn root() -> usize {
     let satp: usize;
-    unsafe { core::arch::asm!("csrr {}, satp", out(reg) satp); }
+    unsafe {
+        core::arch::asm!("csrr {}, satp", out(reg) satp);
+    }
     (satp & ((1usize << 44) - 1)) << 12
 }
 
@@ -39,7 +41,9 @@ pub fn root() -> usize {
 /// `root` must be a valid, page-aligned Sv39 root containing live kernel mappings.
 pub unsafe fn activate(root: usize) {
     let satp = (8usize << 60) | (root >> 12);
-    unsafe { core::arch::asm!("csrw satp, {}", "sfence.vma", in(reg) satp); }
+    unsafe {
+        core::arch::asm!("csrw satp, {}", "sfence.vma", in(reg) satp);
+    }
 }
 pub fn clone_active() -> Result<usize, MapError> {
     let source = root();
@@ -50,10 +54,10 @@ pub fn clone_active() -> Result<usize, MapError> {
 pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_page().ok_or(MapError::OutOfMemory)?;
-    PhysAddr::new(cloned).clear_page();
+    unsafe { PhysAddr::new(cloned).clear_page() };
     unsafe {
-        let src = PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM);
-        let dst = PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM);
+        let src = unsafe { PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM) };
+        let dst = unsafe { PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM) };
         dst[256..].copy_from_slice(&src[256..]);
     }
     Ok(cloned)
@@ -61,9 +65,9 @@ pub fn new_user() -> Result<usize, MapError> {
 
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_page().ok_or(MapError::OutOfMemory)?;
-    PhysAddr::new(cloned).clear_page();
-    let src = unsafe { PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM) };
-    let dst = unsafe { PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM) };
+    unsafe { PhysAddr::new(cloned).clear_page() };
+    let src = unsafe { unsafe { PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM) } };
+    let dst = unsafe { unsafe { PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM) } };
     for index in 0..PTE_NUM {
         let entry = src[index];
         if !is_valid(entry) || (level == 2 && index >= 256) {
@@ -73,7 +77,9 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
                 let page = match alloc_page() {
                     Some(page) => page,
                     None => {
-                        unsafe { destroy_table(cloned, level); }
+                        unsafe {
+                            destroy_table(cloned, level);
+                        }
                         return Err(MapError::OutOfMemory);
                     }
                 };
@@ -92,7 +98,9 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
             let child = match unsafe { clone_table(pte_address(entry), level - 1) } {
                 Ok(child) => child,
                 Err(error) => {
-                    unsafe { destroy_table(cloned, level); }
+                    unsafe {
+                        destroy_table(cloned, level);
+                    }
                     return Err(error);
                 }
             };
@@ -104,24 +112,38 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
 
 fn mapping_flags(entry: usize) -> MappingFlags {
     let mut flags = MappingFlags::U;
-    if entry & PTE_R != 0 { flags = flags | MappingFlags::R; }
-    if entry & PTE_W != 0 { flags = flags | MappingFlags::W; }
-    if entry & PTE_X != 0 { flags = flags | MappingFlags::X; }
+    if entry & PTE_R != 0 {
+        flags = flags | MappingFlags::R;
+    }
+    if entry & PTE_W != 0 {
+        flags = flags | MappingFlags::W;
+    }
+    if entry & PTE_X != 0 {
+        flags = flags | MappingFlags::X;
+    }
     flags
 }
 
 pub unsafe fn destroy(root: usize) {
-    unsafe { destroy_table(root, 2); }
+    unsafe {
+        destroy_table(root, 2);
+    }
 }
 
 unsafe fn destroy_table(table: usize, level: usize) {
-    let entries = unsafe { PhysAddr::new(table).page_slice_mut::<usize>(PTE_NUM) };
+    let entries = unsafe { unsafe { PhysAddr::new(table).page_slice_mut::<usize>(PTE_NUM) } };
     for &entry in &entries[..256] {
-        if !is_valid(entry) { continue; }
+        if !is_valid(entry) {
+            continue;
+        }
         if is_leaf(entry) {
-            if level == 0 { kor_frame::free_frames(pte_address(entry), 1); }
+            if level == 0 {
+                kor_frame::free_frames(pte_address(entry), 1);
+            }
         } else if level > 0 {
-            unsafe { destroy_table(pte_address(entry), level - 1); }
+            unsafe {
+                destroy_table(pte_address(entry), level - 1);
+            }
         }
     }
     kor_frame::free_frames(table, 1);
@@ -140,7 +162,7 @@ unsafe fn destroy_table(table: usize, level: usize) {
 pub fn split_l2_identity() {
     unsafe {
         let root = PhysAddr::new(root());
-        let l2_table = root.page_slice_mut::<usize>(PTE_NUM);
+        let l2_table = unsafe { root.page_slice_mut::<usize>(PTE_NUM) };
         // Check if entry 0 is already split (non-leaf)
         if l2_table[0] != 0 && !is_leaf(l2_table[0]) {
             return; // Already split
@@ -148,8 +170,8 @@ pub fn split_l2_identity() {
 
         // Allocate L1 table
         let l1_paddr = alloc_page().expect("OOM: L1 table");
-        PhysAddr::new(l1_paddr).clear_page();
-        let l1_table = PhysAddr::new(l1_paddr).page_slice_mut::<usize>(PTE_NUM);
+        unsafe { PhysAddr::new(l1_paddr).clear_page() };
+        let l1_table = unsafe { PhysAddr::new(l1_paddr).page_slice_mut::<usize>(PTE_NUM) };
 
         // Fill L1 entries 1-511 with 2 MiB identity-mapped leaves
         let leaf_flags = PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
@@ -160,8 +182,8 @@ pub fn split_l2_identity() {
 
         // Allocate L0 table for the first 2 MiB (L1 entry 0)
         let l0_paddr = alloc_page().expect("OOM: L0 table");
-        PhysAddr::new(l0_paddr).clear_page();
-        let l0_table = PhysAddr::new(l0_paddr).page_slice_mut::<usize>(PTE_NUM);
+        unsafe { PhysAddr::new(l0_paddr).clear_page() };
+        let l0_table = unsafe { PhysAddr::new(l0_paddr).page_slice_mut::<usize>(PTE_NUM) };
 
         // Fill L0 entries with 4 KiB identity-mapped leaves
         for i in 0..512 {
@@ -194,20 +216,20 @@ pub fn translate(vaddr: usize) -> Option<usize> {
         let mut table = PhysAddr::new(root());
         for level in (1..=2).rev() {
             let idx = vaddr.pn_index(level);
-            let pte = table.page_slice_mut::<usize>(PTE_NUM)[idx];
+            let pte = unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[idx];
             if !is_valid(pte) {
                 return None;
             }
-        if is_leaf(pte) {
-            if level == 1 {
-                return Some(megapage_2m_address(pte, vaddr));
+            if is_leaf(pte) {
+                if level == 1 {
+                    return Some(megapage_2m_address(pte, vaddr));
+                }
+                let off = vaddr.page_offset(level);
+                return Some(pte_address(pte) + off);
             }
-            let off = vaddr.page_offset(level);
-            return Some(pte_address(pte) + off);
-        }
             table = PhysAddr::new(pte_address(pte));
         }
-        let pte = table.page_slice_mut::<usize>(PTE_NUM)[vaddr.pn_index(0)];
+        let pte = unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[vaddr.pn_index(0)];
         if !is_valid(pte) || !is_leaf(pte) {
             return None;
         }
@@ -222,7 +244,7 @@ fn map_4k(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), M
         let mut l1 = l1;
         let l0 = walk_table(&mut l1, vaddr, 1)?;
         let idx = vaddr.pn_index(0);
-        let entry = &mut l0.page_slice_mut::<usize>(PTE_NUM)[idx];
+        let entry = &mut unsafe { l0.page_slice_mut::<usize>(PTE_NUM) }[idx];
         // Allow user mappings to overwrite identity-mapped boot leaves.
         if is_valid(*entry) && !flags.contains(MappingFlags::U) {
             return Err(MapError::BlockedByExistingMapping);
@@ -238,19 +260,23 @@ pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
         let mut table = PhysAddr::new(root());
         let target_level = if size == MapSize::Page2M { 1 } else { 0 };
         for level in (target_level + 1..=2).rev() {
-            let entry = table.page_slice_mut::<usize>(PTE_NUM)[vaddr.pn_index(level)];
-            if !is_valid(entry) || is_leaf(entry) { return Err(MapError::BlockedByExistingMapping); }
+            let entry = unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[vaddr.pn_index(level)];
+            if !is_valid(entry) || is_leaf(entry) {
+                return Err(MapError::BlockedByExistingMapping);
+            }
             table = PhysAddr::new(pte_address(entry));
         }
-        let entry = &mut table.page_slice_mut::<usize>(PTE_NUM)[vaddr.pn_index(target_level)];
-        if !is_valid(*entry) || !is_leaf(*entry) { return Err(MapError::BlockedByExistingMapping); }
+        let entry =
+            &mut unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[vaddr.pn_index(target_level)];
+        if !is_valid(*entry) || !is_leaf(*entry) {
+            return Err(MapError::BlockedByExistingMapping);
+        }
         let paddr = pte_address(*entry);
         *entry = 0;
         flush_vaddr(vaddr);
         Ok(paddr)
     }
 }
-
 
 fn map_2m(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), MapError> {
     if paddr.raw() % (2 * 1024 * 1024) != 0 {
@@ -260,7 +286,7 @@ fn map_2m(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), M
         let mut root = PhysAddr::new(root());
         let l1 = walk_table(&mut root, vaddr, 2)?;
         let idx = vaddr.pn_index(1);
-        let entry = &mut l1.page_slice_mut::<usize>(PTE_NUM)[idx];
+        let entry = &mut unsafe { l1.page_slice_mut::<usize>(PTE_NUM) }[idx];
         if is_valid(*entry) {
             return Err(MapError::BlockedByExistingMapping);
         }
@@ -276,13 +302,13 @@ unsafe fn walk_table(
     level: usize,
 ) -> Result<PhysAddr, MapError> {
     let idx = vaddr.pn_index(level);
-    let entry = &mut parent.page_slice_mut::<usize>(PTE_NUM)[idx];
+    let entry = &mut unsafe { parent.page_slice_mut::<usize>(PTE_NUM) }[idx];
     if is_valid(*entry) && is_leaf(*entry) {
         return Err(MapError::BlockedByExistingMapping);
     }
     if !is_valid(*entry) {
         let frame = alloc_page().ok_or(MapError::OutOfMemory)?;
-        PhysAddr::new(frame).clear_page();
+        unsafe { PhysAddr::new(frame).clear_page() };
         *entry = table_pte(frame);
     }
     Ok(PhysAddr::new(pte_address(*entry)))

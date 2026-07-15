@@ -12,10 +12,10 @@ mod heap;
 mod mm;
 mod panic;
 mod registries;
-mod virtio;
 mod sched;
 pub mod syscall;
 mod user;
+mod virtio;
 
 use kor::config::{self, Console as ConsoleCfg, PlatformConfig};
 use spin::Mutex;
@@ -45,7 +45,11 @@ fn platform_config() -> PlatformConfig {
         dtb: 0,
         pci: None,
     };
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "x86_64"
+    )))]
     compile_error!("korix supports riscv64, aarch64, and x86_64");
 }
 
@@ -61,7 +65,9 @@ impl kor::TrapCallbacks for KernelTrapCallbacks {
         #[cfg(target_arch = "riscv64")]
         crate::syscall::rx_fill();
     }
-    fn on_external(&self, irq: u32) { registries::IRQS.handle(irq); }
+    fn on_external(&self, irq: u32) {
+        registries::IRQS.handle(irq);
+    }
 }
 
 static TRAP_CB: KernelTrapCallbacks = KernelTrapCallbacks;
@@ -76,6 +82,10 @@ extern "C" fn kernel_main() -> ! {
     kor::install_controller(ic);
     ic.init();
     kor::install_callbacks(&TRAP_CB);
+    kor::trap_callbacks::install_user_trap_hooks(
+        syscall::user_trap_enter,
+        syscall::user_trap_leave,
+    );
     heap::init_bootstrap();
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
@@ -102,8 +112,10 @@ extern "C" fn kernel_main() -> ! {
     kor::arch::current().irq_enable();
 
     kor::println!("");
-    kor::println!("=== korix: Linux-compatible kernel ({} KiB free) ===",
-        kor_frame::available_frames() * 4);
+    kor::println!(
+        "=== korix: Linux-compatible kernel ({} KiB free) ===",
+        kor_frame::available_frames() * 4
+    );
     kor::println!("cmdline: {:?}", kor::cmdline::raw());
 
     probe_devices();
@@ -143,7 +155,7 @@ extern "C" fn kernel_main() -> ! {
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 fn probe_devices() {
-    use kor::driver::{probe_fdt, DeviceDriver};
+    use kor::driver::{DeviceDriver, probe_fdt};
     let drivers: &[&dyn DeviceDriver] = &[&virtio::VIRTIO_MMIO_DRIVER];
     let dtb = kor::arch::current().dtb_ptr();
     if dtb != 0 {
@@ -159,6 +171,7 @@ fn probe_devices() {
 
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(cpu_id: usize) -> ! {
+    kor::arch::current().trap_init();
     let ic = kor_arch::interrupt_controller();
     ic.init();
     kor::arch::current().timer_init();

@@ -1,13 +1,13 @@
 #![no_std]
 
-//! Physical frame allocator — buddy system via `buddy_system_allocator`.
+//! Allocation-free physical frame allocator.
 //!
-//! Free physical memory is registered during boot (the composition layer clips
-//! out the kernel image first).  Allocations are counted in 4 KiB frames;
-//! `count` is rounded up to the next power of two by the underlying buddy.
+//! Free physical memory is registered during boot. The global instance is
+//! protected by an IRQ-safe raw spin lock so allocator metadata cannot race on
+//! SMP and cannot recursively allocate while that lock is held.
 
-use buddy_system_allocator::FrameAllocator as BuddyFrameAllocator;
 use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Size of one physical page / frame.
 pub const PAGE_SIZE: usize = 4096;
@@ -15,84 +15,263 @@ pub const PAGE_SIZE: usize = 4096;
 /// Number of 4 KiB frames in a 2 MiB huge page.
 pub const FRAMES_2M: usize = 512;
 
-/// Max buddy order — supports blocks up to 2^(ORDER-1) frames.
-const BUDDY_ORDER: usize = 32;
+/// Maximum number of independently registered physical regions.
+const MAX_REGIONS: usize = 64;
+/// Metadata capacity. Current supported machines expose at most 1 GiB, while
+/// this tracks up to 4 GiB of registered RAM without allocating heap memory.
+const MAX_TRACKED_FRAMES: usize = 1 << 20;
+const BITMAP_WORDS: usize = MAX_TRACKED_FRAMES / usize::BITS as usize;
 
-/// Physical-frame allocator wrapping the buddy crate.
+#[derive(Clone, Copy)]
+struct Region {
+    start_ppn: usize,
+    frames: usize,
+    bitmap_base: usize,
+    next_hint: usize,
+}
+
+impl Region {
+    const EMPTY: Self = Self {
+        start_ppn: 0,
+        frames: 0,
+        bitmap_base: 0,
+        next_hint: 0,
+    };
+}
+
+/// Fixed-metadata contiguous physical-frame allocator.
+///
+/// A set bit denotes an allocated frame. Region metadata and the bitmap live
+/// inside the allocator, so alloc/free never invoke the kernel heap.
 pub struct FrameAllocator {
-    inner: BuddyFrameAllocator<BUDDY_ORDER>,
+    regions: [Region; MAX_REGIONS],
+    region_count: usize,
+    tracked_frames: usize,
     free_frames: usize,
+    allocated: [usize; BITMAP_WORDS],
 }
 
 impl FrameAllocator {
     pub const fn new() -> Self {
-        Self { inner: BuddyFrameAllocator::new(), free_frames: 0 }
+        Self {
+            regions: [Region::EMPTY; MAX_REGIONS],
+            region_count: 0,
+            tracked_frames: 0,
+            free_frames: 0,
+            allocated: [0; BITMAP_WORDS],
+        }
     }
 
     /// Register free physical memory `[start, end)` (byte addresses).
     /// Non-page-aligned bounds are rounded inward.
     pub fn add_region(&mut self, start: usize, end: usize) {
-        let start = (start + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let start = start.saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
         let end = end & !(PAGE_SIZE - 1);
-        if start >= end { return; }
-        let ppn_start = start >> 12;
-        let ppn_end = end >> 12;
-        self.inner.add_frame(ppn_start, ppn_end);
-        self.free_frames += ppn_end - ppn_start;
+        if start >= end {
+            return;
+        }
+        let start_ppn = start / PAGE_SIZE;
+        let frames = (end - start) / PAGE_SIZE;
+        assert!(
+            self.region_count < MAX_REGIONS,
+            "too many physical memory regions"
+        );
+        assert!(
+            self.tracked_frames + frames <= MAX_TRACKED_FRAMES,
+            "physical memory exceeds frame metadata capacity"
+        );
+        for region in &self.regions[..self.region_count] {
+            let region_end = region.start_ppn + region.frames;
+            assert!(
+                start_ppn + frames <= region.start_ppn || start_ppn >= region_end,
+                "overlapping physical memory regions"
+            );
+        }
+        self.regions[self.region_count] = Region {
+            start_ppn,
+            frames,
+            bitmap_base: self.tracked_frames,
+            next_hint: 0,
+        };
+        self.region_count += 1;
+        self.tracked_frames += frames;
+        self.free_frames += frames;
     }
 
-    /// Allocate `count` contiguous 4 KiB frames (rounded up to a power of two).
+    /// Allocate `count` contiguous 4 KiB frames. The reserved extent is rounded
+    /// up to a power of two and aligned to that same number of frames.
     pub fn alloc_frames(&mut self, count: usize) -> Option<usize> {
-        let ppn = self.inner.alloc(count)?;
-        let allocated = count.next_power_of_two();
-        self.free_frames -= allocated;
-        Some(ppn << 12)
+        if count == 0 {
+            return None;
+        }
+        let frames = count.checked_next_power_of_two()?;
+        for region_index in 0..self.region_count {
+            if frames > self.regions[region_index].frames {
+                continue;
+            }
+            let hint = self.regions[region_index].next_hint;
+            if let Some(offset) = self
+                .find_free_run(
+                    region_index,
+                    hint,
+                    self.regions[region_index].frames,
+                    frames,
+                )
+                .or_else(|| self.find_free_run(region_index, 0, hint, frames))
+            {
+                self.mark_run(region_index, offset, frames, true);
+                self.regions[region_index].next_hint = offset + frames;
+                self.free_frames -= frames;
+                return Some((self.regions[region_index].start_ppn + offset) * PAGE_SIZE);
+            }
+        }
+        None
     }
 
-    /// Free `count` contiguous 4 KiB frames previously returned by [`alloc_frames`].
+    /// Free `count` contiguous frames previously returned by [`alloc_frames`].
     pub fn free_frames(&mut self, phys: usize, count: usize) {
+        assert!(count != 0, "cannot free zero frames");
         assert!(phys % PAGE_SIZE == 0, "phys {phys:#x} not page-aligned");
-        let ppn = phys >> 12;
-        let freed = count.next_power_of_two();
-        self.inner.dealloc(ppn, count);
-        self.free_frames += freed;
+        let frames = count
+            .checked_next_power_of_two()
+            .expect("frame count overflow");
+        let ppn = phys / PAGE_SIZE;
+        let (region_index, offset) = self
+            .locate(ppn, frames)
+            .expect("frame extent was not registered");
+        for index in offset..offset + frames {
+            assert!(
+                self.bit(region_index, index),
+                "freeing unallocated physical frame"
+            );
+        }
+        self.mark_run(region_index, offset, frames, false);
+        self.regions[region_index].next_hint = self.regions[region_index].next_hint.min(offset);
+        self.free_frames += frames;
     }
 
     /// Number of free 4 KiB frames tracked by the allocator.
-    pub fn available_frames(&self) -> usize { self.free_frames }
+    pub fn available_frames(&self) -> usize {
+        self.free_frames
+    }
+
+    fn locate(&self, ppn: usize, frames: usize) -> Option<(usize, usize)> {
+        self.regions[..self.region_count]
+            .iter()
+            .enumerate()
+            .find_map(|(index, region)| {
+                let offset = ppn.checked_sub(region.start_ppn)?;
+                (offset.checked_add(frames)? <= region.frames).then_some((index, offset))
+            })
+    }
+
+    fn find_free_run(
+        &self,
+        region_index: usize,
+        start: usize,
+        end: usize,
+        frames: usize,
+    ) -> Option<usize> {
+        let region = self.regions[region_index];
+        let mut offset =
+            align_ppn(region.start_ppn + start, frames).checked_sub(region.start_ppn)?;
+        while offset.checked_add(frames)? <= end {
+            let mut first_used = None;
+            for index in offset..offset + frames {
+                if self.bit(region_index, index) {
+                    first_used = Some(index);
+                    break;
+                }
+            }
+            if let Some(used) = first_used {
+                offset =
+                    align_ppn(region.start_ppn + used + 1, frames).checked_sub(region.start_ppn)?;
+            } else {
+                return Some(offset);
+            }
+        }
+        None
+    }
+
+    fn bit(&self, region_index: usize, offset: usize) -> bool {
+        let bit = self.regions[region_index].bitmap_base + offset;
+        self.allocated[bit / usize::BITS as usize] & (1usize << (bit % usize::BITS as usize)) != 0
+    }
+
+    fn mark_run(&mut self, region_index: usize, offset: usize, frames: usize, value: bool) {
+        let base = self.regions[region_index].bitmap_base;
+        for bit in base + offset..base + offset + frames {
+            let word = &mut self.allocated[bit / usize::BITS as usize];
+            let mask = 1usize << (bit % usize::BITS as usize);
+            if value {
+                *word |= mask;
+            } else {
+                *word &= !mask;
+            }
+        }
+    }
 }
 
-// ---------------------------------------------------------------------------
-// Global allocator instance (single-core init; accessed via the free fns).
-// ---------------------------------------------------------------------------
+const fn align_ppn(ppn: usize, frames: usize) -> usize {
+    (ppn + frames - 1) & !(frames - 1)
+}
 
-struct Allocator(UnsafeCell<FrameAllocator>);
-unsafe impl Sync for Allocator {}
+struct GlobalAllocator {
+    lock: AtomicBool,
+    inner: UnsafeCell<FrameAllocator>,
+}
 
-static ALLOCATOR: Allocator = Allocator(UnsafeCell::new(FrameAllocator::new()));
+// SAFETY: all access to `inner` is serialized by `lock` with local interrupts
+// disabled, including interrupt-context allocation on the same CPU.
+unsafe impl Sync for GlobalAllocator {}
+
+static ALLOCATOR: GlobalAllocator = GlobalAllocator {
+    lock: AtomicBool::new(false),
+    inner: UnsafeCell::new(FrameAllocator::new()),
+};
+
+fn with_allocator<R>(operation: impl FnOnce(&mut FrameAllocator) -> R) -> R {
+    kor::irq::without(|| {
+        while ALLOCATOR
+            .lock
+            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            core::hint::spin_loop();
+        }
+        // SAFETY: the global raw lock is held and local interrupts are disabled.
+        let result = operation(unsafe { &mut *ALLOCATOR.inner.get() });
+        ALLOCATOR.lock.store(false, Ordering::Release);
+        result
+    })
+}
 
 /// Register free physical memory `[start, end)` with the global allocator.
 pub fn add_region(start: usize, end: usize) {
-    unsafe { (*ALLOCATOR.0.get()).add_region(start, end) }
+    with_allocator(|allocator| allocator.add_region(start, end));
 }
 
 /// Allocate `count` contiguous 4 KiB physical frames.
 pub fn alloc_frames(count: usize) -> Option<usize> {
-    unsafe { (*ALLOCATOR.0.get()).alloc_frames(count) }
+    with_allocator(|allocator| allocator.alloc_frames(count))
 }
 
 /// Free `count` contiguous 4 KiB frames at `phys`.
 pub fn free_frames(phys: usize, count: usize) {
-    unsafe { (*ALLOCATOR.0.get()).free_frames(phys, count) }
+    with_allocator(|allocator| allocator.free_frames(phys, count));
 }
 
 /// Allocate one 4 KiB physical page.
-pub fn alloc_page() -> Option<usize> { alloc_frames(1) }
+pub fn alloc_page() -> Option<usize> {
+    alloc_frames(1)
+}
 
-/// Allocate one 2 MiB physically contiguous huge page (512 x 4 KiB).
-pub fn alloc_huge_2m() -> Option<usize> { alloc_frames(FRAMES_2M) }
+/// Allocate one 2 MiB physically contiguous huge page.
+pub fn alloc_huge_2m() -> Option<usize> {
+    alloc_frames(FRAMES_2M)
+}
 
 /// Number of free 4 KiB frames.
 pub fn available_frames() -> usize {
-    unsafe { (*ALLOCATOR.0.get()).available_frames() }
+    with_allocator(|allocator| allocator.available_frames())
 }

@@ -15,15 +15,25 @@ impl PhysAddr {
         self.0
     }
 
+    /// View direct-mapped physical memory as a mutable slice.
+    ///
+    /// # Safety
+    /// The caller must own the addressed memory for the returned lifetime,
+    /// ensure it is valid for `len` elements of `T`, and ensure no aliases
+    /// (mutable or immutable) exist while the slice is used.
     #[inline]
-    pub fn page_slice_mut<T>(self, len: usize) -> &'static mut [T] {
+    pub unsafe fn page_slice_mut<T>(self, len: usize) -> &'static mut [T] {
         let va = crate::arch::phys_to_virt(self.0);
         unsafe { core::slice::from_raw_parts_mut(va as *mut T, len) }
     }
 
+    /// Zero one owned physical page through the direct map.
+    ///
+    /// # Safety
+    /// The caller must have exclusive ownership of a writable 4 KiB page.
     #[inline]
-    pub fn clear_page(self) {
-        self.page_slice_mut::<u8>(4096).fill(0);
+    pub unsafe fn clear_page(self) {
+        unsafe { self.page_slice_mut::<u8>(4096) }.fill(0);
     }
 }
 

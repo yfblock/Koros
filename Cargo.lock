@@ -123,6 +123,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kor-virtio"
+version = "0.1.0"
+dependencies = [
+ "kor",
+ "kor-frame",
+ "kor-sched",
+ "spin",
+ "virtio-drivers",
+ "x86_64",
+]
+
+[[package]]
 name = "korhv"
 version = "0.1.0"
 dependencies = [
@@ -146,9 +158,8 @@ dependencies = [
  "kor-fs",
  "kor-ramfs",
  "kor-sched",
+ "kor-virtio",
  "spin",
- "virtio-drivers",
- "x86_64",
 ]
 
 [[package]]
@@ -163,9 +174,8 @@ dependencies = [
  "kor-fs",
  "kor-ramfs",
  "kor-sched",
+ "kor-virtio",
  "spin",
- "virtio-drivers",
- "x86_64",
 ]
 
 [[package]]

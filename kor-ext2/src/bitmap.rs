@@ -99,21 +99,9 @@ impl Bitmap {
 // ---------------------------------------------------------------------------
 
 impl Ext2Fs {
-    /// Allocate a free filesystem block and return its block number.
-    ///
-    /// Scans each block group's block bitmap for the first free bit, marks
-    /// it as allocated, writes the bitmap back to disk, and decrements the
-    /// free-block counts in both the block group descriptor and the
-    /// superblock.
-    ///
-    /// Returns [`FsError::NoSpace`] if no free block is available.
-    pub fn alloc_block(&self) -> Result<u32, FsError> {
-        self.alloc_block_goal(0)
-    }
-
     /// Allocate a free block, preferring `goal_group` and its neighbours for
     /// locality before falling back to a wrap-around scan of all groups.
-    pub fn alloc_block_goal(&self, goal_group: u32) -> Result<u32, FsError> {
+    pub(crate) fn alloc_block_goal(&self, goal_group: u32) -> Result<u32, FsError> {
         if self.is_read_only() {
             return Err(FsError::ReadOnly);
         }
@@ -181,7 +169,7 @@ impl Ext2Fs {
     /// corresponding bit in the block bitmap, writes it back to disk, and
     /// increments the free-block counts in the block group descriptor and
     /// the superblock.
-    pub fn free_block(&self, block_id: u32) -> Result<(), FsError> {
+    pub(crate) fn free_block(&self, block_id: u32) -> Result<(), FsError> {
         if self.is_read_only() {
             return Err(FsError::ReadOnly);
         }
@@ -233,7 +221,7 @@ impl Ext2Fs {
     /// superblock.
     ///
     /// Returns [`FsError::NoSpace`] if no free inode is available.
-    pub fn alloc_inode(&self) -> Result<u32, FsError> {
+    pub(crate) fn alloc_inode(&self) -> Result<u32, FsError> {
         if self.is_read_only() {
             return Err(FsError::ReadOnly);
         }
@@ -286,7 +274,7 @@ impl Ext2Fs {
     ///
     /// Clears the corresponding bit in the inode bitmap and increments
     /// the free-inode counts in the block group descriptor and superblock.
-    pub fn free_inode(&self, inode_num: u32) -> Result<(), FsError> {
+    pub(crate) fn free_inode(&self, inode_num: u32) -> Result<(), FsError> {
         if inode_num == 0 {
             return Err(FsError::InvalidInput);
         }
@@ -314,8 +302,7 @@ impl Ext2Fs {
             let mut bitmap_buf = vec![0u8; self.block_size()];
             self.read_fs_block(bitmap_block, &mut bitmap_buf)?;
 
-            let mut bitmap =
-                Bitmap::from_bytes(bitmap_buf, super_block.inodes_per_group as usize);
+            let mut bitmap = Bitmap::from_bytes(bitmap_buf, super_block.inodes_per_group as usize);
             bitmap.clear(local_idx)?;
             self.write_fs_block(bitmap_block, &bitmap.data)?;
 
@@ -333,7 +320,7 @@ impl Ext2Fs {
     ///
     /// Zeroes the entire 128-byte inode structure, sets `i_mode` to `mode`
     /// and `i_links_count` to 1.
-    pub fn init_inode(&self, inode_num: u32, mode: u16) -> Result<(), FsError> {
+    pub(crate) fn init_inode(&self, inode_num: u32, mode: u16) -> Result<(), FsError> {
         if inode_num == 0 {
             return Err(FsError::InvalidInput);
         }

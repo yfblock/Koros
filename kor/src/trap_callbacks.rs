@@ -19,7 +19,10 @@ pub fn install_callbacks(cb: &'static dyn TrapCallbacks) {
 
 /// The installed trap callbacks.  Panics if [`install_callbacks`] was not called.
 pub fn callbacks() -> &'static dyn TrapCallbacks {
-    CALLBACKS.get().copied().expect("TrapCallbacks not installed")
+    CALLBACKS
+        .get()
+        .copied()
+        .expect("TrapCallbacks not installed")
 }
 
 /// Invoke the timer callback (called from arch timer trap handlers).
@@ -53,4 +56,32 @@ pub fn install_syscall_handler(handler: SyscallHandler) {
 /// The installed syscall handler, or `None` if user mode is not supported.
 pub fn syscall_handler() -> Option<SyscallHandler> {
     SYSCALL_HANDLER.get().copied()
+}
+
+/// Architecture-neutral hooks around a user syscall trap. The process
+/// composition layer installs these to expose the active frame and deliver
+/// pending signals; kernel-only compositions leave them unset.
+pub type UserTrapHook = unsafe fn(*mut u8);
+static USER_TRAP_ENTER: Once<UserTrapHook> = Once::new();
+static USER_TRAP_LEAVE: Once<UserTrapHook> = Once::new();
+
+pub fn install_user_trap_hooks(enter: UserTrapHook, leave: UserTrapHook) {
+    USER_TRAP_ENTER.call_once(|| enter);
+    USER_TRAP_LEAVE.call_once(|| leave);
+}
+
+/// # Safety
+/// `frame` must be the live architecture trap frame for the current task.
+pub unsafe fn user_trap_enter(frame: *mut u8) {
+    if let Some(hook) = USER_TRAP_ENTER.get() {
+        unsafe { hook(frame) };
+    }
+}
+
+/// # Safety
+/// `frame` must be the live architecture trap frame for the current task.
+pub unsafe fn user_trap_leave(frame: *mut u8) {
+    if let Some(hook) = USER_TRAP_LEAVE.get() {
+        unsafe { hook(frame) };
+    }
 }

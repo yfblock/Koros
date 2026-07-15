@@ -24,6 +24,11 @@ pub enum BlockError {
 pub trait BlockDevice: Send + Sync {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError>;
     fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError>;
+    /// Flush all completed writes through any device-side volatile cache.
+    ///
+    /// Returning `Ok(())` guarantees that writes completed before this call
+    /// have reached the device's persistent backing store.
+    fn flush(&self) -> Result<(), BlockError>;
     fn block_size(&self) -> usize;
     fn total_blocks(&self) -> usize;
 

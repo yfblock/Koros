@@ -1,6 +1,6 @@
 //! riscv64 trap handling.
-use kor::println;
 use core::arch::{asm, global_asm};
+use kor::println;
 
 #[repr(C)]
 struct TrapFrame {
@@ -26,8 +26,14 @@ pub struct UserTrapScratch {
 /// Assembly-visible user trap scratch slots, indexed by hart id.
 #[unsafe(no_mangle)]
 pub static mut RISCV_USER_TRAP_SCRATCH: [UserTrapScratch; kor::smp::MAX_CPUS] = [const {
-    UserTrapScratch { kernel_sp: 0, hart_id: 0, user_tp: 0, user_sp: 0 }
-}; kor::smp::MAX_CPUS];
+    UserTrapScratch {
+        kernel_sp: 0,
+        hart_id: 0,
+        user_tp: 0,
+        user_sp: 0,
+    }
+};
+    kor::smp::MAX_CPUS];
 /// Prepare `sscratch` before the first transition from this kernel stack to user mode.
 pub fn prepare_user_entry(kernel_sp: usize) {
     // `sscratch` changes from the kernel marker to a user-entry record here.
@@ -77,7 +83,9 @@ pub unsafe fn capture_user_context(frame: *mut u8) -> Option<crate::UserTrapCont
 /// # Safety
 /// `frame` must point to a live [`TrapFrame`].
 pub unsafe fn restore_user_context(frame: *mut u8, context: &crate::UserTrapContext) -> bool {
-    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else { return false };
+    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else {
+        return false;
+    };
     if context.pc % INSTRUCTION_ALIGN != 0 || context.sp % core::mem::size_of::<usize>() != 0 {
         return false;
     }
@@ -102,9 +110,21 @@ pub unsafe fn restore_user_context(frame: *mut u8, context: &crate::UserTrapCont
 ///
 /// # Safety
 /// `frame` must point to a live user [`TrapFrame`].
-pub unsafe fn setup_user_signal(frame: *mut u8, handler: usize, restorer: usize, signal_frame: usize, signal: usize, siginfo: usize, ucontext: usize) -> bool {
-    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else { return false };
-    if handler % INSTRUCTION_ALIGN != 0 || restorer % INSTRUCTION_ALIGN != 0 { return false; }
+pub unsafe fn setup_user_signal(
+    frame: *mut u8,
+    handler: usize,
+    restorer: usize,
+    signal_frame: usize,
+    signal: usize,
+    siginfo: usize,
+    ucontext: usize,
+) -> bool {
+    let Some(frame) = (unsafe { (frame as *mut TrapFrame).as_mut() }) else {
+        return false;
+    };
+    if handler % INSTRUCTION_ALIGN != 0 || restorer % INSTRUCTION_ALIGN != 0 {
+        return false;
+    }
     frame.regs[1] = restorer;
     frame.regs[2] = signal_frame;
     frame.regs[10] = signal;
@@ -128,7 +148,9 @@ pub unsafe fn resume_user_context(context: &crate::UserTrapContext) -> ! {
             "csrw fcsr, {fcsr}", fp = in(reg) context.fp_callee.as_ptr(), fcsr = in(reg) context.fcsr,
         );
     }
-    unsafe extern "C" { fn riscv_resume_user(context: *const crate::UserTrapContext) -> !; }
+    unsafe extern "C" {
+        fn riscv_resume_user(context: *const crate::UserTrapContext) -> !;
+    }
     unsafe { riscv_resume_user(context) }
 }
 
@@ -141,7 +163,9 @@ fn current_kernel_sp() -> usize {
 
 global_asm!(include_str!("trap.S"), tf_size = const core::mem::size_of::<TrapFrame>());
 
-unsafe extern "Rust" { fn kernelvec(); }
+unsafe extern "Rust" {
+    fn kernelvec();
+}
 
 #[unsafe(no_mangle)]
 extern "C" fn handle_trap(tf: &mut TrapFrame) {
@@ -154,33 +178,53 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
     let is_interrupt = (scause >> 63) != 0;
     let code = scause & ((1 << 63) - 1);
 
-    if is_interrupt && code == 5 { kor::on_timer(); return; }
-    if is_interrupt && code == 9 { kor::dispatch_external(); return; }
+    if is_interrupt && code == 5 {
+        kor::on_timer();
+        return;
+    }
+    if is_interrupt && code == 9 {
+        kor::dispatch_external();
+        return;
+    }
 
     if !is_interrupt && code == 8 {
         if let Some(handler) = kor::trap_callbacks::syscall_handler() {
-            unsafe extern "Rust" {
-                fn korix_set_current_tf(tf: *mut u8);
-                fn korix_deliver_pending_signal(tf: *mut u8);
+            unsafe {
+                kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
             }
-            unsafe { korix_set_current_tf(tf as *mut TrapFrame as *mut u8); }
             let nr = tf.regs[17];
-            let args = [tf.regs[10], tf.regs[11], tf.regs[12], tf.regs[13], tf.regs[14], tf.regs[15]];
+            let args = [
+                tf.regs[10],
+                tf.regs[11],
+                tf.regs[12],
+                tf.regs[13],
+                tf.regs[14],
+                tf.regs[15],
+            ];
             let ret = handler(nr, &args);
             tf.regs[10] = ret as usize;
             // rt_sigreturn restores its own PC; execve installs a new one.
-            if nr != 221 && nr != 139 { tf.sepc += 4; }
+            if nr != 139 && (nr != 221 || ret < 0) {
+                tf.sepc += 4;
+            }
             unsafe {
-                korix_deliver_pending_signal(tf as *mut TrapFrame as *mut u8);
-                korix_set_current_tf(core::ptr::null_mut());
+                kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
             }
             return;
         }
-
     }
     println!("");
     println!("=== TRAP ===");
-    println!("scause  = {:#x} ({} #{})", scause, if is_interrupt { "Interrupt" } else { "Exception" }, code);
+    println!(
+        "scause  = {:#x} ({} #{})",
+        scause,
+        if is_interrupt {
+            "Interrupt"
+        } else {
+            "Exception"
+        },
+        code
+    );
     println!("stval   = {:#x}", stval);
     println!("sepc    = {:#x}", tf.sepc);
     println!("sstatus = {:#x}", tf.sstatus);
@@ -188,6 +232,11 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
 }
 
 pub fn init() {
-    unsafe { asm!("csrw stvec, {}", in(reg) kernelvec as *const () as usize); }
-    println!("trap: stvec set to kernelvec ({:#x})", kernelvec as *const () as usize);
+    unsafe {
+        asm!("csrw stvec, {}", in(reg) kernelvec as *const () as usize);
+    }
+    println!(
+        "trap: stvec set to kernelvec ({:#x})",
+        kernelvec as *const () as usize
+    );
 }

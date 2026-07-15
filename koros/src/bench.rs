@@ -82,7 +82,10 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         }
         off += CHUNK;
     }
-    fs.sync();
+    if let Err(e) = fs.sync() {
+        println!("ext2 bench SKIPPED: sync: {:?}", e);
+        return;
+    }
     let write_ticks = kor::arch::current().now_ticks() - t0;
 
     let fs2 = match driver.mount(Some(device.clone())) {
@@ -114,7 +117,14 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
     }
     let read_ticks = kor::arch::current().now_ticks() - t2;
 
-    report("ext2 bench", BENCH_BYTES, block_size, write_ticks, read_ticks, timebase_hz);
+    report(
+        "ext2 bench",
+        BENCH_BYTES,
+        block_size,
+        write_ticks,
+        read_ticks,
+        timebase_hz,
+    );
 }
 
 /// Sequential raw block-device throughput (no filesystem, no block cache).
@@ -137,6 +147,10 @@ fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
             return;
         }
     }
+    if device.flush().is_err() {
+        println!("virtio bench SKIPPED: flush");
+        return;
+    }
     let write_ticks = kor::arch::current().now_ticks() - t0;
 
     let mut rbuf = alloc::vec![0u8; bs];
@@ -149,15 +163,30 @@ fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
     }
     let read_ticks = kor::arch::current().now_ticks() - t2;
 
-    report("virtio raw bench", BENCH_BYTES, bs, write_ticks, read_ticks, timebase_hz);
+    report(
+        "virtio raw bench",
+        BENCH_BYTES,
+        bs,
+        write_ticks,
+        read_ticks,
+        timebase_hz,
+    );
 }
 
 fn report(name: &str, bytes: usize, block_size: usize, write_ticks: u64, read_ticks: u64, hz: u64) {
     let bytes = bytes as u64;
     let w_ms = write_ticks * 1000 / hz;
     let r_ms = read_ticks * 1000 / hz;
-    let w_kbps = if write_ticks > 0 { bytes * hz / write_ticks / 1024 } else { 0 };
-    let r_kbps = if read_ticks > 0 { bytes * hz / read_ticks / 1024 } else { 0 };
+    let w_kbps = if write_ticks > 0 {
+        bytes * hz / write_ticks / 1024
+    } else {
+        0
+    };
+    let r_kbps = if read_ticks > 0 {
+        bytes * hz / read_ticks / 1024
+    } else {
+        0
+    };
     println!("{}: {} KiB, block_size={}", name, bytes / 1024, block_size);
     println!("  write: {} ms  ({} KiB/s)", w_ms, w_kbps);
     println!("  read : {} ms  ({} KiB/s)", r_ms, r_kbps);

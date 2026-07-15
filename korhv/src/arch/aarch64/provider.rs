@@ -57,11 +57,15 @@ impl ArchProvider for Aarch64Provider {
     }
     fn address_space_root(&self) -> usize {
         let root: usize;
-        unsafe { asm!("mrs {}, ttbr0_el2", out(reg) root); }
+        unsafe {
+            asm!("mrs {}, ttbr0_el2", out(reg) root);
+        }
         root & 0x0000_FFFF_FFFF_F000
     }
     unsafe fn activate_address_space(&self, root: usize) {
-        unsafe { asm!("msr ttbr0_el2, {}", "isb", in(reg) root); }
+        unsafe {
+            asm!("msr ttbr0_el2, {}", "isb", in(reg) root);
+        }
     }
     fn clone_address_space(&self) -> Result<usize, MapError> {
         Err(MapError::Unsupported)
@@ -108,7 +112,7 @@ impl ArchProvider for Aarch64Provider {
     }
 
     fn task_context_zero(&self) -> TaskContext {
-        TaskContext { _storage: [0; 16] }
+        TaskContext { _storage: [0; 32] }
     }
     fn task_context_init(&self, _ctx: &mut TaskContext, _entry: usize, _stack_top: usize) {
         panic!("korhv does not use the scheduler");

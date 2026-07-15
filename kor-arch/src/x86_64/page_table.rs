@@ -27,7 +27,9 @@ pub fn root() -> usize {
 /// # Safety
 /// `root` must be a valid, page-aligned PML4 containing live kernel mappings.
 pub unsafe fn activate(root: usize) {
-    unsafe { core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack)); }
+    unsafe {
+        core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack));
+    }
 }
 pub fn clone_active() -> Result<usize, MapError> {
     unsafe { clone_table(root(), 3) }
@@ -36,10 +38,10 @@ pub fn clone_active() -> Result<usize, MapError> {
 pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_page().ok_or(MapError::OutOfMemory)?;
-    PhysAddr::new(cloned).clear_page();
+    unsafe { PhysAddr::new(cloned).clear_page() };
     unsafe {
-        let src = PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM);
-        let dst = PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM);
+        let src = unsafe { PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM) };
+        let dst = unsafe { PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM) };
         dst[256..].copy_from_slice(&src[256..]);
     }
     Ok(cloned)
@@ -47,9 +49,9 @@ pub fn new_user() -> Result<usize, MapError> {
 
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_page().ok_or(MapError::OutOfMemory)?;
-    PhysAddr::new(cloned).clear_page();
-    let src = unsafe { PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM) };
-    let dst = unsafe { PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM) };
+    unsafe { PhysAddr::new(cloned).clear_page() };
+    let src = unsafe { unsafe { PhysAddr::new(source).page_slice_mut::<usize>(PTE_NUM) } };
+    let dst = unsafe { unsafe { PhysAddr::new(cloned).page_slice_mut::<usize>(PTE_NUM) } };
     for index in 0..PTE_NUM {
         let entry = src[index];
         if !is_present(entry) || (level == 3 && index >= 256) {
@@ -58,7 +60,9 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
             let page = match alloc_page() {
                 Some(page) => page,
                 None => {
-                    unsafe { destroy_table(cloned, level); }
+                    unsafe {
+                        destroy_table(cloned, level);
+                    }
                     return Err(MapError::OutOfMemory);
                 }
             };
@@ -76,7 +80,9 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
             let child = match unsafe { clone_table(pte_address(entry), level - 1) } {
                 Ok(child) => child,
                 Err(error) => {
-                    unsafe { destroy_table(cloned, level); }
+                    unsafe {
+                        destroy_table(cloned, level);
+                    }
                     return Err(error);
                 }
             };
@@ -87,17 +93,23 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
 }
 
 pub unsafe fn destroy(root: usize) {
-    unsafe { destroy_table(root, 3); }
+    unsafe {
+        destroy_table(root, 3);
+    }
 }
 
 unsafe fn destroy_table(table: usize, level: usize) {
-    let entries = unsafe { PhysAddr::new(table).page_slice_mut::<usize>(PTE_NUM) };
+    let entries = unsafe { unsafe { PhysAddr::new(table).page_slice_mut::<usize>(PTE_NUM) } };
     for &entry in &entries[..256] {
-        if !is_present(entry) { continue; }
+        if !is_present(entry) {
+            continue;
+        }
         if level == 0 {
             kor_frame::free_frames(pte_address(entry), 1);
         } else if !is_huge(entry) {
-            unsafe { destroy_table(pte_address(entry), level - 1); }
+            unsafe {
+                destroy_table(pte_address(entry), level - 1);
+            }
         }
     }
     kor_frame::free_frames(table, 1);
@@ -109,7 +121,7 @@ unsafe fn destroy_table(table: usize, level: usize) {
 pub fn split_identity_map() {
     unsafe {
         let root = PhysAddr::new(root());
-        let pml4 = root.page_slice_mut::<usize>(PTE_NUM);
+        let pml4 = unsafe { root.page_slice_mut::<usize>(PTE_NUM) };
         let low = pml4[0];
         if !is_present(low) || is_huge(low) {
             return;
@@ -117,9 +129,9 @@ pub fn split_identity_map() {
 
         let old_pdpt = PhysAddr::new(pte_address(low));
         let new_pdpt_addr = alloc_page().expect("x86: OOM cloning low PDPT");
-        PhysAddr::new(new_pdpt_addr).clear_page();
-        let old_entries = old_pdpt.page_slice_mut::<usize>(PTE_NUM);
-        let new_entries = PhysAddr::new(new_pdpt_addr).page_slice_mut::<usize>(PTE_NUM);
+        unsafe { PhysAddr::new(new_pdpt_addr).clear_page() };
+        let old_entries = unsafe { old_pdpt.page_slice_mut::<usize>(PTE_NUM) };
+        let new_entries = unsafe { PhysAddr::new(new_pdpt_addr).page_slice_mut::<usize>(PTE_NUM) };
 
         for (index, old_entry) in old_entries.iter().copied().enumerate() {
             if !is_present(old_entry) || is_huge(old_entry) {
@@ -129,9 +141,10 @@ pub fn split_identity_map() {
 
             let old_pd = PhysAddr::new(pte_address(old_entry));
             let new_pd_addr = alloc_page().expect("x86: OOM cloning low PD");
-            PhysAddr::new(new_pd_addr).clear_page();
-            let old_pd_entries = old_pd.page_slice_mut::<usize>(PTE_NUM);
-            let new_pd_entries = PhysAddr::new(new_pd_addr).page_slice_mut::<usize>(PTE_NUM);
+            unsafe { PhysAddr::new(new_pd_addr).clear_page() };
+            let old_pd_entries = unsafe { old_pd.page_slice_mut::<usize>(PTE_NUM) };
+            let new_pd_entries =
+                unsafe { PhysAddr::new(new_pd_addr).page_slice_mut::<usize>(PTE_NUM) };
             new_pd_entries.copy_from_slice(old_pd_entries);
             new_entries[index] = new_pd_addr | (old_entry & 0xFFF);
         }
@@ -161,7 +174,7 @@ pub fn translate(vaddr: usize) -> Option<usize> {
         let mut table = PhysAddr::new(root());
         for level in (1..=3).rev() {
             let idx = vaddr.pn_index(level);
-            let pte = table.page_slice_mut::<usize>(PTE_NUM)[idx];
+            let pte = unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[idx];
             if !is_present(pte) {
                 return None;
             }
@@ -171,7 +184,7 @@ pub fn translate(vaddr: usize) -> Option<usize> {
             }
             table = PhysAddr::new(pte_address(pte));
         }
-        let pte = table.page_slice_mut::<usize>(PTE_NUM)[vaddr.pn_index(0)];
+        let pte = unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[vaddr.pn_index(0)];
         if !is_present(pte) || is_huge(pte) {
             return None;
         }
@@ -190,7 +203,7 @@ fn map_4k(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), M
         let mut pd = pd;
         let pt = walk_table(&mut pd, vaddr, 1, user)?;
         let idx = vaddr.pn_index(0);
-        let entry = &mut pt.page_slice_mut::<usize>(PTE_NUM)[idx];
+        let entry = &mut unsafe { pt.page_slice_mut::<usize>(PTE_NUM) }[idx];
         if is_present(*entry) && !flags.contains(MappingFlags::U) {
             return Err(MapError::BlockedByExistingMapping);
         }
@@ -205,19 +218,28 @@ pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
         let mut table = PhysAddr::new(root());
         let target_level = if size == MapSize::Page2M { 1 } else { 0 };
         for level in (target_level + 1..=3).rev() {
-            let entry = table.page_slice_mut::<usize>(PTE_NUM)[vaddr.pn_index(level)];
-            if !is_present(entry) || is_huge(entry) { return Err(MapError::BlockedByExistingMapping); }
+            let entry = unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[vaddr.pn_index(level)];
+            if !is_present(entry) || is_huge(entry) {
+                return Err(MapError::BlockedByExistingMapping);
+            }
             table = PhysAddr::new(pte_address(entry));
         }
-        let entry = &mut table.page_slice_mut::<usize>(PTE_NUM)[vaddr.pn_index(target_level)];
-        if !is_present(*entry) { return Err(MapError::BlockedByExistingMapping); }
+        let entry =
+            &mut unsafe { table.page_slice_mut::<usize>(PTE_NUM) }[vaddr.pn_index(target_level)];
+        let expected_leaf = if size == MapSize::Page2M {
+            is_huge(*entry)
+        } else {
+            !is_huge(*entry)
+        };
+        if !is_present(*entry) || !expected_leaf {
+            return Err(MapError::BlockedByExistingMapping);
+        }
         let paddr = pte_address(*entry);
         *entry = 0;
         flush_vaddr(vaddr);
         Ok(paddr)
     }
 }
-
 
 fn map_2m(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), MapError> {
     if paddr.raw() % (2 * 1024 * 1024) != 0 {
@@ -230,7 +252,7 @@ fn map_2m(vaddr: VirtAddr, paddr: PhysAddr, flags: MappingFlags) -> Result<(), M
         let mut pdpt = pdpt;
         let pd = walk_table(&mut pdpt, vaddr, 2, user)?;
         let idx = vaddr.pn_index(1);
-        let entry = &mut pd.page_slice_mut::<usize>(PTE_NUM)[idx];
+        let entry = &mut unsafe { pd.page_slice_mut::<usize>(PTE_NUM) }[idx];
         if is_present(*entry) {
             return Err(MapError::BlockedByExistingMapping);
         }
@@ -247,13 +269,13 @@ unsafe fn walk_table(
     user: bool,
 ) -> Result<PhysAddr, MapError> {
     let idx = vaddr.pn_index(level);
-    let entry = &mut parent.page_slice_mut::<usize>(PTE_NUM)[idx];
+    let entry = &mut unsafe { parent.page_slice_mut::<usize>(PTE_NUM) }[idx];
     if is_present(*entry) && is_huge(*entry) {
         let block_paddr = pte_address(*entry);
         let inherited_flags = *entry & (0xFFF | (1usize << 63)) & !PTE_PS;
         let new_table = alloc_page().ok_or(MapError::OutOfMemory)?;
-        PhysAddr::new(new_table).clear_page();
-        let table = PhysAddr::new(new_table).page_slice_mut::<usize>(PTE_NUM);
+        unsafe { PhysAddr::new(new_table).clear_page() };
+        let table = unsafe { PhysAddr::new(new_table).page_slice_mut::<usize>(PTE_NUM) };
         let child_size = 1usize << (12 + 9 * (level - 1));
         for (i, child) in table.iter_mut().enumerate() {
             let huge = if level > 1 { PTE_PS } else { 0 };
@@ -266,7 +288,7 @@ unsafe fn walk_table(
     }
     if !is_present(*entry) {
         let frame = alloc_page().ok_or(MapError::OutOfMemory)?;
-        PhysAddr::new(frame).clear_page();
+        unsafe { PhysAddr::new(frame).clear_page() };
         *entry = table_pte(frame);
     }
     Ok(PhysAddr::new(pte_address(*entry)))

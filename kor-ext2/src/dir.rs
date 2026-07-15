@@ -7,7 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
 
-use kor::{FsError, FileType, INode};
+use kor::{FileType, FsError, INode};
 
 use super::inode::Ext2INode;
 
@@ -215,8 +215,7 @@ impl Iterator for DirIterator {
                         // Not enough bytes for even a header — done.
                         return None;
                     }
-                    let rec_len =
-                        u16::from_le_bytes([remaining[4], remaining[5]]) as usize;
+                    let rec_len = u16::from_le_bytes([remaining[4], remaining[5]]) as usize;
                     if rec_len < DIR_ENTRY_HEADER_SIZE {
                         // Malformed — step forward by one header size.
                         self.offset += DIR_ENTRY_HEADER_SIZE;
@@ -295,7 +294,7 @@ fn entry_size(name_len: usize) -> usize {
 ///
 /// Reuses a deleted (inode=0) slot if one is large enough, otherwise
 /// appends at the end of the directory (allocating a new block if needed).
-pub fn add_dir_entry(
+pub(crate) fn add_dir_entry(
     inode: &Ext2INode,
     name: &str,
     child_inode: u32,
@@ -340,8 +339,7 @@ pub fn add_dir_entry(
                 data[offset + 2],
                 data[offset + 3],
             ]);
-            let rec_len =
-                u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
+            let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
             let ent_name_len = data[offset + 6] as usize;
 
             if rec_len < DIR_ENTRY_HEADER_SIZE || offset + rec_len > data.len() {
@@ -369,12 +367,11 @@ pub fn add_dir_entry(
                 if leftover >= DIR_ENTRY_HEADER_SIZE {
                     let fo = offset + needed;
                     data[fo..fo + 4].copy_from_slice(&0u32.to_le_bytes());
-                    data[fo + 4..fo + 6]
-                        .copy_from_slice(&(leftover as u16).to_le_bytes());
+                    data[fo + 4..fo + 6].copy_from_slice(&(leftover as u16).to_le_bytes());
                 }
 
                 let block_start = (offset / block_size) * block_size;
-                inode.write_at(block_start, &data[block_start..block_start + block_size])?;
+                inode.write_at_locked(block_start, &data[block_start..block_start + block_size])?;
                 return Ok(());
             }
 
@@ -384,10 +381,9 @@ pub fn add_dir_entry(
         }
 
         if last_entry_actual > 0 {
-            let last_rec = u16::from_le_bytes([
-                data[last_entry_start + 4],
-                data[last_entry_start + 5],
-            ]) as usize;
+            let last_rec =
+                u16::from_le_bytes([data[last_entry_start + 4], data[last_entry_start + 5]])
+                    as usize;
             let extra = last_rec - last_entry_actual;
 
             if extra >= needed {
@@ -406,7 +402,7 @@ pub fn add_dir_entry(
                 );
 
                 let block_start = (last_entry_start / block_size) * block_size;
-                inode.write_at(block_start, &data[block_start..block_start + block_size])?;
+                inode.write_at_locked(block_start, &data[block_start..block_start + block_size])?;
                 return Ok(());
             }
         }
@@ -424,7 +420,7 @@ pub fn add_dir_entry(
     );
 
     let write_offset = (dir_size / block_size) * block_size;
-    inode.write_at(write_offset, &new_block)?;
+    inode.write_at_locked(write_offset, &new_block)?;
 
     Ok(())
 }
@@ -433,7 +429,7 @@ pub fn add_dir_entry(
 ///
 /// Marks the entry as deleted (inode=0) and coalesces with an adjacent
 /// free successor if one exists.
-pub fn remove_dir_entry(inode: &Ext2INode, name: &str) -> Result<(), FsError> {
+pub(crate) fn remove_dir_entry(inode: &Ext2INode, name: &str) -> Result<(), FsError> {
     // Removing an entry also mutates the directory, so downgrade any htree
     // index to a plain linear layout first.
     inode.demote_from_htree()?;
@@ -455,8 +451,7 @@ pub fn remove_dir_entry(inode: &Ext2INode, name: &str) -> Result<(), FsError> {
             data[offset + 2],
             data[offset + 3],
         ]);
-        let rec_len =
-            u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
+        let rec_len = u16::from_le_bytes([data[offset + 4], data[offset + 5]]) as usize;
         let name_len = data[offset + 6] as usize;
 
         if rec_len < DIR_ENTRY_HEADER_SIZE || offset + rec_len > data.len() {
@@ -465,8 +460,7 @@ pub fn remove_dir_entry(inode: &Ext2INode, name: &str) -> Result<(), FsError> {
 
         if ent_ino != 0
             && name_len == name.len()
-            && data[offset + DIR_ENTRY_HEADER_SIZE
-                ..offset + DIR_ENTRY_HEADER_SIZE + name_len]
+            && data[offset + DIR_ENTRY_HEADER_SIZE..offset + DIR_ENTRY_HEADER_SIZE + name_len]
                 == *name.as_bytes()
         {
             data[offset..offset + 4].copy_from_slice(&0u32.to_le_bytes());
@@ -483,8 +477,7 @@ pub fn remove_dir_entry(inode: &Ext2INode, name: &str) -> Result<(), FsError> {
                     data[next + 2],
                     data[next + 3],
                 ]);
-                let next_rec =
-                    u16::from_le_bytes([data[next + 4], data[next + 5]]) as usize;
+                let next_rec = u16::from_le_bytes([data[next + 4], data[next + 5]]) as usize;
 
                 if next_ino == 0
                     && next_rec >= DIR_ENTRY_HEADER_SIZE
@@ -493,13 +486,12 @@ pub fn remove_dir_entry(inode: &Ext2INode, name: &str) -> Result<(), FsError> {
                     && offset / block_size == (next + next_rec - 1) / block_size
                 {
                     let combined = rec_len + next_rec;
-                    data[offset + 4..offset + 6]
-                        .copy_from_slice(&(combined as u16).to_le_bytes());
+                    data[offset + 4..offset + 6].copy_from_slice(&(combined as u16).to_le_bytes());
                 }
             }
 
             let block_start = (offset / block_size) * block_size;
-            inode.write_at(block_start, &data[block_start..block_start + block_size])?;
+            inode.write_at_locked(block_start, &data[block_start..block_start + block_size])?;
             return Ok(());
         }
 
