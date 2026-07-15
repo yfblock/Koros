@@ -83,8 +83,12 @@ syscall_entry:
     push    rax
 
     mov     rdi, rsp
-    call    handle_trap
-
+    call    handle_syscall
+    test    eax, eax
+    jz      .Lsyscall_return
+    int     0x81
+    ud2
+.Lsyscall_return:
     pop     rax
     pop     rcx
     pop     rdx
@@ -127,9 +131,13 @@ syscall_entry:
     push    rdx
     push    rcx
     push    rax
+    # TrapFrame.cs is 17 qwords above rsp after the GPR save.
+    mov     rdi, [rsp + 17*8]
+    call    x86_trap_enter
 
     mov     rdi, rsp
     call    handle_trap
+    call    x86_trap_leave
 
     pop     rax
     pop     rcx

@@ -102,7 +102,7 @@ mod x86_nr {
     pub const KILL: usize = 62;
     pub const UNAME: usize = 63;
     pub const FCNTL: usize = 72;
-    pub const GETDENTS64: usize = 78;
+    pub const GETDENTS64: usize = 217;
     pub const GETCWD: usize = 79;
     pub const CHDIR: usize = 80;
     pub const GETUID: usize = 102;
@@ -163,13 +163,11 @@ pub const RAM_START: usize = 0x8000_0000;
 /// num is the syscall number, args is up to 6 arguments.
 /// Returns the syscall result (positive = success, negative = -errno).
 fn current_user_phys(address: usize, write: bool) -> Option<usize> {
-    let process = crate::sched::current_process()?;
-    let process = process.lock();
-    let space = process.address_space()?;
-    if !space.validate_range(address, 1, write) {
-        return None;
-    }
-    space.translate(address)
+    crate::sched::with_current_process(|process| {
+        let process = process.lock();
+        let space = process.address_space()?;
+        space.validate_range(address, 1, write).then(|| space.translate(address))?
+    })?
 }
 
 /// Translate one validated user byte. Bulk callers must use pagewise copy
@@ -183,12 +181,13 @@ fn checked_user_range(address: usize, length: usize, write: bool) -> Option<()> 
     if address == 0 {
         return None;
     }
-    let process = crate::sched::current_process()?;
-    let process = process.lock();
-    process
-        .address_space()?
-        .validate_range(address, length, write)
-        .then_some(())
+    crate::sched::with_current_process(|process| {
+        process
+            .lock()
+            .address_space()
+            .is_some_and(|space| space.validate_range(address, length, write))
+    })?
+    .then_some(())
 }
 
 fn copy_from_user(address: usize, destination: &mut [u8]) -> Option<()> {
@@ -760,11 +759,11 @@ pub fn dispatch(num: usize, args: &[usize]) -> isize {
     #[cfg(target_arch = "x86_64")]
     let raw_num = num;
     #[cfg(target_arch = "x86_64")]
-    let num = translate_syscall(num);
-    #[cfg(target_arch = "x86_64")]
     if raw_num == 158 {
         return sys_arch_prctl(args[0], args[1]);
     }
+    #[cfg(target_arch = "x86_64")]
+    let num = translate_syscall(num);
     dispatch_inner(num, args)
 }
 
@@ -859,7 +858,7 @@ fn sys_arch_prctl(code: usize, addr: usize) -> isize {
     const ARCH_GET_FS: usize = 0x1003;
     const ARCH_GET_GS: usize = 0x1004;
     const IA32_FS_BASE: u32 = 0xC000_0100;
-    const IA32_GS_BASE: u32 = 0xC000_0101;
+    const IA32_KERNEL_GS_BASE: u32 = 0xC000_0102;
 
     unsafe fn read_msr(msr: u32) -> u64 {
         let low: u32;
@@ -890,14 +889,16 @@ fn sys_arch_prctl(code: usize, addr: usize) -> isize {
             0
         },
         ARCH_SET_GS => unsafe {
-            write_msr(IA32_GS_BASE, addr as u64);
+            // Native SYSCALL has swapped back to kernel GS, so the user's GS
+            // base is parked in IA32_KERNEL_GS_BASE until return.
+            write_msr(IA32_KERNEL_GS_BASE, addr as u64);
             0
         },
         ARCH_GET_FS | ARCH_GET_GS => {
             let msr = if code == ARCH_GET_FS {
                 IA32_FS_BASE
             } else {
-                IA32_GS_BASE
+                IA32_KERNEL_GS_BASE
             };
             if write_user(addr, &unsafe { read_msr(msr) }).is_none() {
                 -14
@@ -1019,11 +1020,7 @@ pub(crate) struct FileEntry {
 pub(crate) type SharedFile = Arc<Mutex<FileEntry>>;
 
 fn current_file(fd: usize) -> Option<SharedFile> {
-    crate::sched::current_process()?
-        .lock()
-        .files
-        .get(&fd)
-        .cloned()
+    crate::sched::with_current_process(|process| process.lock().files.get(&fd).cloned())?
 }
 
 fn alloc_fd(inode: Arc<dyn INode>) -> Option<usize> {
@@ -1078,21 +1075,13 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
     let read = if fd == 0 {
         let mut read = 0;
         while read == 0 {
-            #[cfg(target_arch = "x86_64")]
-            let next = kor_arch::uart::ns16550a::getchar_port(0x3F8);
-            #[cfg(not(target_arch = "x86_64"))]
-            let next = rx_get();
-            if let Some(byte) = next {
+            if let Some(byte) = rx_get() {
                 data[read] = byte;
                 read += 1;
             }
         }
         while read < count {
-            #[cfg(target_arch = "x86_64")]
-            let next = kor_arch::uart::ns16550a::getchar_port(0x3F8);
-            #[cfg(not(target_arch = "x86_64"))]
-            let next = rx_get();
-            match next {
+            match rx_get() {
                 Some(byte) => {
                     data[read] = byte;
                     read += 1;
@@ -1198,7 +1187,7 @@ fn sys_exit_fork(code: usize) -> isize {
 }
 
 fn sys_clone(args: &[usize]) -> isize {
-    let parent = match crate::sched::current_process() {
+    let parent = match crate::sched::current_process_arc() {
         Some(process) => process,
         None => return -38,
     };
@@ -1233,9 +1222,17 @@ fn sys_clone(args: &[usize]) -> isize {
         context.regs[10] = 0;
         context.pc = context.pc.wrapping_add(4);
     }
-    #[cfg(any(target_arch = "aarch64", target_arch = "x86_64"))]
+    #[cfg(target_arch = "aarch64")]
     {
         context.regs[0] = 0;
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        // UserTrapContext follows Linux x86_64 sigcontext order; RAX is slot 13.
+        context.regs[13] = 0;
+        if args[1] != 0 {
+            context.sp = args[1];
+        }
     }
     let child = crate::sched::alloc_process(parent_pid, child_space);
     {
@@ -1272,6 +1269,8 @@ fn sys_clone(args: &[usize]) -> isize {
 
 fn fork_child_entry() {
     let process = crate::sched::current_process().expect("fork child task has no process");
+    #[cfg(target_arch = "x86_64")]
+    kor_arch::x86_64::trap::set_syscall_stack(kor_sched::current().user_stack_top());
     let context = {
         let mut process = process.lock();
         process.activate_address_space();
@@ -1712,55 +1711,85 @@ fn sys_ioctl(fd: usize, request: usize, argp: usize) -> isize {
     -25 // ENOTTY
 }
 
-fn sys_fstat(fd: usize, stat: usize) -> isize {
-    let entry = match current_file(fd) {
-        Some(entry) => entry,
-        None => return -9,
-    };
-    let entry = entry.lock();
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct LinuxStat {
-        st_dev: u64,
-        st_ino: u64,
-        st_mode: u32,
-        st_nlink: u32,
-        st_uid: u32,
-        st_gid: u32,
-        st_rdev: u64,
-        _pad: u64,
-        st_size: i64,
-        st_blksize: u32,
-        _pad2: u32,
-        st_blocks: u64,
-        st_atime: i64,
-        st_mtime: i64,
-        st_ctime: i64,
-    }
-    let meta = entry.inode.getattr().unwrap();
+#[cfg(not(target_arch = "x86_64"))]
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct LinuxStat {
+    st_dev: u64,
+    st_ino: u64,
+    st_mode: u32,
+    st_nlink: u32,
+    st_uid: u32,
+    st_gid: u32,
+    st_rdev: u64,
+    _pad: u64,
+    st_size: i64,
+    st_blksize: u32,
+    _pad2: u32,
+    st_blocks: u64,
+    st_atime: i64,
+    st_mtime: i64,
+    st_ctime: i64,
+}
+
+#[cfg(target_arch = "x86_64")]
+#[repr(C)]
+#[derive(Copy, Clone)]
+struct LinuxStat {
+    st_dev: u64,
+    st_ino: u64,
+    st_nlink: u64,
+    st_mode: u32,
+    st_uid: u32,
+    st_gid: u32,
+    _pad0: u32,
+    st_rdev: u64,
+    st_size: i64,
+    st_blksize: i64,
+    st_blocks: i64,
+    st_atime: i64,
+    st_atime_nsec: i64,
+    st_mtime: i64,
+    st_mtime_nsec: i64,
+    st_ctime: i64,
+    st_ctime_nsec: i64,
+    _unused: [i64; 3],
+}
+
+fn linux_stat(meta: kor::Metadata) -> LinuxStat {
     let mode = match meta.file_type {
         kor::FileType::Regular => 0o100664,
         kor::FileType::Directory => 0o040755,
         kor::FileType::Symlink => 0o120777,
         _ => 0o0600,
     };
-    let st = LinuxStat {
-        st_dev: 0,
-        st_ino: 0,
-        st_mode: mode,
-        st_nlink: 1,
-        st_uid: 0,
-        st_gid: 0,
-        st_rdev: 0,
-        _pad: 0,
-        st_size: meta.size as i64,
-        st_blksize: 512,
-        _pad2: 0,
-        st_blocks: ((meta.size as u64) + 511) / 512,
-        st_atime: 0,
-        st_mtime: 0,
-        st_ctime: 0,
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        LinuxStat {
+            st_dev: 0, st_ino: 0, st_mode: mode, st_nlink: 1, st_uid: 0, st_gid: 0,
+            st_rdev: 0, _pad: 0, st_size: meta.size as i64, st_blksize: 512, _pad2: 0,
+            st_blocks: ((meta.size as u64) + 511) / 512, st_atime: 0, st_mtime: 0, st_ctime: 0,
+        }
+    }
+    #[cfg(target_arch = "x86_64")]
+    {
+        LinuxStat {
+            st_dev: 0, st_ino: 0, st_nlink: 1, st_mode: mode, st_uid: 0, st_gid: 0,
+            _pad0: 0, st_rdev: 0, st_size: meta.size as i64, st_blksize: 512,
+            st_blocks: ((meta.size as u64) + 511) as i64 / 512, st_atime: 0,
+            st_atime_nsec: 0, st_mtime: 0, st_mtime_nsec: 0, st_ctime: 0,
+            st_ctime_nsec: 0, _unused: [0; 3],
+        }
+    }
+}
+
+fn sys_fstat(fd: usize, stat: usize) -> isize {
+    let entry = match current_file(fd) {
+        Some(entry) => entry,
+        None => return -9,
     };
+    let entry = entry.lock();
+    let st = linux_stat(entry.inode.getattr().unwrap());
     if write_user(stat, &st).is_none() {
         -14
     } else {
@@ -2001,26 +2030,26 @@ fn sys_rt_sigprocmask(how: usize, set: usize, old_set: usize) -> isize {
     } else {
         None
     };
-    let Some(process) = crate::sched::current_process() else {
-        return ESRCH;
-    };
-    let old = {
-        let mut process = process.lock();
-        let old = process.signals.blocked;
-        if let Some(requested) = requested {
-            match how {
-                0 => process.signals.blocked |= requested,
-                1 => process.signals.blocked &= !requested,
-                2 => process.signals.blocked = requested,
-                _ => return EINVAL,
+    crate::sched::with_current_process(|process| {
+        let old = {
+            let mut process = process.lock();
+            let old = process.signals.blocked;
+            if let Some(requested) = requested {
+                match how {
+                    0 => process.signals.blocked |= requested,
+                    1 => process.signals.blocked &= !requested,
+                    2 => process.signals.blocked = requested,
+                    _ => return EINVAL,
+                }
             }
+            old
+        };
+        if old_set != 0 && write_user(old_set, &old).is_none() {
+            return EFAULT;
         }
-        old
-    };
-    if old_set != 0 && write_user(old_set, &old).is_none() {
-        return EFAULT;
-    }
-    0
+        0
+    })
+    .unwrap_or(ESRCH)
 }
 
 fn sys_rt_sigsuspend(mask: usize) -> isize {
@@ -2097,16 +2126,22 @@ fn sys_kill(pid: usize, signal: usize) -> isize {
 /// Deliver one pending, unblocked signal into the active user trap frame.
 /// Called by architecture trap handlers immediately before their user return.
 #[unsafe(no_mangle)]
-pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) {
+pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) -> Option<i32> {
     let Some(process) = crate::sched::current_process() else {
-        return;
+        return None;
     };
+    if kor_sched::current()
+        .with_user_context(|active| core::ptr::eq(active, frame))
+        != Some(true)
+    {
+        return None;
+    }
     loop {
         let pending = {
             let mut process = process.lock();
             let deliverable = process.signals.pending & !process.signals.blocked;
             if deliverable == 0 {
-                return;
+                return None;
             }
             let signal = deliverable.trailing_zeros() as usize + 1;
             let bit = 1u64 << (signal - 1);
@@ -2126,18 +2161,18 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) {
             continue;
         }
         if action.handler == SIG_DFL {
-            crate::sched::exit_current(128 + signal as i32);
+            return Some(128 + signal as i32);
         }
 
         let Some(context) = (unsafe { kor_arch::capture_user_context(frame) }) else {
-            return;
+            return None;
         };
         let frame_size = core::mem::size_of::<LinuxRtSignalFrame>();
         let Some(frame_address) = context.sp.checked_sub(frame_size).map(|sp| sp & !15) else {
-            crate::sched::exit_current(128 + 11)
+            return Some(128 + 11);
         };
         if checked_user_range(frame_address, frame_size, true).is_none() {
-            crate::sched::exit_current(128 + 11)
+            return Some(128 + 11);
         }
         let info = LinuxSigInfo {
             signo: signal as i32,
@@ -2161,10 +2196,10 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) {
             info,
         };
         if write_user(frame_address, &signal_frame).is_none() {
-            crate::sched::exit_current(128 + 11);
+            return Some(128 + 11);
         }
         let Some(restorer) = signal_restorer(action) else {
-            crate::sched::exit_current(128 + 11)
+            return Some(128 + 11);
         };
 
         {
@@ -2191,12 +2226,11 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) {
                 context_address,
             )
         } {
-            crate::sched::exit_current(128 + 11)
+            return Some(128 + 11);
         }
-        return;
+        return None;
     }
 }
-
 fn sys_futex(address: usize, operation: usize, value: usize) -> isize {
     const FUTEX_WAIT: usize = 0;
     const FUTEX_WAKE: usize = 1;
@@ -2261,9 +2295,6 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
             let reaped = crate::sched::reap(child_pid).expect("zombie disappeared while reaping");
             drop(reaped);
             return child_pid as isize;
-        }
-        if crate::sched::matching_child(parent, requested).is_none() {
-            return -10;
         }
         if options & WNOHANG != 0 {
             return 0;
@@ -2404,62 +2435,28 @@ pub unsafe fn user_trap_enter(frame: *mut u8) {
 }
 
 pub unsafe fn user_trap_leave(frame: *mut u8) {
-    korix_deliver_pending_signal(frame);
-    korix_set_current_tf(core::ptr::null_mut());
+    let task = kor_sched::current();
+    if task
+        .with_user_context(|active| core::ptr::eq(active, frame))
+        == Some(true)
+    {
+        task.clear_user_context();
+    }
+}
+pub unsafe fn user_trap_status(frame: *mut u8) -> Option<i32> {
+    korix_deliver_pending_signal(frame)
 }
 
 fn sys_fstatat(path: usize, stat: usize) -> isize {
     let path_str = match user_to_str(path, 256) {
-        Some(p) => p,
+        Some(path) => path,
         None => return -14,
     };
     let inode = match crate::fs::resolve(&path_str) {
-        Ok(i) => i,
+        Ok(inode) => inode,
         Err(_) => return -2,
     };
-    #[repr(C)]
-    #[derive(Copy, Clone)]
-    struct LinuxStat {
-        st_dev: u64,
-        st_ino: u64,
-        st_mode: u32,
-        st_nlink: u32,
-        st_uid: u32,
-        st_gid: u32,
-        st_rdev: u64,
-        _pad: u64,
-        st_size: i64,
-        st_blksize: u32,
-        _pad2: u32,
-        st_blocks: u64,
-        st_atime: i64,
-        st_mtime: i64,
-        st_ctime: i64,
-    }
-    let meta = inode.getattr().unwrap();
-    let mode = match meta.file_type {
-        kor::FileType::Regular => 0o100664,
-        kor::FileType::Directory => 0o040755,
-        kor::FileType::Symlink => 0o120777,
-        _ => 0o0600,
-    };
-    let st = LinuxStat {
-        st_dev: 0,
-        st_ino: 0,
-        st_mode: mode,
-        st_nlink: 1,
-        st_uid: 0,
-        st_gid: 0,
-        st_rdev: 0,
-        _pad: 0,
-        st_size: meta.size as i64,
-        st_blksize: 512,
-        _pad2: 0,
-        st_blocks: ((meta.size as u64) + 511) / 512,
-        st_atime: 0,
-        st_mtime: 0,
-        st_ctime: 0,
-    };
+    let st = linux_stat(inode.getattr().unwrap());
     if write_user(stat, &st).is_none() {
         -14
     } else {

@@ -86,6 +86,10 @@ extern "C" fn kernel_main() -> ! {
         syscall::user_trap_enter,
         syscall::user_trap_leave,
     );
+    kor::trap_callbacks::install_user_trap_status_hook(syscall::user_trap_status);
+    kor::trap_callbacks::install_user_exit_hook(sched::exit_current);
+    #[cfg(target_arch = "x86_64")]
+    kor::trap_callbacks::install_task_switch_hook(kor_arch::x86_64::trap::set_syscall_stack);
     heap::init_bootstrap();
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);

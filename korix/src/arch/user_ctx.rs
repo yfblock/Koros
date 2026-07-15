@@ -128,6 +128,8 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
         // Build the iretq frame on the kernel stack.
         // iretq pops (low to high): RIP, CS, RFLAGS, RSP, SS.
         // Push in reverse order: SS, RSP, RFLAGS, CS, RIP.
+        kor_arch::x86_64::trap::set_syscall_stack(kor_sched::current().user_stack_top());
+        kor_arch::x86_64::trap::prepare_user_entry();
         asm!(
             // SS: user data segment (ring 3) = 0x23
             "push 0x23",
@@ -156,6 +158,7 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
             "xor r14, r14",
             "xor r15, r15",
             // Switch to ring 3
+            "swapgs",
             "iretq",
             entry = in(reg) ctx.entry,
             usp = in(reg) ctx.sp,

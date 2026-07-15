@@ -26,6 +26,7 @@ pub fn putc(c: u8) {
     }
 }
 
+
 /// Emit a byte string, translating `'\n'` to `"'\r\n'"`.
 pub fn puts(s: &str) {
     for b in s.bytes() {

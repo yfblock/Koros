@@ -63,6 +63,7 @@ pub struct Task {
     pub id: usize,
     ctx: UnsafeCell<TaskContext>,
     _stack: Box<[u8]>,
+    user_stack: Box<[u8]>,
     entry: fn(),
     state: AtomicU8,
     wake_tick: AtomicU64,
@@ -90,6 +91,7 @@ impl Drop for UserContextGuard {
 impl Task {
     fn new(entry: fn()) -> Arc<Self> {
         let stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
+        let user_stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
         let stack_top = (stack.as_ptr() as usize + STACK_SIZE) & !0xF;
         let mut ctx = kor::arch::current().task_context_zero();
         kor::arch::current().task_context_init(
@@ -101,6 +103,7 @@ impl Task {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             ctx: UnsafeCell::new(ctx),
             _stack: stack,
+            user_stack,
             entry,
             state: AtomicU8::new(READY),
             wake_tick: AtomicU64::new(0),
@@ -116,6 +119,7 @@ impl Task {
             id: 0,
             ctx: UnsafeCell::new(kor::arch::current().task_context_zero()),
             _stack: Box::new([]),
+            user_stack: Box::new([]),
             entry: || {},
             state: AtomicU8::new(RUNNING),
             wake_tick: AtomicU64::new(0),
@@ -163,7 +167,17 @@ impl Task {
     fn address_space_root(&self) -> usize {
         self.address_space_root.load(Ordering::Acquire)
     }
+    /// Top of this task's dedicated kernel stack for user syscall entry.
+    pub fn user_stack_top(&self) -> usize {
+        if self.user_stack.is_empty() {
+            0
+        } else {
+            (self.user_stack.as_ptr() as usize + self.user_stack.len()) & !0xf
+        }
+    }
+
 }
+
 
 /// Per-CPU scheduler state.
 struct PerCpu {
@@ -319,6 +333,7 @@ fn schedule(prev_action: u8, wait_ptr: usize) {
         (prev.ctx.get(), next.ctx.get() as *const TaskContext)
     };
 
+    kor::trap_callbacks::task_switch(next.user_stack_top());
     let root = next.address_space_root();
     if kor::arch::current().address_space_root() != root {
         // SAFETY: each configured task retains ownership of this root for its
@@ -352,8 +367,10 @@ pub fn sleep_ms(ms: u64) {
 /// Terminate the current task and switch away permanently.
 pub fn exit() -> ! {
     kor::irq::disable();
-    schedule(TO_ZOMBIE, 0);
-    unreachable!("exited task resumed");
+    loop {
+        schedule(TO_ZOMBIE, 0);
+        kor::arch::current().wait_for_interrupt();
+    }
 }
 
 /// Move a blocked/parked task back to the ready queue.
@@ -424,6 +441,7 @@ pub fn idle_loop() -> ! {
 /// First code every freshly spawned task runs.
 extern "C" fn task_bootstrap() -> ! {
     finish_switch();
+    kor::trap_callbacks::task_switch(current().user_stack_top());
     kor::irq::enable();
     let entry = current().entry;
     entry();

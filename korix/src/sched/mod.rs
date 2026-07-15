@@ -88,6 +88,7 @@ impl ProcessState {
     }
 }
 
+
 static NEXT_PID: Mutex<usize> = Mutex::new(1);
 static PROCESSES: Mutex<BTreeMap<usize, Arc<Mutex<ProcessState>>>> = Mutex::new(BTreeMap::new());
 static TASK_PROCESSES: Mutex<BTreeMap<usize, usize>> = Mutex::new(BTreeMap::new());
@@ -144,6 +145,14 @@ pub fn current_process() -> Option<Arc<Mutex<ProcessState>>> {
     process(current_pid()?)
 }
 
+pub fn with_current_process<R>(f: impl FnOnce(&Mutex<ProcessState>) -> R) -> Option<R> {
+    current_process().map(|process| f(&process))
+}
+
+pub fn current_process_arc() -> Option<Arc<Mutex<ProcessState>>> {
+    current_process()
+}
+
 pub fn matching_child(parent: usize, requested: isize) -> Option<Arc<Mutex<ProcessState>>> {
     PROCESSES
         .lock()
@@ -179,8 +188,11 @@ pub fn reap(pid: usize) -> Option<Arc<Mutex<ProcessState>>> {
 
 /// Mark the current process dead, notify its parent, and terminate its task.
 pub fn exit_current(code: i32) -> ! {
-    let task_id = kor_sched::current().id;
     let current = current_process().expect("exiting task is not a process");
+    // A non-returning syscall leaves through the scheduler instead of the
+    // architecture trap epilogue; do not retain a pointer into its old
+    // CPU-local syscall stack after the task becomes a zombie.
+    kor_sched::current().clear_user_context();
     let (pid, requested_parent, clear_child_tid, address_space_root) = {
         let mut process = current.lock();
         process.exit_code = code;
@@ -208,38 +220,14 @@ pub fn exit_current(code: i32) -> ! {
         crate::syscall::wake_futex(clear_child_tid, 1);
     }
 
-    let init = process(1);
-    let children: alloc::vec::Vec<_> = PROCESSES
-        .lock()
-        .values()
-        .filter(|candidate| {
-            let candidate = candidate.lock();
-            candidate.parent == pid && candidate.pid != pid
-        })
-        .cloned()
-        .collect();
-    let mut adopted_zombie = false;
-    for child in children {
-        let mut child = child.lock();
-        child.parent = 1;
-        adopted_zombie |= child.state == STATE_ZOMBIE;
-    }
-    if adopted_zombie {
-        if let Some(init) = &init {
-            let mut init = init.lock();
-            init.child_events.post();
-            init.signals.enqueue(17);
-            init.signal_events.post();
+    if requested_parent != 0 && requested_parent != pid {
+        let mut processes = PROCESSES.lock();
+        if let Some(parent) = processes.get_mut(&requested_parent) {
+            let mut parent = parent.lock();
+            parent.child_events.post();
+            parent.signals.enqueue(17);
+            parent.signal_events.post();
         }
-    }
-
-    TASK_PROCESSES.lock().remove(&task_id);
-    let parent = process(requested_parent).or(init);
-    if let Some(parent) = parent {
-        let mut parent = parent.lock();
-        parent.child_events.post();
-        parent.signals.enqueue(17);
-        parent.signal_events.post();
     }
     kor_sched::exit()
 }

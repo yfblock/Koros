@@ -64,10 +64,44 @@ pub fn syscall_handler() -> Option<SyscallHandler> {
 pub type UserTrapHook = unsafe fn(*mut u8);
 static USER_TRAP_ENTER: Once<UserTrapHook> = Once::new();
 static USER_TRAP_LEAVE: Once<UserTrapHook> = Once::new();
+pub type UserTrapStatusHook = unsafe fn(*mut u8) -> Option<i32>;
+static USER_TRAP_STATUS: Once<UserTrapStatusHook> = Once::new();
+pub type UserExitHook = fn(i32) -> !;
+static USER_EXIT: Once<UserExitHook> = Once::new();
+pub type TaskSwitchHook = fn(usize);
+static TASK_SWITCH: Once<TaskSwitchHook> = Once::new();
 
 pub fn install_user_trap_hooks(enter: UserTrapHook, leave: UserTrapHook) {
     USER_TRAP_ENTER.call_once(|| enter);
     USER_TRAP_LEAVE.call_once(|| leave);
+}
+
+pub fn install_user_trap_status_hook(hook: UserTrapStatusHook) {
+    USER_TRAP_STATUS.call_once(|| hook);
+}
+
+pub fn install_user_exit_hook(hook: UserExitHook) {
+    USER_EXIT.call_once(|| hook);
+}
+
+pub fn user_exit(code: i32) -> ! {
+    if let Some(hook) = USER_EXIT.get() {
+        hook(code)
+    }
+    loop {
+        crate::arch::current().wait_for_interrupt();
+    }
+}
+
+
+pub fn install_task_switch_hook(hook: TaskSwitchHook) {
+    TASK_SWITCH.call_once(|| hook);
+}
+
+pub fn task_switch(user_stack_top: usize) {
+    if let Some(hook) = TASK_SWITCH.get() {
+        hook(user_stack_top);
+    }
 }
 
 /// # Safety
@@ -84,4 +118,12 @@ pub unsafe fn user_trap_leave(frame: *mut u8) {
     if let Some(hook) = USER_TRAP_LEAVE.get() {
         unsafe { hook(frame) };
     }
+}
+
+/// Return a fatal process status requested by the composition layer.
+///
+/// # Safety
+/// `frame` must be the live architecture trap frame for the current task.
+pub unsafe fn user_trap_status(frame: *mut u8) -> Option<i32> {
+    USER_TRAP_STATUS.get().and_then(|hook| unsafe { hook(frame) })
 }

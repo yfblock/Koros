@@ -70,10 +70,17 @@ struct Tss {
 }
 
 /// Dedicated kernel stacks for privilege transitions and native syscalls.
-const TRAP_STACK_SIZE: usize = 0x4000;
+pub const TRAP_STACK_SIZE: usize = 0x4000;
 
 #[repr(align(16))]
+#[allow(dead_code)]
 struct IntStack([u8; TRAP_STACK_SIZE]);
+
+/// Configure this CPU's native SYSCALL state for the task being resumed.
+pub fn set_syscall_stack(stack_top: usize) {
+    let cpu = kor::arch::current().cpu_id();
+    unsafe { X86_SYSCALL_CPU_STATES[cpu].stack_top = stack_top as u64; }
+}
 
 #[repr(C)]
 struct SyscallCpuState {
@@ -105,9 +112,6 @@ static mut TSSES: [Tss; kor::smp::MAX_CPUS] = [const {
 }; kor::smp::MAX_CPUS];
 static mut INT_STACKS: [IntStack; kor::smp::MAX_CPUS] =
     [const { IntStack([0; TRAP_STACK_SIZE]) }; kor::smp::MAX_CPUS];
-static mut SYSCALL_STACKS: [IntStack; kor::smp::MAX_CPUS] =
-    [const { IntStack([0; TRAP_STACK_SIZE]) }; kor::smp::MAX_CPUS];
-
 #[unsafe(no_mangle)]
 static mut X86_SYSCALL_CPU_STATES: [SyscallCpuState; kor::smp::MAX_CPUS] = [const {
     SyscallCpuState {
@@ -115,6 +119,9 @@ static mut X86_SYSCALL_CPU_STATES: [SyscallCpuState; kor::smp::MAX_CPUS] = [cons
         stack_top: 0,
     }
 }; kor::smp::MAX_CPUS];
+/// Whether the current interrupt frame swapped GS on entry, indexed by CPU.
+/// Interrupts are disabled while a frame is active, so one slot per CPU is sufficient.
+static mut TRAP_SWAPPED_GS: [bool; kor::smp::MAX_CPUS] = [false; kor::smp::MAX_CPUS];
 
 // ---------------------------------------------------------------------------
 // Assembly stubs and handler table
@@ -122,19 +129,68 @@ static mut X86_SYSCALL_CPU_STATES: [SyscallCpuState; kor::smp::MAX_CPUS] = [cons
 
 global_asm!(include_str!("trap.S"));
 
-unsafe extern "C" {
-    #[allow(dead_code)]
-    static trap_handler_table: [*const (); 256];
-}
 
 // ---------------------------------------------------------------------------
 // Rust trap handler — called from assembly
 // ---------------------------------------------------------------------------
 
 #[unsafe(no_mangle)]
+extern "C" fn x86_trap_enter(cs: u64) {
+    let from_user = cs & 3 == 3;
+    let cpu = kor::arch::current().cpu_id();
+    unsafe {
+        TRAP_SWAPPED_GS[cpu] = from_user;
+        if from_user {
+            core::arch::asm!("swapgs", options(nostack));
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn x86_trap_leave() {
+    let cpu = kor::arch::current().cpu_id();
+    unsafe {
+        if TRAP_SWAPPED_GS[cpu] {
+            TRAP_SWAPPED_GS[cpu] = false;
+            core::arch::asm!("swapgs", options(nostack));
+        }
+    }
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn handle_syscall(tf: &mut TrapFrame) -> i32 {
+    let Some(handler) = kor::trap_callbacks::syscall_handler() else {
+        return 0;
+    };
+    unsafe {
+        kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
+    }
+    let nr = tf.rax as usize;
+    let args = [
+        tf.rdi as usize,
+        tf.rsi as usize,
+        tf.rdx as usize,
+        tf.r10 as usize,
+        tf.r8 as usize,
+        tf.r9 as usize,
+    ];
+    tf.rax = handler(nr, &args) as u64;
+    let fatal = unsafe {
+        kor::trap_callbacks::user_trap_status(tf as *mut TrapFrame as *mut u8)
+    };
+    unsafe {
+        kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
+    }
+    fatal.unwrap_or(0)
+}
+#[unsafe(no_mangle)]
 extern "C" fn handle_trap(tf: &mut TrapFrame) {
     // Timer interrupts are acknowledged by hardware; korix user-mode runs
     // without the scheduler, so avoid preemption/callback work while in ring 3.
+    if tf.vector == 0x81 {
+        kor::trap_callbacks::user_exit(tf.rax as i32);
+    }
+
     if tf.vector == 0x20 {
         if (tf.cs & 3) == 0 {
             kor::on_timer();
@@ -144,29 +200,6 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
 
     let from_user = (tf.cs & 3) == 3;
 
-    // Native SYSCALL path. The assembly uses synthetic vector 0x100 and
-    // builds the same ring-3 return frame consumed by iretq.
-    if tf.vector == 0x100 && from_user {
-        if let Some(handler) = kor::trap_callbacks::syscall_handler() {
-            unsafe {
-                kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
-            }
-            let nr = tf.rax as usize;
-            let args = [
-                tf.rdi as usize,
-                tf.rsi as usize,
-                tf.rdx as usize,
-                tf.r10 as usize,
-                tf.r8 as usize,
-                tf.r9 as usize,
-            ];
-            tf.rax = handler(nr, &args) as u64;
-            unsafe {
-                kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
-            }
-            return;
-        }
-    }
 
     // System call via int 0x80 from user mode.
     if tf.vector == 0x80 && from_user {
@@ -299,8 +332,6 @@ pub fn init() {
         (*tss).rsp0_low = rsp0 as u32;
         (*tss).rsp0_high = (rsp0 >> 32) as u32;
 
-        let syscall_stack = core::ptr::addr_of!(SYSCALL_STACKS[cpu]);
-        X86_SYSCALL_CPU_STATES[cpu].stack_top = syscall_stack as u64 + TRAP_STACK_SIZE as u64;
 
         let gdtr = Dtr {
             limit: (core::mem::size_of::<Gdt>() - 1) as u16,
@@ -348,13 +379,21 @@ pub fn init() {
             options(nostack),
         );
         let syscall_state = core::ptr::addr_of!(X86_SYSCALL_CPU_STATES[cpu]) as u64;
-        // User GS base stays zero. swapgs on entry selects this CPU-private
-        // state from IA32_KERNEL_GS_BASE; the return swap restores user GS.
+        // Kernel execution owns IA32_GS_BASE. User execution owns the base
+        // parked in IA32_KERNEL_GS_BASE. Every detached kernel-to-user return
+        // performs swapgs; native SYSCALL swaps back to this CPU-private state.
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC000_0101u32,
+            in("eax") syscall_state as u32,
+            in("edx") (syscall_state >> 32) as u32,
+            options(nostack),
+        );
         core::arch::asm!(
             "wrmsr",
             in("ecx") 0xC000_0102u32,
-            in("eax") syscall_state as u32,
-            in("edx") (syscall_state >> 32) as u32,
+            in("eax") 0u32,
+            in("edx") 0u32,
             options(nostack),
         );
         let sfmask = 0u64;
@@ -568,6 +607,28 @@ pub unsafe fn setup_user_signal(
     true
 }
 
+/// Prepare this CPU's GS MSRs for a detached kernel-to-user transition.
+pub fn prepare_user_entry() {
+    let cpu = kor::arch::current().cpu_id();
+    let syscall_state = unsafe { core::ptr::addr_of!(X86_SYSCALL_CPU_STATES[cpu]) as u64 };
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC000_0101u32,
+            in("eax") syscall_state as u32,
+            in("edx") (syscall_state >> 32) as u32,
+            options(nostack),
+        );
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") 0xC000_0102u32,
+            in("eax") 0u32,
+            in("edx") 0u32,
+            options(nostack),
+        );
+    }
+}
+
 /// Resume a detached user context via iretq.
 ///
 /// # Safety
@@ -603,6 +664,7 @@ pub unsafe fn resume_user_context(context: &crate::UserTrapContext) -> ! {
             "mov rax, [rdi + {o_rax}]",
             "mov rcx, [rdi + {o_rcx}]",
             "mov rdi, [rdi + {o_rdi}]",
+            "swapgs",
             "iretq",
             in("rdi") ctx_ptr,
             sp = const UTC_SP,
