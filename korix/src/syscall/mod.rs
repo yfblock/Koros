@@ -55,6 +55,8 @@ pub const SYS_UNLINKAT: usize = 35;
 pub const SYS_RENAMEAT: usize = 38;
 pub const SYS_LINKAT: usize = 37;
 pub const SYS_READLINKAT: usize = 78;
+pub const SYS_SYMLINKAT: usize = 36;
+pub const SYS_RENAMEAT2: usize = 276;
 pub const SYS_RT_SIGACTION: usize = 134;
 pub const SYS_RT_SIGPROCMASK: usize = 135;
 pub const SYS_RT_SIGSUSPEND: usize = 133;
@@ -101,6 +103,12 @@ mod x86_nr {
     pub const WAIT4: usize = 61;
     pub const KILL: usize = 62;
     pub const UNAME: usize = 63;
+    pub const RENAME: usize = 82;
+    pub const MKDIR: usize = 83;
+    pub const RMDIR: usize = 84;
+    pub const LINK: usize = 86;
+    pub const UNLINK: usize = 87;
+    pub const SYMLINK: usize = 88;
     pub const FCNTL: usize = 72;
     pub const GETDENTS64: usize = 217;
     pub const GETCWD: usize = 79;
@@ -134,9 +142,11 @@ mod x86_nr {
     pub const GETTIMEOFDAY: usize = 96;
     pub const OPENAT: usize = 257;
     pub const MKDIRAT: usize = 258;
+    pub const RENAMEAT2: usize = 316;
     pub const NEWFSTATAT: usize = 262;
     pub const UNLINKAT: usize = 263;
     pub const RENAMEAT: usize = 264;
+    pub const SYMLINKAT: usize = 266;
     pub const LINKAT: usize = 265;
     pub const READLINKAT: usize = 267;
     pub const PPOLL: usize = 271;
@@ -159,6 +169,7 @@ pub const RAM_START: usize = 0x1_0000_0000;
     target_arch = "x86_64"
 )))]
 pub const RAM_START: usize = 0x8000_0000;
+const AT_FDCWD: isize = -100;
 /// Dispatch a syscall.
 /// num is the syscall number, args is up to 6 arguments.
 /// Returns the syscall result (positive = success, negative = -errno).
@@ -763,6 +774,20 @@ pub fn dispatch(num: usize, args: &[usize]) -> isize {
         return sys_arch_prctl(args[0], args[1]);
     }
     #[cfg(target_arch = "x86_64")]
+    match raw_num {
+        x86_nr::RENAME => {
+            return sys_renameat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1]);
+        }
+        x86_nr::MKDIR => return sys_mkdirat(AT_FDCWD as usize, args[0], args[1]),
+        x86_nr::RMDIR => return sys_unlinkat(AT_FDCWD as usize, args[0], 0x200),
+        x86_nr::LINK => {
+            return sys_linkat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1], 0);
+        }
+        x86_nr::UNLINK => return sys_unlinkat(AT_FDCWD as usize, args[0], 0),
+        x86_nr::SYMLINK => return sys_symlinkat(args[0], AT_FDCWD as usize, args[1]),
+        _ => {}
+    }
+    #[cfg(target_arch = "x86_64")]
     let num = translate_syscall(num);
     dispatch_inner(num, args)
 }
@@ -804,6 +829,12 @@ fn translate_syscall(nr: usize) -> usize {
         UNAME => SYS_UNAME,
         FCNTL => SYS_FCNTL,
         GETDENTS64 => SYS_GETDENTS64,
+        RENAME => SYS_RENAMEAT,
+        MKDIR => SYS_MKDIRAT,
+        RMDIR => SYS_UNLINKAT,
+        LINK => SYS_LINKAT,
+        UNLINK => SYS_UNLINKAT,
+        SYMLINK => SYS_SYMLINKAT,
         GETCWD => SYS_GETCWD,
         CHDIR => SYS_CHDIR,
         GETUID => SYS_GETUID,
@@ -833,6 +864,7 @@ fn translate_syscall(nr: usize) -> usize {
         TGKILL => SYS_TGKILL,
         CLOCK_GETTIME => 113,
         GETTIMEOFDAY => 169,
+        RENAMEAT2 => SYS_RENAMEAT2,
         OPENAT => SYS_OPENAT,
         MKDIRAT => SYS_MKDIRAT,
         NEWFSTATAT => SYS_NEWFSTATAT,
@@ -841,6 +873,7 @@ fn translate_syscall(nr: usize) -> usize {
         LINKAT => SYS_LINKAT,
         READLINKAT => SYS_READLINKAT,
         PPOLL => 73,
+        SYMLINKAT => SYS_SYMLINKAT,
         SET_ROBUST_LIST => SYS_SET_ROBUST_LIST,
         PRLIMIT64 => 261,
         GETRANDOM => SYS_GETRANDOM,
@@ -942,13 +975,23 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_GETRANDOM => sys_getrandom(args[0], args[1]),
         SYS_GETCWD => sys_getcwd(args[0], args[1]),
         SYS_GETDENTS64 => sys_getdents64(args[0], args[1], args[2]),
+        SYS_RENAMEAT2 => {
+            if args[4] == 0 {
+                sys_renameat(args[0], args[1], args[2], args[3])
+            } else {
+                -22
+            }
+        }
         SYS_OPENAT => sys_openat(args[0], args[1], args[2], args[3]),
         SYS_CLOSE => sys_close(args[0]),
         SYS_FSTAT => sys_fstat(args[0], args[1]),
-        SYS_NEWFSTATAT => sys_fstatat(args[1], args[2]),
+        SYS_NEWFSTATAT => sys_fstatat(args[0], args[1], args[2], args[3]),
         SYS_LSEEK => sys_lseek(args[0], args[1] as i64, args[2]),
         SYS_MKDIRAT => sys_mkdirat(args[0], args[1], args[2]),
-        SYS_UNLINKAT => sys_unlinkat(args[0], args[1]),
+        SYS_UNLINKAT => sys_unlinkat(args[0], args[1], args[2]),
+        SYS_RENAMEAT => sys_renameat(args[0], args[1], args[2], args[3]),
+        SYS_LINKAT => sys_linkat(args[0], args[1], args[2], args[3], args[4]),
+        SYS_SYMLINKAT => sys_symlinkat(args[0], args[1], args[2]),
         SYS_RT_SIGACTION => sys_rt_sigaction(args[0], args[1], args[2]),
         SYS_RT_SIGSUSPEND => sys_rt_sigsuspend(args[0]),
         SYS_RT_SIGPROCMASK => sys_rt_sigprocmask(args[0], args[1], args[2]),
@@ -957,7 +1000,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_SET_ROBUST_LIST => sys_set_robust_list(args[0], args[1]),
         SYS_FUTEX => sys_futex(args[0], args[1], args[2]),
         SYS_IOCTL => sys_ioctl(args[0], args[1], args[2]),
-        SYS_FCNTL => -38,
+        SYS_FCNTL => sys_fcntl(args[0], args[1], args[2]),
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
         SYS_DUP3 => sys_dup2(args[0], args[1]),
@@ -966,8 +1009,8 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_WAIT4 => sys_wait4(args[0], args[1], args[2]),
         SYS_KILL => sys_kill(args[0], args[1]),
         SYS_TGKILL => sys_kill(args[1], args[2]),
-        SYS_CHDIR => -38,
-        SYS_READLINKAT => -2,
+        SYS_CHDIR => sys_chdir(args[0]),
+        SYS_READLINKAT => sys_readlinkat(args[0], args[1], args[2], args[3]),
         SYS_MOUNT | SYS_UMOUNT2 => -38,
         113 => sys_clock_gettime(args[1]),
         157 => {
@@ -1016,23 +1059,36 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
 pub(crate) struct FileEntry {
     inode: Arc<dyn INode>,
     offset: u64,
+    path: String,
 }
 pub(crate) type SharedFile = Arc<Mutex<FileEntry>>;
 
 fn current_file(fd: usize) -> Option<SharedFile> {
     crate::sched::with_current_process(|process| process.lock().files.get(&fd).cloned())?
 }
+fn stdio_target(fd: usize) -> Option<usize> {
+    if fd <= 2 {
+        return Some(fd);
+    }
+    crate::sched::current_process().and_then(|process| process.lock().stdio.get(&fd).copied())
+}
 
-fn alloc_fd(inode: Arc<dyn INode>) -> Option<usize> {
+
+fn alloc_fd(inode: Arc<dyn INode>, path: String) -> Option<usize> {
     let process = crate::sched::current_process()?;
     let mut process = process.lock();
     let mut fd = 3;
     while process.files.contains_key(&fd) {
         fd += 1;
     }
-    process
-        .files
-        .insert(fd, Arc::new(Mutex::new(FileEntry { inode, offset: 0 })));
+    process.files.insert(
+        fd,
+        Arc::new(Mutex::new(FileEntry {
+            inode,
+            offset: 0,
+            path,
+        })),
+    );
     Some(fd)
 }
 
@@ -1057,7 +1113,7 @@ fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
             }
             Err(error) => fs_errno(error),
         }
-    } else if fd == 1 || fd == 2 {
+    } else if matches!(stdio_target(fd), Some(1 | 2)) {
         for byte in data {
             kor::console::putc(byte);
         }
@@ -1072,7 +1128,7 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
         return -14;
     }
     let mut data = alloc::vec![0u8; count];
-    let read = if fd == 0 {
+    let read = if stdio_target(fd) == Some(0) {
         let mut read = 0;
         while read == 0 {
             if let Some(byte) = rx_get() {
@@ -1185,13 +1241,21 @@ fn sys_writev(fd: usize, iov: usize, iovcnt: usize) -> isize {
 fn sys_exit_fork(code: usize) -> isize {
     crate::sched::exit_current(code as i32)
 }
-
 fn sys_clone(args: &[usize]) -> isize {
     let parent = match crate::sched::current_process_arc() {
         Some(process) => process,
         None => return -38,
     };
-    let (parent_pid, child_signals, child_brk, child_mmap_next, child_executable, child_files) = {
+    let (
+        parent_pid,
+        child_signals,
+        child_brk,
+        child_mmap_next,
+        child_executable,
+        child_cwd,
+        child_files,
+        child_stdio,
+    ) = {
         let parent = parent.lock();
         (
             parent.pid,
@@ -1199,7 +1263,9 @@ fn sys_clone(args: &[usize]) -> isize {
             parent.brk,
             parent.mmap_next,
             parent.executable.clone(),
+            parent.cwd.clone(),
             parent.files.clone(),
+            parent.stdio.clone(),
         )
     };
     let child_space = match parent
@@ -1237,11 +1303,13 @@ fn sys_clone(args: &[usize]) -> isize {
     let child = crate::sched::alloc_process(parent_pid, child_space);
     {
         let mut child = child.lock();
+        child.cwd = child_cwd;
         child.signals = child_signals;
         child.brk = child_brk;
         child.executable = child_executable;
         child.mmap_next = child_mmap_next;
         child.files = child_files;
+        child.stdio = child_stdio;
         child.set_fork_context(context);
     }
     let pid = child.lock().pid;
@@ -1422,6 +1490,7 @@ fn sys_uname(buf: usize) -> isize {
         "(none)",
     ];
     let mut uts = [0u8; 6 * 65];
+
     for (index, field) in fields.iter().enumerate() {
         let bytes = field.as_bytes();
         let length = bytes.len().min(64);
@@ -1449,16 +1518,111 @@ fn sys_getrandom(buf: usize, count: usize) -> isize {
     }
 }
 
+
+fn is_at_fdcwd(dirfd: usize) -> bool {
+    dirfd as isize == AT_FDCWD || dirfd as u32 == AT_FDCWD as i32 as u32
+}
+
+fn normalize_absolute(path: &str) -> Option<String> {
+    if !path.starts_with('/') {
+        return None;
+    }
+    let mut components: Vec<&str> = Vec::new();
+    for component in path.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            name => components.push(name),
+        }
+    }
+    let mut normalized = String::from("/");
+    normalized.push_str(&components.join("/"));
+    Some(normalized)
+}
+
+fn absolute_path(dirfd: usize, path: &str) -> Result<String, isize> {
+    if path.starts_with('/') {
+        return normalize_absolute(path).ok_or(-22isize);
+    }
+    let base = if is_at_fdcwd(dirfd) {
+        crate::sched::current_process()
+            .map(|process| process.lock().cwd.clone())
+            .ok_or(-9isize)?
+    } else {
+        let entry = current_file(dirfd).ok_or(-9isize)?;
+        let entry = entry.lock();
+        if entry.inode.getattr().map_err(fs_errno)?.file_type != kor::FileType::Directory {
+            return Err(-20isize);
+        }
+        entry.path.clone()
+    };
+    normalize_absolute(&alloc::format!("{base}/{path}")).ok_or(-22isize)
+}
+
+fn user_absolute_path(dirfd: usize, path: usize) -> Result<String, isize> {
+    let path = user_to_str(path, 4096).ok_or(-14isize)?;
+    if path.is_empty() {
+        return Err(-2isize);
+    }
+    absolute_path(dirfd, &path)
+}
+
+fn split_absolute_parent(path: &str) -> Result<(&str, &str), isize> {
+    if path == "/" {
+        return Err(-16isize);
+    }
+    let (parent, name) = path.rsplit_once('/').ok_or(-22isize)?;
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(-22isize);
+    }
+    Ok((if parent.is_empty() { "/" } else { parent }, name))
+}
+
+fn resolve_user_path(dirfd: usize, path: usize) -> Result<(String, Arc<dyn INode>), isize> {
+    let path = user_absolute_path(dirfd, path)?;
+    let inode = crate::fs::resolve(&path).map_err(fs_errno)?;
+    Ok((path, inode))
+}
+
 fn sys_getcwd(buf: usize, size: usize) -> isize {
-    let cwd = b"/\0";
-    if cwd.len() > size {
+    let Some(process) = crate::sched::current_process() else {
+        return -9;
+    };
+    let cwd = process.lock().cwd.clone();
+    let required = cwd.len() + 1;
+    if required > size {
         return -34;
     }
-    if copy_to_user(buf, cwd).is_none() {
+    if copy_to_user(buf, cwd.as_bytes()).is_none()
+        || copy_to_user(buf + cwd.len(), &[0]).is_none()
+    {
         -14
     } else {
-        buf as isize
+        required as isize
     }
+}
+
+fn sys_chdir(path: usize) -> isize {
+    let absolute = match user_absolute_path(AT_FDCWD as usize, path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let inode = match crate::fs::resolve(&absolute) {
+        Ok(inode) => inode,
+        Err(error) => return fs_errno(error),
+    };
+    if inode.getattr().map_err(fs_errno).map(|meta| meta.file_type)
+        != Ok(kor::FileType::Directory)
+    {
+        return -20;
+    }
+    let Some(process) = crate::sched::current_process() else {
+        return -9;
+    };
+    process.lock().cwd = absolute;
+    0
 }
 
 fn sys_getdents64(fd: usize, buf: usize, count: usize) -> isize {
@@ -1519,6 +1683,10 @@ fn fs_errno(error: kor::FsError) -> isize {
         kor::FsError::NotFound => -2,
         kor::FsError::AlreadyExists => -17,
         kor::FsError::NotDirectory => -20,
+        kor::FsError::NotEmpty => -39,
+        kor::FsError::TooManyLinks => -40,
+        kor::FsError::CrossDevice => -18,
+        kor::FsError::PermissionDenied => -13,
         kor::FsError::IsDirectory => -21,
         kor::FsError::InvalidInput => -22,
         kor::FsError::ReadOnly => -30,
@@ -1528,17 +1696,19 @@ fn fs_errno(error: kor::FsError) -> isize {
     }
 }
 
-fn sys_openat(_dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
+fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
     const O_CREAT: usize = 0o100;
+    const O_EXCL: usize = 0o200;
     const O_TRUNC: usize = 0o1000;
-    let path_str = match user_to_str(path, 256) {
-        Some(p) => p,
-        None => return -14,
+    const O_DIRECTORY: usize = 0o200000;
+    let path_str = match user_absolute_path(dirfd, path) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
     if path_str == "/dev/null" {
         return 3;
     }
-    if path_str.as_str() == "/dev/tty" || path_str.as_str() == "/dev/console" {
+    if path_str == "/dev/tty" || path_str == "/dev/console" {
         #[cfg(target_arch = "x86_64")]
         {
             return 0;
@@ -1549,35 +1719,39 @@ fn sys_openat(_dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
         }
     }
     let inode = match crate::fs::resolve(&path_str) {
+        Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -17,
         Ok(inode) => inode,
-        Err(_) if flags & O_CREAT != 0 => {
-            let (parent_path, name) = match path_str.rsplit_once('/') {
-                Some(("", name)) => ("/", name),
-                Some((parent, name)) => (parent, name),
-                None => ("/", path_str.as_str()),
+        Err(kor::FsError::NotFound) if flags & O_CREAT != 0 => {
+            let (parent_path, name) = match split_absolute_parent(&path_str) {
+                Ok(parts) => parts,
+                Err(error) => return error,
             };
             let parent = match crate::fs::resolve(parent_path) {
                 Ok(node) => node,
-                Err(_) => return -2,
+                Err(error) => return fs_errno(error),
             };
             match parent.create(name, kor::FileType::Regular, (mode as u32) & 0o777) {
                 Ok(node) => node,
                 Err(error) => return fs_errno(error),
             }
         }
-        Err(_) => return -2,
+        Err(error) => return fs_errno(error),
     };
-    if flags & O_TRUNC != 0 {
-        let size = inode.getattr().map(|meta| meta.size).unwrap_or(0);
-        if size != 0 {
-            if let Err(error) = inode.truncate(0) {
-                if !matches!(error, kor::FsError::Unsupported) {
-                    return fs_errno(error);
-                }
-            }
+    let metadata = match inode.getattr() {
+        Ok(metadata) => metadata,
+        Err(error) => return fs_errno(error),
+    };
+    if flags & O_DIRECTORY != 0 && metadata.file_type != kor::FileType::Directory {
+        return -20;
+    }
+    if flags & O_TRUNC != 0 && metadata.file_type == kor::FileType::Regular && metadata.size != 0 {
+        if let Err(error) = inode.truncate(0) {
+            return fs_errno(error);
         }
     }
-    alloc_fd(inode).map(|fd| fd as isize).unwrap_or(-9)
+    alloc_fd(inode, path_str)
+        .map(|fd| fd as isize)
+        .unwrap_or(-24)
 }
 
 fn sys_close(fd: usize) -> isize {
@@ -1587,7 +1761,8 @@ fn sys_close(fd: usize) -> isize {
     let Some(process) = crate::sched::current_process() else {
         return -9;
     };
-    if process.lock().files.remove(&fd).is_some() {
+    let mut process = process.lock();
+    if process.files.remove(&fd).is_some() || process.stdio.remove(&fd).is_some() {
         0
     } else {
         -9
@@ -1599,20 +1774,23 @@ fn sys_dup(fd: usize) -> isize {
         return -9;
     };
     let mut process = process.lock();
-    let entry = if fd <= 2 {
-        None
+    let file = process.files.get(&fd).cloned();
+    let stdio = if fd <= 2 {
+        Some(fd)
     } else {
-        match process.files.get(&fd) {
-            Some(entry) => Some(entry.clone()),
-            None => return -9,
-        }
+        process.stdio.get(&fd).copied()
     };
+    if file.is_none() && stdio.is_none() {
+        return -9;
+    }
     let mut newfd = 3;
-    while process.files.contains_key(&newfd) {
+    while process.files.contains_key(&newfd) || process.stdio.contains_key(&newfd) {
         newfd += 1;
     }
-    if let Some(entry) = entry {
+    if let Some(entry) = file {
         process.files.insert(newfd, entry);
+    } else if let Some(target) = stdio {
+        process.stdio.insert(newfd, target);
     }
     newfd as isize
 }
@@ -1622,23 +1800,68 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
         return -9;
     };
     let mut process = process.lock();
-    if fd == newfd {
-        return if fd <= 2 || process.files.contains_key(&fd) {
-            newfd as isize
-        } else {
-            -9
-        };
+    let file = process.files.get(&fd).cloned();
+    let stdio = if fd <= 2 {
+        Some(fd)
+    } else {
+        process.stdio.get(&fd).copied()
+    };
+    if file.is_none() && stdio.is_none() {
+        return -9;
     }
-    if fd <= 2 {
-        process.files.remove(&newfd);
+    if fd == newfd {
         return newfd as isize;
     }
-    let entry = match process.files.get(&fd) {
-        Some(entry) => entry.clone(),
-        None => return -9,
-    };
-    process.files.insert(newfd, entry);
+    process.files.remove(&newfd);
+    process.stdio.remove(&newfd);
+    if let Some(entry) = file {
+        process.files.insert(newfd, entry);
+    } else if let Some(target) = stdio {
+        process.stdio.insert(newfd, target);
+    }
     newfd as isize
+}
+
+fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
+    const F_DUPFD: usize = 0;
+    const F_GETFD: usize = 1;
+    const F_SETFD: usize = 2;
+    const F_GETFL: usize = 3;
+    const F_SETFL: usize = 4;
+    const F_DUPFD_CLOEXEC: usize = 1030;
+    let Some(process) = crate::sched::current_process() else {
+        return -9;
+    };
+    let mut process = process.lock();
+    let file = process.files.get(&fd).cloned();
+    let stdio = if fd <= 2 {
+        Some(fd)
+    } else {
+        process.stdio.get(&fd).copied()
+    };
+    if file.is_none() && stdio.is_none() {
+        return -9;
+    }
+    match command {
+        F_DUPFD | F_DUPFD_CLOEXEC => {
+            let mut newfd = argument.max(3);
+            while process.files.contains_key(&newfd) || process.stdio.contains_key(&newfd) {
+                newfd = match newfd.checked_add(1) {
+                    Some(value) => value,
+                    None => return -24,
+                };
+            }
+            if let Some(entry) = file {
+                process.files.insert(newfd, entry);
+            } else if let Some(target) = stdio {
+                process.stdio.insert(newfd, target);
+            }
+            newfd as isize
+        }
+        F_GETFD | F_GETFL => 0,
+        F_SETFD | F_SETFL => 0,
+        _ => -22,
+    }
 }
 
 /// ioctl handler — supports TCGETS so the shell thinks stdin is a terminal.
@@ -1940,20 +2163,15 @@ fn sys_munmap(addr: usize, len: usize) -> isize {
     }
 }
 
-fn split_parent(path: &str) -> (&str, &str) {
-    match path.rsplit_once('/') {
-        Some(("", name)) => ("/", name),
-        Some((parent, name)) => (parent, name),
-        None => ("/", path),
-    }
-}
-
-fn sys_mkdirat(_dirfd: usize, path: usize, mode: usize) -> isize {
-    let path = match user_to_str(path, 256) {
-        Some(path) => path,
-        None => return -14,
+fn sys_mkdirat(dirfd: usize, path: usize, mode: usize) -> isize {
+    let path = match user_absolute_path(dirfd, path) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
-    let (parent_path, name) = split_parent(&path);
+    let (parent_path, name) = match split_absolute_parent(&path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
     let parent = match crate::fs::resolve(parent_path) {
         Ok(node) => node,
         Err(error) => return fs_errno(error),
@@ -1964,19 +2182,150 @@ fn sys_mkdirat(_dirfd: usize, path: usize, mode: usize) -> isize {
     }
 }
 
-fn sys_unlinkat(_dirfd: usize, path: usize) -> isize {
-    let path = match user_to_str(path, 256) {
-        Some(path) => path,
-        None => return -14,
+fn sys_unlinkat(dirfd: usize, path: usize, flags: usize) -> isize {
+    const AT_REMOVEDIR: usize = 0x200;
+    if flags & !(AT_REMOVEDIR | 0x4) != 0 {
+        return -22;
+    }
+    let path = match user_absolute_path(dirfd, path) {
+        Ok(path) => path,
+        Err(error) => return error,
     };
-    let (parent_path, name) = split_parent(&path);
+    let (parent_path, name) = match split_absolute_parent(&path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
     let parent = match crate::fs::resolve(parent_path) {
         Ok(node) => node,
         Err(error) => return fs_errno(error),
     };
-    match parent.unlink(name) {
-        Ok(()) => 0,
-        Err(error) => fs_errno(error),
+    if flags & AT_REMOVEDIR == 0 {
+        let target = match parent.lookup(name) {
+            Ok(target) => target,
+            Err(error) => return fs_errno(error),
+        };
+        let file_type = target.getattr().map_err(fs_errno).map(|meta| meta.file_type);
+        if file_type == Ok(kor::FileType::Symlink)
+        {
+            return parent.unlink(name).map(|()| 0).unwrap_or_else(fs_errno);
+        }
+    }
+    let result = if flags & AT_REMOVEDIR != 0 {
+        parent.rmdir(name)
+    } else {
+        parent.unlink(name)
+    };
+    result.map(|()| 0).unwrap_or_else(fs_errno)
+}
+
+fn sys_renameat(old_dirfd: usize, old_path: usize, new_dirfd: usize, new_path: usize) -> isize {
+    let old_path = match user_absolute_path(old_dirfd, old_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let new_path = match user_absolute_path(new_dirfd, new_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let (old_parent_path, old_name) = match split_absolute_parent(&old_path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
+    let (new_parent_path, new_name) = match split_absolute_parent(&new_path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
+    let old_parent = match crate::fs::resolve(old_parent_path) {
+        Ok(node) => node,
+        Err(error) => return fs_errno(error),
+    };
+    let new_parent = match crate::fs::resolve(new_parent_path) {
+        Ok(node) => node,
+        Err(error) => return fs_errno(error),
+    };
+    old_parent
+        .rename(old_name, &new_parent, new_name)
+        .map(|()| 0)
+        .unwrap_or_else(fs_errno)
+}
+
+fn sys_linkat(old_dirfd: usize, old_path: usize, new_dirfd: usize, new_path: usize, flags: usize) -> isize {
+    const AT_SYMLINK_FOLLOW: usize = 0x400;
+    if flags & !AT_SYMLINK_FOLLOW != 0 {
+        return -22;
+    }
+    let (_, target) = match resolve_user_path(old_dirfd, old_path) {
+        Ok(target) => target,
+        Err(error) => return error,
+    };
+    let new_path = match user_absolute_path(new_dirfd, new_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let (parent_path, name) = match split_absolute_parent(&new_path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
+    let parent = match crate::fs::resolve(parent_path) {
+        Ok(node) => node,
+        Err(error) => return fs_errno(error),
+    };
+    parent.link(name, &target).map(|()| 0).unwrap_or_else(fs_errno)
+}
+
+fn sys_symlinkat(target: usize, new_dirfd: usize, link_path: usize) -> isize {
+    let target = match user_to_str(target, 4096) {
+        Some(target) if !target.is_empty() => target,
+        Some(_) => return -2,
+        None => return -14,
+    };
+    let link_path = match user_absolute_path(new_dirfd, link_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let (parent_path, name) = match split_absolute_parent(&link_path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
+    let parent = match crate::fs::resolve(parent_path) {
+        Ok(node) => node,
+        Err(error) => return fs_errno(error),
+    };
+    parent
+        .symlink(name, &target)
+        .map(|_| 0)
+        .unwrap_or_else(fs_errno)
+}
+
+fn sys_readlinkat(dirfd: usize, path: usize, buf: usize, size: usize) -> isize {
+    if size == 0 {
+        return -22;
+    }
+    let path = match user_absolute_path(dirfd, path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let (parent_path, name) = match split_absolute_parent(&path) {
+        Ok(parts) => parts,
+        Err(error) => return error,
+    };
+    let parent = match crate::fs::resolve(parent_path) {
+        Ok(node) => node,
+        Err(error) => return fs_errno(error),
+    };
+    let inode = match parent.lookup(name) {
+        Ok(inode) => inode,
+        Err(error) => return fs_errno(error),
+    };
+    let target = match inode.readlink() {
+        Ok(target) => target,
+        Err(error) => return fs_errno(error),
+    };
+    let length = target.len().min(size);
+    if copy_to_user(buf, &target.as_bytes()[..length]).is_none() {
+        -14
+    } else {
+        length as isize
     }
 }
 
@@ -2447,16 +2796,51 @@ pub unsafe fn user_trap_status(frame: *mut u8) -> Option<i32> {
     korix_deliver_pending_signal(frame)
 }
 
-fn sys_fstatat(path: usize, stat: usize) -> isize {
-    let path_str = match user_to_str(path, 256) {
+fn sys_fstatat(dirfd: usize, path: usize, stat: usize, flags: usize) -> isize {
+    const AT_EMPTY_PATH: usize = 0x1000;
+    const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+    if flags & !(AT_EMPTY_PATH | AT_SYMLINK_NOFOLLOW) != 0 {
+        return -22;
+    }
+    let user_path = match user_to_str(path, 4096) {
         Some(path) => path,
         None => return -14,
     };
-    let inode = match crate::fs::resolve(&path_str) {
-        Ok(inode) => inode,
-        Err(_) => return -2,
+    let inode = if user_path.is_empty() && flags & AT_EMPTY_PATH != 0 {
+        match current_file(dirfd) {
+            Some(entry) => entry.lock().inode.clone(),
+            None => return -9,
+        }
+    } else if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        let absolute = match absolute_path(dirfd, &user_path) {
+            Ok(path) => path,
+            Err(error) => return error,
+        };
+        let (parent_path, name) = match split_absolute_parent(&absolute) {
+            Ok(parts) => parts,
+            Err(error) => return error,
+        };
+        let parent = match crate::fs::resolve(parent_path) {
+            Ok(parent) => parent,
+            Err(error) => return fs_errno(error),
+        };
+        match parent.lookup(name) {
+            Ok(inode) => inode,
+            Err(error) => return fs_errno(error),
+        }
+    } else {
+        match absolute_path(dirfd, &user_path)
+            .and_then(|path| crate::fs::resolve(&path).map_err(fs_errno))
+        {
+            Ok(inode) => inode,
+            Err(error) => return error,
+        }
     };
-    let st = linux_stat(inode.getattr().unwrap());
+    let metadata = match inode.getattr() {
+        Ok(metadata) => metadata,
+        Err(error) => return fs_errno(error),
+    };
+    let st = linux_stat(metadata);
     if write_user(stat, &st).is_none() {
         -14
     } else {

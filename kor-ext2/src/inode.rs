@@ -1119,7 +1119,11 @@ impl Ext2INode {
         };
 
         if should_free {
-            child_inode.free_all_blocks()?;
+            if child_inode.raw().i_mode & EXT2_S_IFMT != EXT2_S_IFLNK
+                || child_inode.raw().i_blocks != 0
+            {
+                child_inode.free_all_blocks()?;
+            }
             child_inode.release_xattr_block()?;
             child_inode.raw().i_dtime = 0;
             child_inode.write_inode_to_disk()?;

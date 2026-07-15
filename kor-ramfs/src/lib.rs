@@ -312,6 +312,77 @@ impl INode for RamINode {
         Ok(child as Arc<dyn INode>)
     }
 
+    fn link(&self, name: &str, target: &Arc<dyn INode>) -> Result<(), FsError> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        let target = target
+            .as_any()
+            .downcast_ref::<RamINode>()
+            .ok_or(FsError::InvalidInput)?;
+        if target.file_type == FileType::Directory {
+            return Err(FsError::IsDirectory);
+        }
+        let target = target
+            .self_ref
+            .lock()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or(FsError::IoError)?;
+        let mut children = self.children.lock();
+        if children.contains_key(name) {
+            return Err(FsError::AlreadyExists);
+        }
+        children.insert(name.to_string(), target);
+        Ok(())
+    }
+
+    fn rename(
+        &self,
+        old_name: &str,
+        new_parent: &Arc<dyn INode>,
+        new_name: &str,
+    ) -> Result<(), FsError> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        let new_parent = new_parent
+            .as_any()
+            .downcast_ref::<RamINode>()
+            .ok_or(FsError::InvalidInput)?;
+        if new_parent.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        let child = self
+            .children
+            .lock()
+            .get(old_name)
+            .cloned()
+            .ok_or(FsError::NotFound)?;
+        if let Some(existing) = new_parent.children.lock().get(new_name) {
+            if existing.file_type == FileType::Directory && !existing.children.lock().is_empty() {
+                return Err(FsError::NotEmpty);
+            }
+        }
+        if !core::ptr::eq(self, new_parent) {
+            new_parent
+                .children
+                .lock()
+                .insert(new_name.to_string(), child.clone());
+            self.children.lock().remove(old_name);
+        } else {
+            let mut children = self.children.lock();
+            children.remove(old_name);
+            children.insert(new_name.to_string(), child.clone());
+        }
+        if child.file_type == FileType::Directory {
+            child.parent.lock().replace(
+                new_parent.self_ref.lock().clone().ok_or(FsError::IoError)?,
+            );
+        }
+        Ok(())
+    }
+
     fn readlink(&self) -> Result<String, FsError> {
         if self.file_type != FileType::Symlink {
             return Err(FsError::InvalidInput);
