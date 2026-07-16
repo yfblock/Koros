@@ -13,37 +13,7 @@ use super::layout::{
 };
 use crate::mm::AddressSpace;
 
-/// ELF header (first 64 bytes of an ELF64 file)
-#[repr(C)]
-pub struct Elf64Ehdr {
-    pub ident: [u8; 16],
-    pub e_type: u16,
-    pub e_machine: u16,
-    pub e_version: u32,
-    pub e_entry: u64,
-    pub e_phoff: u64,
-    pub e_shoff: u64,
-    pub e_flags: u32,
-    pub e_ehsize: u16,
-    pub e_phentsize: u16,
-    pub e_phnum: u16,
-    pub e_shentsize: u16,
-    pub e_shnum: u16,
-    pub e_shstrndx: u16,
-}
-
-/// ELF program header
-#[repr(C)]
-pub struct Elf64Phdr {
-    pub p_type: u32,
-    pub p_flags: u32,
-    pub p_offset: u64,
-    pub p_vaddr: u64,
-    pub p_paddr: u64,
-    pub p_filesz: u64,
-    pub p_memsz: u64,
-    pub p_align: u64,
-}
+use super::elf_format::{self, ELF_HEADER_SIZE, ElfHeader, PROGRAM_HEADER_SIZE};
 
 pub const PT_LOAD: u32 = 1;
 const PT_INTERP: u32 = 3;
@@ -81,29 +51,23 @@ pub fn is_elf(data: &[u8]) -> bool {
 }
 /// Return the `PT_INTERP` path requested by an ELF image, if any.
 pub fn interpreter_path(data: &[u8]) -> Result<Option<String>, &'static str> {
-    if data.len() < core::mem::size_of::<Elf64Ehdr>() {
-        return Err("ELF header too small");
-    }
-    let ehdr = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
-    let phdr_size = core::mem::size_of::<Elf64Phdr>();
-    for index in 0..ehdr.e_phnum as usize {
-        let offset = (ehdr.e_phoff as usize)
+    let header = elf_format::header(data).ok_or("ELF header too small")?;
+    for index in 0..header.program_count as usize {
+        let offset = (header.program_offset as usize)
             .checked_add(
                 index
-                    .checked_mul(phdr_size)
+                    .checked_mul(PROGRAM_HEADER_SIZE)
                     .ok_or("program header overflow")?,
             )
             .ok_or("program header overflow")?;
-        let bytes = data
-            .get(offset..offset + phdr_size)
-            .ok_or("program header outside image")?;
-        let phdr = unsafe { &*(bytes.as_ptr() as *const Elf64Phdr) };
-        if phdr.p_type != PT_INTERP {
+        let phdr =
+            elf_format::program_header(data, offset).ok_or("program header outside image")?;
+        if phdr.segment_type != PT_INTERP {
             continue;
         }
-        let start = phdr.p_offset as usize;
+        let start = phdr.offset as usize;
         let end = start
-            .checked_add(phdr.p_filesz as usize)
+            .checked_add(phdr.file_size as usize)
             .ok_or("interpreter path overflow")?;
         let path = data
             .get(start..end)
@@ -158,64 +122,64 @@ fn map_elf(
     data: &[u8],
     forced_base: Option<usize>,
 ) -> Result<AuxImage, &'static str> {
-    if !is_elf(data) || data.len() < core::mem::size_of::<Elf64Ehdr>() {
+    if !is_elf(data) {
         return Err("not an ELF file");
     }
-    let ehdr = unsafe { &*(data.as_ptr() as *const Elf64Ehdr) };
-    if ehdr.ident[4] != ELFCLASS64 || ehdr.e_machine != expected_machine() {
+    let header = elf_format::header(data).ok_or("ELF header too small")?;
+    if header.ident[4] != ELFCLASS64 || header.machine != expected_machine() {
         return Err("wrong ELF architecture");
     }
-    if ehdr.e_ehsize as usize != core::mem::size_of::<Elf64Ehdr>()
-        || ehdr.e_phentsize as usize != core::mem::size_of::<Elf64Phdr>()
+    if header.header_size as usize != ELF_HEADER_SIZE
+        || header.program_entry_size as usize != PROGRAM_HEADER_SIZE
     {
         return Err("invalid ELF header sizes");
     }
-    let load_base = forced_base.unwrap_or(match ehdr.e_type {
+    let load_base = forced_base.unwrap_or(match header.elf_type {
         3 => LOAD_BASE,
         2 => 0,
         _ => return Err("unsupported ELF type"),
     });
-    let program_header_end = (ehdr.e_phoff as usize)
+    let program_header_end = (header.program_offset as usize)
         .checked_add(
-            (ehdr.e_phnum as usize)
-                .checked_mul(core::mem::size_of::<Elf64Phdr>())
+            (header.program_count as usize)
+                .checked_mul(PROGRAM_HEADER_SIZE)
                 .ok_or("program header overflow")?,
         )
         .ok_or("program header overflow")?;
     if program_header_end > data.len() {
         return Err("program headers outside image");
     }
-    load_active(address_space, data, ehdr, load_base)
+    load_active(address_space, data, header, load_base)
 }
 
 fn load_active(
     address_space: &mut AddressSpace,
     data: &[u8],
-    ehdr: &Elf64Ehdr,
+    header: ElfHeader,
     load_base: usize,
 ) -> Result<AuxImage, &'static str> {
-    let phdr_size = core::mem::size_of::<Elf64Phdr>();
-
     let mut page_flags = alloc::collections::BTreeMap::new();
-    for index in 0..ehdr.e_phnum as usize {
-        let offset = ehdr.e_phoff as usize + index * phdr_size;
-        let phdr = unsafe { &*(data[offset..].as_ptr() as *const Elf64Phdr) };
-        if phdr.p_type != PT_LOAD {
+    for index in 0..header.program_count as usize {
+        let offset = header.program_offset as usize + index * PROGRAM_HEADER_SIZE;
+        let phdr =
+            elf_format::program_header(data, offset).ok_or("program header outside image")?;
+        if phdr.segment_type != PT_LOAD {
             continue;
         }
         let mut flags = MappingFlags::U;
-        if phdr.p_flags & PF_R != 0 {
+        if phdr.flags & PF_R != 0 {
             flags = flags | MappingFlags::R;
         }
-        if phdr.p_flags & PF_W != 0 {
+        if phdr.flags & PF_W != 0 {
             flags = flags | MappingFlags::W;
         }
-        if phdr.p_flags & PF_X != 0 {
+        if phdr.flags & PF_X != 0 {
             flags = flags | MappingFlags::X;
         }
-        let start = (load_base + phdr.p_vaddr as usize) & !(PAGE_SIZE - 1);
-        let end = (load_base + phdr.p_vaddr as usize + phdr.p_memsz as usize + PAGE_SIZE - 1)
-            & !(PAGE_SIZE - 1);
+        let start = (load_base + phdr.virtual_address as usize) & !(PAGE_SIZE - 1);
+        let end =
+            (load_base + phdr.virtual_address as usize + phdr.memory_size as usize + PAGE_SIZE - 1)
+                & !(PAGE_SIZE - 1);
         for page in (start..end).step_by(PAGE_SIZE) {
             page_flags
                 .entry(page)
@@ -224,40 +188,34 @@ fn load_active(
         }
     }
 
-    for i in 0..ehdr.e_phnum as usize {
-        let offset = ehdr.e_phoff as usize + i * phdr_size;
-        if offset + phdr_size > data.len() {
+    for index in 0..header.program_count as usize {
+        let offset = header.program_offset as usize + index * PROGRAM_HEADER_SIZE;
+        let phdr =
+            elf_format::program_header(data, offset).ok_or("program header outside image")?;
+        if phdr.segment_type != PT_LOAD {
             continue;
         }
-        let phdr = unsafe { &*(data[offset..].as_ptr() as *const Elf64Phdr) };
-        if phdr.p_type != PT_LOAD {
-            continue;
-        }
-
-        // Build mapping flags from ELF p_flags
         let mut flags = MappingFlags::U;
-        if phdr.p_flags & PF_R != 0 {
+        if phdr.flags & PF_R != 0 {
             flags = flags | MappingFlags::R;
         }
-        if phdr.p_flags & PF_W != 0 {
+        if phdr.flags & PF_W != 0 {
             flags = flags | MappingFlags::W;
         }
-        if phdr.p_flags & PF_X != 0 {
+        if phdr.flags & PF_X != 0 {
             flags = flags | MappingFlags::X;
         }
-
-        // Validate the complete segment before allocating or touching pages.
         let seg_vaddr = load_base
-            .checked_add(phdr.p_vaddr as usize)
+            .checked_add(phdr.virtual_address as usize)
             .ok_or("segment address overflow")?;
         let seg_end = seg_vaddr
-            .checked_add(phdr.p_memsz as usize)
+            .checked_add(phdr.memory_size as usize)
             .ok_or("segment address overflow")?;
-        if phdr.p_filesz > phdr.p_memsz {
+        if phdr.file_size > phdr.memory_size {
             return Err("segment file size exceeds memory size");
         }
-        let file_end = (phdr.p_offset as usize)
-            .checked_add(phdr.p_filesz as usize)
+        let file_end = (phdr.offset as usize)
+            .checked_add(phdr.file_size as usize)
             .ok_or("segment file overflow")?;
         if file_end > data.len() || seg_vaddr >= ADDRESS_LIMIT || seg_end > ADDRESS_LIMIT {
             return Err("segment outside user address space");
@@ -284,18 +242,20 @@ fn load_active(
             };
 
             // The segment may start in the middle of this page (shared page).
-            let file_start = phdr.p_offset as usize;
+            let file_start = phdr.offset as usize;
             let seg_start_in_page = seg_vaddr.saturating_sub(vaddr);
             let seg_off = vaddr.saturating_sub(seg_vaddr);
-            // Copy file data that falls within this page.
-            if seg_off < phdr.p_filesz as usize && seg_start_in_page < PAGE_SIZE {
+            if seg_off < phdr.file_size as usize && seg_start_in_page < PAGE_SIZE {
                 let copy_start = file_start + seg_off;
                 let copy_len = core::cmp::min(
                     PAGE_SIZE - seg_start_in_page,
-                    phdr.p_filesz as usize - seg_off,
+                    phdr.file_size as usize - seg_off,
                 );
                 let copy_end = copy_start + copy_len;
                 if copy_start < copy_end && copy_end <= data.len() {
+                    // SAFETY: `map_zeroed` or the address-space lookup above
+                    // yields a writable direct-map page. The checked segment
+                    // bounds restrict source and destination to `copy_len`.
                     unsafe {
                         core::ptr::copy_nonoverlapping(
                             data[copy_start..copy_end].as_ptr(),
@@ -307,15 +267,17 @@ fn load_active(
             }
             // Zero BSS area (memsz > filesz) within this page.
             // BSS is the gap between file data end and memory end, limited to the page.
-            let data_in_page = (phdr.p_filesz as usize)
+            let data_in_page = (phdr.file_size as usize)
                 .saturating_sub(seg_off)
                 .min(PAGE_SIZE - seg_start_in_page);
-            let mem_in_page = (phdr.p_memsz as usize)
+            let mem_in_page = (phdr.memory_size as usize)
                 .saturating_sub(seg_off)
                 .min(PAGE_SIZE - seg_start_in_page);
             if data_in_page < mem_in_page {
                 let bss_start = seg_start_in_page + data_in_page;
                 let bss_end = seg_start_in_page + mem_in_page;
+                // SAFETY: the destination is the mapped page above and the
+                // calculated BSS interval is bounded by that page.
                 unsafe {
                     core::ptr::write_bytes((kvaddr + bss_start) as *mut u8, 0, bss_end - bss_start);
                 }
@@ -323,22 +285,20 @@ fn load_active(
         }
     }
 
-    let entry = load_base + ehdr.e_entry as usize;
-    // Compute the virtual address of the program headers.
-    // e_phoff is a file offset; the VA is segment.vaddr + (e_phoff - segment.offset).
-    let mut phdr_addr = load_base + ehdr.e_phoff as usize; // fallback
-    for i in 0..ehdr.e_phnum as usize {
-        let off = ehdr.e_phoff as usize + i * core::mem::size_of::<Elf64Phdr>();
-        if off + core::mem::size_of::<Elf64Phdr>() > data.len() {
-            continue;
-        }
-        let ph = unsafe { &*(data[off..].as_ptr() as *const Elf64Phdr) };
-        if ph.p_type == PT_LOAD {
-            let file_off = ehdr.e_phoff as usize;
-            if file_off >= ph.p_offset as usize
-                && file_off < ph.p_offset as usize + ph.p_filesz as usize
+    let entry = load_base + header.entry as usize;
+    let mut phdr_addr = load_base + header.program_offset as usize;
+    for index in 0..header.program_count as usize {
+        let offset = header.program_offset as usize + index * PROGRAM_HEADER_SIZE;
+        let phdr =
+            elf_format::program_header(data, offset).ok_or("program header outside image")?;
+        if phdr.segment_type == PT_LOAD {
+            let file_offset = header.program_offset as usize;
+            if file_offset >= phdr.offset as usize
+                && file_offset < phdr.offset as usize + phdr.file_size as usize
             {
-                phdr_addr = load_base + ph.p_vaddr as usize + (file_off - ph.p_offset as usize);
+                phdr_addr = load_base
+                    + phdr.virtual_address as usize
+                    + (file_offset - phdr.offset as usize);
                 break;
             }
         }
@@ -346,7 +306,7 @@ fn load_active(
     Ok(AuxImage {
         entry,
         phdr_addr,
-        phnum: ehdr.e_phnum as usize,
+        phnum: header.program_count as usize,
     })
 }
 /// Set up the Linux argc/argv/envp/auxv stack in `address_space`.
@@ -418,7 +378,7 @@ fn setup_user_stack(
         AT_PHDR,
         phdr_addr,
         AT_PHENT,
-        core::mem::size_of::<Elf64Phdr>(),
+        PROGRAM_HEADER_SIZE,
         AT_PHNUM,
         phnum,
         AT_PAGESZ,
@@ -444,14 +404,14 @@ fn setup_user_stack(
         AT_NULL,
         0,
     ]);
-    let word_size = core::mem::size_of::<usize>();
-    let array_size = words.len() * word_size;
+    let array_size = words.len() * core::mem::size_of::<usize>();
     let array_base = (sp - array_size) & !0xF;
-    let bytes = unsafe {
-        core::slice::from_raw_parts(words.as_ptr() as *const u8, words.len() * word_size)
-    };
+    let mut bytes = Vec::with_capacity(array_size);
+    for word in words {
+        bytes.extend_from_slice(&word.to_ne_bytes());
+    }
     address_space
-        .write(array_base, bytes)
+        .write(array_base, &bytes)
         .map_err(|_| "write initial stack")?;
     Ok(array_base)
 }

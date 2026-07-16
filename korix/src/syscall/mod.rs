@@ -17,6 +17,13 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kor::INode;
 use spin::Mutex;
+mod user_mem;
+
+use user_mem::{
+    check_range as checked_user_range, copy_from as copy_from_user, copy_to as copy_to_user,
+    kernel_address as user_to_kernel, read as read_user, read_string as user_to_str,
+    write as write_user,
+};
 
 // Linux syscall numbers (generic table, shared by riscv64/aarch64)
 pub const SYS_READ: usize = 63;
@@ -159,118 +166,10 @@ mod x86_nr {
     pub const RSEQ: usize = 334;
 }
 
-// Physical RAM start — used to distinguish user pages from identity-mapped kernel pages.
-#[cfg(target_arch = "riscv64")]
-pub const RAM_START: usize = 0x8000_0000;
-#[cfg(target_arch = "aarch64")]
-pub const RAM_START: usize = 0x4000_0000;
-#[cfg(target_arch = "x86_64")]
-pub const RAM_START: usize = 0x1_0000_0000;
-#[cfg(not(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "x86_64"
-)))]
-pub const RAM_START: usize = 0x8000_0000;
 const AT_FDCWD: isize = -100;
 /// Dispatch a syscall.
 /// num is the syscall number, args is up to 6 arguments.
 /// Returns the syscall result (positive = success, negative = -errno).
-fn current_user_phys(address: usize, write: bool) -> Option<usize> {
-    crate::sched::with_current_process(|process| {
-        let process = process.lock();
-        let space = process.address_space()?;
-        space
-            .validate_range(address, 1, write)
-            .then(|| space.translate(address))?
-    })?
-}
-
-/// Translate one validated user byte. Bulk callers must use pagewise copy
-/// helpers instead of extending this pointer across a page boundary.
-fn user_to_kernel(address: usize) -> usize {
-    current_user_phys(address, false)
-        .map(kor::arch::phys_to_virt)
-        .unwrap_or(0)
-}
-fn checked_user_range(address: usize, length: usize, write: bool) -> Option<()> {
-    if address == 0 {
-        return None;
-    }
-    crate::sched::with_current_process(|process| {
-        process
-            .lock()
-            .address_space()
-            .is_some_and(|space| space.validate_range(address, length, write))
-    })?
-    .then_some(())
-}
-
-fn copy_from_user(address: usize, destination: &mut [u8]) -> Option<()> {
-    checked_user_range(address, destination.len(), false)?;
-    let mut copied = 0;
-    while copied < destination.len() {
-        let user = address.checked_add(copied)?;
-        let physical = current_user_phys(user, false)?;
-        let chunk = (0x1000 - (user & 0xfff)).min(destination.len() - copied);
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                kor::arch::current().phys_to_virt(physical) as *const u8,
-                destination.as_mut_ptr().add(copied),
-                chunk,
-            );
-        }
-        copied += chunk;
-    }
-    Some(())
-}
-
-fn copy_to_user(address: usize, source: &[u8]) -> Option<()> {
-    checked_user_range(address, source.len(), true)?;
-    let mut copied = 0;
-    while copied < source.len() {
-        let user = address.checked_add(copied)?;
-        let physical = current_user_phys(user, true)?;
-        let chunk = (0x1000 - (user & 0xfff)).min(source.len() - copied);
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                source.as_ptr().add(copied),
-                kor::arch::current().phys_to_virt(physical) as *mut u8,
-                chunk,
-            );
-        }
-        copied += chunk;
-    }
-    Some(())
-}
-
-fn read_user<T: Copy>(address: usize) -> Option<T> {
-    let mut value = core::mem::MaybeUninit::<T>::uninit();
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), core::mem::size_of::<T>())
-    };
-    copy_from_user(address, bytes)?;
-    Some(unsafe { value.assume_init() })
-}
-
-fn write_user<T: Copy>(address: usize, value: &T) -> Option<()> {
-    let bytes = unsafe {
-        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
-    };
-    copy_to_user(address, bytes)
-}
-
-fn user_to_str(address: usize, max: usize) -> Option<String> {
-    let mut bytes = Vec::new();
-    for offset in 0..max {
-        let byte: u8 = read_user(address.checked_add(offset)?)?;
-        if byte == 0 {
-            return String::from_utf8(bytes).ok();
-        }
-        bytes.push(byte);
-    }
-    None
-}
 
 // Kernel-side UART RX buffer (compensates for small hardware FIFO)
 pub static RX_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
@@ -1047,14 +946,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
             // prlimit64 → return default limits
             if args[3] != 0 {
                 let rlim = [u64::MAX, u64::MAX];
-                if copy_to_user(args[3], unsafe {
-                    core::slice::from_raw_parts(
-                        rlim.as_ptr().cast::<u8>(),
-                        core::mem::size_of_val(&rlim),
-                    )
-                })
-                .is_none()
-                {
+                if write_user(args[3], &rlim).is_none() {
                     return -14;
                 }
             }
@@ -2801,7 +2693,6 @@ fn sys_ppoll(fds: usize, nfds: usize) -> isize {
         }
     }
 }
-
 #[unsafe(no_mangle)]
 pub extern "Rust" fn korix_set_current_tf(tf: *mut u8) {
     if !kor_sched::is_ready() {
@@ -2811,23 +2702,24 @@ pub extern "Rust" fn korix_set_current_tf(tf: *mut u8) {
     if tf.is_null() {
         task.clear_user_context();
     } else {
-        let guard = task.user_context_scope(tf);
-        core::mem::forget(guard);
+        task.set_user_context(tf);
     }
 }
 
-pub unsafe fn user_trap_enter(frame: *mut u8) {
-    korix_set_current_tf(frame);
+pub fn user_trap_enter(frame: kor::UserTrapFrame<'_>) {
+    korix_set_current_tf(frame.as_ptr());
 }
 
-pub unsafe fn user_trap_leave(frame: *mut u8) {
+pub fn user_trap_leave(frame: kor::UserTrapFrame<'_>) {
+    let frame = frame.as_ptr();
     let task = kor_sched::current();
     if task.with_user_context(|active| core::ptr::eq(active, frame)) == Some(true) {
         task.clear_user_context();
     }
 }
-pub unsafe fn user_trap_status(frame: *mut u8) -> Option<i32> {
-    korix_deliver_pending_signal(frame)
+
+pub fn user_trap_status(frame: kor::UserTrapFrame<'_>) -> Option<i32> {
+    korix_deliver_pending_signal(frame.as_ptr())
 }
 
 fn sys_fstatat(dirfd: usize, path: usize, stat: usize, flags: usize) -> isize {

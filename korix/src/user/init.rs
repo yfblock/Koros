@@ -3,7 +3,6 @@
 use alloc::string::String;
 
 use super::elf;
-use crate::arch::user_ctx;
 use crate::fs;
 use crate::mm::AddressSpace;
 
@@ -67,11 +66,8 @@ pub fn spawn_init() {
             } else {
                 core::mem::forget(address_space);
             }
-            let ctx = user_ctx::UserContext::new(prog.entry, prog.stack_top);
             kor::println!("[korix] entering user mode...");
-            unsafe {
-                user_ctx::enter_user(&ctx);
-            }
+            kor_arch::enter_user(prog.entry, prog.stack_top);
         }
         Err(e) => {
             kor::println!("[korix] ELF load failed: {}", e);

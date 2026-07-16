@@ -25,6 +25,7 @@ pub mod regions;
 pub mod smp;
 pub mod time;
 pub mod trap_callbacks;
+pub mod user_trap;
 pub mod vfs;
 
 // Convenience re-exports at the crate root.
@@ -37,6 +38,7 @@ pub use trap_callbacks::{
     TrapCallbacks, callbacks, dispatch_external, install_callbacks, install_syscall_handler,
     on_timer, syscall_handler,
 };
+pub use user_trap::UserTrapFrame;
 pub use vfs::{FileSystemDriver, FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
 
 /// Kernel image physical range from linker symbols `_skernel`..`_end`.

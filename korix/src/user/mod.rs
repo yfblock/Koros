@@ -8,5 +8,6 @@
 //! - A brk heap
 
 pub mod elf;
+mod elf_format;
 pub mod init;
 pub mod layout;

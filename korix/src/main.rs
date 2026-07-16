@@ -6,7 +6,6 @@
 
 extern crate alloc;
 
-mod arch;
 mod fs;
 mod heap;
 mod mm;

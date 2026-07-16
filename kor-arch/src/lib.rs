@@ -32,6 +32,20 @@ pub struct UserTrapContext {
     pub fp_callee: [u64; 12],
     pub fcsr: usize,
 }
+impl UserTrapContext {
+    /// Construct a zeroed context for the first entry into a user image.
+    pub fn initial(pc: usize, sp: usize) -> Self {
+        Self {
+            regs: [0; 32],
+            pc,
+            status: 0,
+            sp,
+            tls: 0,
+            fp_callee: [0; 12],
+            fcsr: 0,
+        }
+    }
+}
 
 /// Capture a user-mode trap frame through the selected architecture's typed layout.
 ///
@@ -93,6 +107,16 @@ pub unsafe fn resume_user_context(context: &UserTrapContext) -> ! {
         else if #[cfg(target_arch = "x86_64")] { unsafe { x86_64::trap::resume_user_context(context) } }
         else { let _ = context; loop { core::hint::spin_loop(); } }
     }
+}
+/// Enter a freshly loaded user image through the selected architecture.
+///
+/// The caller supplies only validated user PC and SP values. Architecture
+/// code owns privilege-state sanitization and the non-returning transition.
+pub fn enter_user(pc: usize, sp: usize) -> ! {
+    let context = UserTrapContext::initial(pc, sp);
+    // SAFETY: the composition layer activates the new address space before
+    // calling this function; `initial` contains no privileged state.
+    unsafe { resume_user_context(&context) }
 }
 
 // ---------------------------------------------------------------------------
