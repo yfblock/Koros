@@ -4,8 +4,8 @@
 //! reads the stable counter (`rdtime.d`) and `timer_hz` derives the constant
 //! timer frequency from `cpucfg`, mirroring `time::timer_freq`.
 
-use kor::{ArchProvider, MapError, MapSize, MappingFlags, TaskContext};
 use core::arch::asm;
+use kor::{ArchProvider, MapError, MapSize, MappingFlags, TaskContext};
 
 /// The loongarch64 architecture provider — a zero-sized marker.
 pub struct Loongarch64Provider;
@@ -14,8 +14,9 @@ pub struct Loongarch64Provider;
 pub static PROVIDER: Loongarch64Provider = Loongarch64Provider;
 
 // loongarch64 callee-saved context (ra + sp + fp + s[9] = 12 usizes) fits in 16.
-const _: () =
-    assert!(core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>());
+const _: () = assert!(
+    core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>()
+);
 
 impl ArchProvider for Loongarch64Provider {
     fn kernel_offset(&self) -> usize {

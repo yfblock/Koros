@@ -4,8 +4,8 @@
 //! reads the virtual count register and `timer_hz` reads the counter-frequency
 //! register.
 
-use kor::{ArchProvider, MapError, MapSize, MappingFlags, TaskContext};
 use core::arch::asm;
+use kor::{ArchProvider, MapError, MapSize, MappingFlags, TaskContext};
 
 /// The aarch64 architecture provider — a zero-sized marker.
 pub struct Aarch64Provider;
@@ -14,8 +14,9 @@ pub struct Aarch64Provider;
 pub static PROVIDER: Aarch64Provider = Aarch64Provider;
 
 // aarch64 callee-saved context (regs[12] + sp = 13 usizes) fits in 16.
-const _: () =
-    assert!(core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>());
+const _: () = assert!(
+    core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>()
+);
 
 impl ArchProvider for Aarch64Provider {
     fn kernel_offset(&self) -> usize {

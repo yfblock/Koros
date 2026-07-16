@@ -175,9 +175,7 @@ impl Task {
             (self.user_stack.as_ptr() as usize + self.user_stack.len()) & !0xf
         }
     }
-
 }
-
 
 /// Per-CPU scheduler state.
 struct PerCpu {

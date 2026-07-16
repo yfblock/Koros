@@ -17,4 +17,7 @@ korhv/linux-demo/init
 korix/busybox-riscv64
 korix/busybox-aarch64
 korix/busybox-x86_64
+os-images/alpine-*.img
+os-images/cache/
+scripts/__pycache__/mk-alpine-rootfs.cpython-314.pyc
 view.md

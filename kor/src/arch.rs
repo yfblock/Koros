@@ -32,7 +32,13 @@ pub trait ArchProvider: Send + Sync {
 
     // Page table
     fn page_table_init(&self);
-    fn map(&self, vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError>;
+    fn map(
+        &self,
+        vaddr: usize,
+        paddr: usize,
+        flags: MappingFlags,
+        size: MapSize,
+    ) -> Result<(), MapError>;
     fn translate(&self, vaddr: usize) -> Option<usize>;
     fn dynamic_maps_supported(&self) -> bool;
     fn unmap(&self, vaddr: usize, size: MapSize) -> Result<usize, MapError>;

@@ -21,7 +21,9 @@ pub struct BlockRegistry {
 
 impl BlockRegistry {
     pub const fn new() -> Self {
-        Self { devices: Mutex::new(Vec::new()) }
+        Self {
+            devices: Mutex::new(Vec::new()),
+        }
     }
     pub fn register(&self, dev: Arc<dyn BlockDevice>) {
         self.devices.lock().push(dev);
@@ -43,7 +45,9 @@ pub struct IrqRegistry {
 
 impl IrqRegistry {
     pub const fn new() -> Self {
-        Self { handlers: Mutex::new(Vec::new()) }
+        Self {
+            handlers: Mutex::new(Vec::new()),
+        }
     }
     pub fn register(&self, irq: u32, handler: Handler) {
         self.handlers.lock().push((irq, handler));

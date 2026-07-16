@@ -51,10 +51,14 @@ pub fn init() {
             let off = i * 16;
             p.add(off).cast::<u16>().write_unaligned(base as u16);
             p.add(off + 2).cast::<u16>().write_unaligned(0x10); // 64-bit code sel
-            p.add(off + 4).write_unaligned(0);                  // IST
-            p.add(off + 5).write_unaligned(0x8E);                // present | int gate
-            p.add(off + 6).cast::<u16>().write_unaligned((base >> 16) as u16);
-            p.add(off + 8).cast::<u32>().write_unaligned((base >> 32) as u32);
+            p.add(off + 4).write_unaligned(0); // IST
+            p.add(off + 5).write_unaligned(0x8E); // present | int gate
+            p.add(off + 6)
+                .cast::<u16>()
+                .write_unaligned((base >> 16) as u16);
+            p.add(off + 8)
+                .cast::<u32>()
+                .write_unaligned((base >> 32) as u32);
         }
         // Build a 10-byte IDTR (limit, base) on the stack and load it.
         asm!(

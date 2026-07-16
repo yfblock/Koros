@@ -1,7 +1,4 @@
-//! Init process spawning.
-//!
-//! Loads the busybox binary from /bin/busybox in the rootfs,
-//! sets up the user address space, and enters user mode as /bin/sh.
+//! Init process spawning from the mounted root filesystem.
 
 use alloc::string::String;
 
@@ -12,22 +9,41 @@ use crate::mm::AddressSpace;
 
 /// Spawn the first user process.
 pub fn spawn_init() {
-    kor::println!("[korix] loading /bin/busybox...");
-
-    // Read busybox from the root filesystem.
-    let busybox = match fs::read_file("/bin/busybox") {
+    let executable = if fs::exists("/bin/busybox") {
+        "/bin/busybox"
+    } else {
+        "/bin/sh"
+    };
+    kor::println!("[korix] loading {}...", executable);
+    let image = match fs::read_file(executable) {
         Ok(data) => data,
-        Err(e) => {
-            kor::println!("[korix] cannot read /bin/busybox: {:?}", e);
+        Err(error) => {
+            kor::println!("[korix] cannot read {}: {:?}", executable, error);
             return;
         }
     };
-    kor::println!("[korix] busybox: {} bytes", busybox.len());
-
-    if !elf::is_elf(&busybox) {
-        kor::println!("[korix] /bin/busybox is not a valid ELF!");
+    kor::println!("[korix] userspace image: {} bytes", image.len());
+    if !elf::is_elf(&image) {
+        kor::println!("[korix] {} is not a valid ELF", executable);
         return;
     }
+    let interpreter_path = match elf::interpreter_path(&image) {
+        Ok(path) => path,
+        Err(error) => {
+            kor::println!("[korix] cannot parse interpreter: {}", error);
+            return;
+        }
+    };
+    let interpreter = match interpreter_path.as_deref() {
+        Some(path) => match fs::read_file(path) {
+            Ok(data) => Some(data),
+            Err(error) => {
+                kor::println!("[korix] cannot read interpreter {}: {:?}", path, error);
+                return;
+            }
+        },
+        None => None,
+    };
 
     let mut address_space = match AddressSpace::empty() {
         Ok(address_space) => address_space,
@@ -37,7 +53,7 @@ pub fn spawn_init() {
         }
     };
     let argv = [String::from("/bin/sh")];
-    match elf::load_elf(&mut address_space, &busybox, &argv) {
+    match elf::load_program(&mut address_space, &image, interpreter.as_deref(), &argv) {
         Ok(prog) => {
             kor::println!(
                 "[korix] loaded: entry={:#x}, sp={:#x}",

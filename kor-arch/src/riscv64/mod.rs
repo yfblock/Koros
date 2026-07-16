@@ -1,7 +1,7 @@
 pub mod boot;
-pub mod ic;
-pub mod context;
 pub mod console;
+pub mod context;
+pub mod ic;
 pub mod irq;
 pub mod mm;
 pub mod page_table;

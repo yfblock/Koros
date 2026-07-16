@@ -68,8 +68,8 @@ fn ext2_test_with_device(device: alloc::sync::Arc<dyn kor::BlockDevice>) {
 
 /// Exercise the read/write, symlink, hard-link, rename and truncate paths.
 fn run_ext2_checks(root: &alloc::sync::Arc<dyn kor::INode>) -> Result<(), kor::FsError> {
-    use kor_fs::path::resolve_path;
     use kor::{FileType, FsError};
+    use kor_fs::path::resolve_path;
 
     // 0. Interop probe: if a Linux-authored fixture "victim" exists, delete
     //    it. This exercises unlink of a foreign inode plus xattr-block
@@ -105,7 +105,11 @@ fn run_ext2_checks(root: &alloc::sync::Arc<dyn kor::INode>) -> Result<(), kor::F
     if via_link.ino() != file.ino() {
         return Err(FsError::IoError);
     }
-    kor::println!("ext2: symlink OK ({}, followed to ino={})", link.readlink()?, via_link.ino());
+    kor::println!(
+        "ext2: symlink OK ({}, followed to ino={})",
+        link.readlink()?,
+        via_link.ino()
+    );
 
     // 3. Hard link — same inode reachable under a second name.
     dir.link("hard.txt", &file)?;
@@ -153,7 +157,10 @@ fn run_ext2_checks(root: &alloc::sync::Arc<dyn kor::INode>) -> Result<(), kor::F
     if probe.iter().any(|&b| b != 0xAB) {
         return Err(FsError::IoError);
     }
-    kor::println!("ext2: large file (indirect) OK, size={}", big.getattr()?.size);
+    kor::println!(
+        "ext2: large file (indirect) OK, size={}",
+        big.getattr()?.size
+    );
 
     // 6c. Extended attributes: set / get / list / remove.
     file.setxattr("user.author", b"koros")?;
@@ -169,7 +176,10 @@ fn run_ext2_checks(root: &alloc::sync::Arc<dyn kor::INode>) -> Result<(), kor::F
     if file.getxattr("user.author").is_ok() {
         return Err(FsError::IoError);
     }
-    kor::println!("ext2: xattr set/get/list/remove OK ({} left)", file.listxattr()?.len());
+    kor::println!(
+        "ext2: xattr set/get/list/remove OK ({} left)",
+        file.listxattr()?.len()
+    );
 
     // 6d. Read a Linux-authored xattr if the interop fixture is present.
     if let Ok(x) = root.lookup("xhost") {

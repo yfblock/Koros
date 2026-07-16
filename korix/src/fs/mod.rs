@@ -8,30 +8,38 @@
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use kor::{FsError, INode, FileType};
+use kor::{FileType, FsError, INode};
 use kor_fs::mount;
 
-/// Mount the root filesystem and populate it with busybox and standard dirs.
+/// Mount the first ext2 block device as root, falling back to embedded ramfs.
 pub fn init_rootfs() {
+    let mounts = &crate::MOUNTS;
+    let mounted_ext2 = crate::registries::BLOCKS
+        .first()
+        .and_then(|device| kor_ext2::Ext2Fs::open(device).ok())
+        .and_then(|fs| mounts.lock().mount("/", fs).ok())
+        .is_some();
+    if mounted_ext2 {
+        if resolve("/bin/busybox").is_ok() || resolve("/bin/sh").is_ok() {
+            kor::println!("[korix] mounted ext2 root filesystem");
+            return;
+        }
+        kor::println!("[korix] ext2 root has no /bin/sh; using ramfs root");
+        let _ = mounts.lock().unmount("/");
+    }
+    match kor_fs::registry::mount_named(mounts, "ramfs", None, "/") {
+        Ok(_) => kor::println!("[korix] mounted ramfs on /"),
+        Err(error) => {
+            kor::println!("[korix] ramfs mount failed: {:?}", error);
+            return;
+        }
+    }
     #[cfg(target_arch = "riscv64")]
     let embedded_busybox: &[u8] = include_bytes!("../../busybox-riscv64");
     #[cfg(target_arch = "aarch64")]
     let embedded_busybox: &[u8] = include_bytes!("../../busybox-aarch64");
     #[cfg(target_arch = "x86_64")]
     let embedded_busybox: &[u8] = include_bytes!("../../busybox-x86_64");
-    let mounts = &crate::MOUNTS;
-    let mounted_ext2 = crate::registries::BLOCKS.first().and_then(|device| {
-        kor_ext2::Ext2Fs::open(device).ok().and_then(|fs| mounts.lock().mount("/", fs).ok())
-    }).is_some();
-    if mounted_ext2 {
-        if read_file("/bin/busybox").is_ok_and(|data| data == embedded_busybox) { return; }
-        kor::println!("[korix] ext2 lacks /bin/busybox; using ramfs root");
-        let _ = mounts.lock().unmount("/");
-    }
-    match kor_fs::registry::mount_named(mounts, "ramfs", None, "/") {
-        Ok(_) => kor::println!("[korix] mounted ramfs on /"),
-        Err(e) => { kor::println!("[korix] ramfs mount failed: {:?}", e); return; }
-    }
 
     // Create standard directories
     for dir in &["/bin", "/dev", "/proc", "/etc", "/tmp"] {
@@ -47,10 +55,9 @@ pub fn init_rootfs() {
 
     // Create symlinks for common applets
     let applets = [
-        "sh", "ls", "echo", "cat", "date", "true", "false", "pwd",
-        "mkdir", "rmdir", "rm", "cp", "mv", "ln", "head", "tail",
-        "wc", "sort", "uniq", "grep", "sed", "awk", "vi", "env",
-        "id", "whoami", "hostname", "sleep", "test", "[",
+        "sh", "ls", "echo", "cat", "date", "true", "false", "pwd", "mkdir", "rmdir", "rm", "cp",
+        "mv", "ln", "head", "tail", "wc", "sort", "uniq", "grep", "sed", "awk", "vi", "env", "id",
+        "whoami", "hostname", "sleep", "test", "[",
     ];
     for applet in &applets {
         if let Ok(root) = resolve("/bin") {
@@ -67,7 +74,10 @@ pub fn init_rootfs() {
     let _ = write_file("/etc/hostname", b"korix\n");
     let _ = mkdir("/root");
 
-    kor::println!("[korix] rootfs ready: /bin/busybox + {} applets", applets.len());
+    kor::println!(
+        "[korix] rootfs ready: /bin/busybox + {} applets",
+        applets.len()
+    );
 }
 
 /// Resolve a path to an INode via the mount table.
@@ -90,7 +100,7 @@ pub fn write_file(path: &str, content: &[u8]) -> Result<(), FsError> {
     // Split path into parent directory and filename
     let (parent_path, filename) = match path.rfind('/') {
         Some(0) => ("/", &path[1..]),
-        Some(idx) => (&path[..idx], &path[idx+1..]),
+        Some(idx) => (&path[..idx], &path[idx + 1..]),
         None => ("/", path),
     };
     let parent = resolve(parent_path)?;
@@ -114,7 +124,7 @@ pub fn exists(path: &str) -> bool {
 pub fn mkdir(path: &str) -> Result<(), FsError> {
     let (parent_path, dirname) = match path.rfind('/') {
         Some(0) => ("/", &path[1..]),
-        Some(idx) => (&path[..idx], &path[idx+1..]),
+        Some(idx) => (&path[..idx], &path[idx + 1..]),
         None => ("/", path),
     };
     let parent = resolve(parent_path)?;

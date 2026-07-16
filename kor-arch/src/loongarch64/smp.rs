@@ -100,9 +100,9 @@ pub fn start_secondaries() -> usize {
         if cpu == boot {
             continue;
         }
-        let sp = unsafe {
-            core::ptr::addr_of!(SECONDARY_STACKS[cpu]) as usize + SECONDARY_STACK_SIZE
-        } as u64;
+        let sp =
+            unsafe { core::ptr::addr_of!(SECONDARY_STACKS[cpu]) as usize + SECONDARY_STACK_SIZE }
+                as u64;
         mail_send(entry, cpu, 0);
         mail_send(sp, cpu, 1);
         ipi_send(cpu);

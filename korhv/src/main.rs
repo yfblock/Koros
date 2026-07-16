@@ -78,8 +78,10 @@ extern "C" fn kernel_main() -> ! {
     heap::self_test();
 
     kor::println!("");
-    kor::println!("=== korhv: Type-1 hypervisor ({} KiB free) ===",
-        kor_frame::available_frames() * 4);
+    kor::println!(
+        "=== korhv: Type-1 hypervisor ({} KiB free) ===",
+        kor_frame::available_frames() * 4
+    );
     kor::println!("cmdline: {:?}", kor::cmdline::raw());
 
     crate::arch::hyp::init();

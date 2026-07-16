@@ -166,11 +166,16 @@ pub unsafe fn enter_user(ctx: &UserContext) -> ! {
         unreachable!();
     }
 
-    #[cfg(not(any(target_arch = "riscv64", target_arch = "aarch64", target_arch = "x86_64")))]
+    #[cfg(not(any(
+        target_arch = "riscv64",
+        target_arch = "aarch64",
+        target_arch = "x86_64"
+    )))]
     {
         let _ = ctx;
-        loop { core::hint::spin_loop(); }
-
+        loop {
+            core::hint::spin_loop();
+        }
     }
 }
 

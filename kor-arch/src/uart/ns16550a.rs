@@ -8,7 +8,7 @@ const THR: usize = 0; // Transmit Holding Register (write)
 const RBR: usize = 0; // Receive Buffer Register (read)
 const LSR: usize = 5; // Line Status Register
 const LSR_THRE: u8 = 1 << 5; // Transmit Hold Register Empty
-const LSR_DR: u8 = 1 << 0;   // Data Ready
+const LSR_DR: u8 = 1 << 0; // Data Ready
 
 /// Write one byte to an MMIO-mapped NS16550A at `base`.
 pub fn putchar_mmio(base: usize, c: u8) {

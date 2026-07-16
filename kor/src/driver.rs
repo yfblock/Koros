@@ -10,8 +10,8 @@
 //! concrete registry (which drivers to enable) is assembled by the `koros`
 //! binary crate.
 
-use fdt::properties::Compatible;
 use fdt::Fdt;
+use fdt::properties::Compatible;
 
 use crate::println;
 

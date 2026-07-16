@@ -29,7 +29,10 @@ unsafe impl<T: Send> Sync for Mutex<T> {}
 
 impl<T> Mutex<T> {
     pub const fn new(value: T) -> Self {
-        Self { sem: Semaphore::new(1), data: UnsafeCell::new(value) }
+        Self {
+            sem: Semaphore::new(1),
+            data: UnsafeCell::new(value),
+        }
     }
 
     /// Acquire the lock, blocking until it is available.
@@ -80,7 +83,10 @@ impl<T> Default for Channel<T> {
 
 impl<T> Channel<T> {
     pub const fn new() -> Self {
-        Self { queue: Mutex::new(VecDeque::new()), items: Semaphore::new(0) }
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            items: Semaphore::new(0),
+        }
     }
 
     /// Send an item; wakes one blocked receiver.

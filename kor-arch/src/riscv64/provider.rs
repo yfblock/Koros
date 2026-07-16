@@ -4,8 +4,8 @@
 //! delegating each method to the existing per-arch functions under
 //! `arch/riscv64/`.  The binary crate installs it once in `kernel_main`.
 
-use kor::{ArchProvider, MapError, MapSize, MappingFlags, TaskContext};
 use core::arch::asm;
+use kor::{ArchProvider, MapError, MapSize, MappingFlags, TaskContext};
 
 /// The riscv64 architecture provider — a zero-sized marker.
 pub struct Riscv64Provider;
@@ -15,8 +15,9 @@ pub static PROVIDER: Riscv64Provider = Riscv64Provider;
 
 // riscv64 callee-saved context (ra + sp + s[12] = 14 usizes) fits in the
 // 16-usize opaque `hal::TaskContext` buffer.
-const _: () =
-    assert!(core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>());
+const _: () = assert!(
+    core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>()
+);
 
 impl ArchProvider for Riscv64Provider {
     fn kernel_offset(&self) -> usize {

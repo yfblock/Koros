@@ -8,8 +8,8 @@ use core::arch::naked_asm;
 #[unsafe(no_mangle)]
 #[unsafe(link_section = ".text.entry")]
 unsafe extern "C" fn _start() -> ! {
-        naked_asm!(
-            "la.global $sp, bstack_top
+    naked_asm!(
+        "la.global $sp, bstack_top
              # --- Clear BSS ---
              la.global $t0, _sbss
              la.global $t1, _ebss
@@ -21,8 +21,8 @@ unsafe extern "C" fn _start() -> ! {
          2:
              la.global $t0, {entry}
              jirl      $zero, $t0, 0",
-            entry = sym rust_entry,
-        )
+        entry = sym rust_entry,
+    )
 }
 
 #[unsafe(no_mangle)]

@@ -4,8 +4,8 @@
 
 const UART_DR: usize = 0x00; // Data Register
 const UART_FR: usize = 0x18; // Flag Register
-const FR_TXFF: u8 = 1 << 5;  // Transmit FIFO full
-const FR_RXFE: u8 = 1 << 4;  // Receive FIFO empty
+const FR_TXFF: u8 = 1 << 5; // Transmit FIFO full
+const FR_RXFE: u8 = 1 << 4; // Receive FIFO empty
 
 /// Write one byte to an MMIO-mapped PL011 at `base`.
 pub fn putchar(base: usize, c: u8) {

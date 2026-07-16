@@ -79,7 +79,9 @@ struct IntStack([u8; TRAP_STACK_SIZE]);
 /// Configure this CPU's native SYSCALL state for the task being resumed.
 pub fn set_syscall_stack(stack_top: usize) {
     let cpu = kor::arch::current().cpu_id();
-    unsafe { X86_SYSCALL_CPU_STATES[cpu].stack_top = stack_top as u64; }
+    unsafe {
+        X86_SYSCALL_CPU_STATES[cpu].stack_top = stack_top as u64;
+    }
 }
 
 #[repr(C)]
@@ -129,7 +131,6 @@ static mut TRAP_SWAPPED_GS: [bool; kor::smp::MAX_CPUS] = [false; kor::smp::MAX_C
 
 global_asm!(include_str!("trap.S"));
 
-
 // ---------------------------------------------------------------------------
 // Rust trap handler — called from assembly
 // ---------------------------------------------------------------------------
@@ -175,9 +176,7 @@ extern "C" fn handle_syscall(tf: &mut TrapFrame) -> i32 {
         tf.r9 as usize,
     ];
     tf.rax = handler(nr, &args) as u64;
-    let fatal = unsafe {
-        kor::trap_callbacks::user_trap_status(tf as *mut TrapFrame as *mut u8)
-    };
+    let fatal = unsafe { kor::trap_callbacks::user_trap_status(tf as *mut TrapFrame as *mut u8) };
     unsafe {
         kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
     }
@@ -199,7 +198,6 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
     }
 
     let from_user = (tf.cs & 3) == 3;
-
 
     // System call via int 0x80 from user mode.
     if tf.vector == 0x80 && from_user {
@@ -331,7 +329,6 @@ pub fn init() {
         let rsp0 = int_stack as u64 + TRAP_STACK_SIZE as u64;
         (*tss).rsp0_low = rsp0 as u32;
         (*tss).rsp0_high = (rsp0 >> 32) as u32;
-
 
         let gdtr = Dtr {
             limit: (core::mem::size_of::<Gdt>() - 1) as u16,

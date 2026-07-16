@@ -44,4 +44,3 @@ pub fn enable_seie() {
     // SAFETY: sets the SEIE bit in `sie`.
     unsafe { asm!("csrs sie, {}", in(reg) SIE_SEIE) };
 }
-

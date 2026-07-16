@@ -118,10 +118,7 @@ impl Path {
 /// * [`FsError::NotDirectory`] — a non-terminal component is not a directory.
 /// * [`FsError::TooManyLinks`] — more than [`MAX_SYMLINK_DEPTH`] symlinks were
 ///   encountered (a likely loop).
-pub fn resolve_path(
-    start_inode: Arc<dyn INode>,
-    path: &str,
-) -> Result<Arc<dyn INode>, FsError> {
+pub fn resolve_path(start_inode: Arc<dyn INode>, path: &str) -> Result<Arc<dyn INode>, FsError> {
     let root = start_inode.clone();
     let mut depth = 0;
     resolve_inner(&root, start_inode, path, &mut depth)
@@ -187,9 +184,6 @@ fn is_symlink(inode: &Arc<dyn INode>) -> Result<bool, FsError> {
 ///
 /// * [`FsError::NotDirectory`] if `dir_inode` is not a directory.
 /// * [`FsError::NotFound`] if `name` does not exist.
-pub fn lookup_entry(
-    dir_inode: &Arc<dyn INode>,
-    name: &str,
-) -> Result<Arc<dyn INode>, FsError> {
+pub fn lookup_entry(dir_inode: &Arc<dyn INode>, name: &str) -> Result<Arc<dyn INode>, FsError> {
     dir_inode.lookup(name)
 }

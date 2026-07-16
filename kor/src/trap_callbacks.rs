@@ -93,7 +93,6 @@ pub fn user_exit(code: i32) -> ! {
     }
 }
 
-
 pub fn install_task_switch_hook(hook: TaskSwitchHook) {
     TASK_SWITCH.call_once(|| hook);
 }
@@ -125,5 +124,7 @@ pub unsafe fn user_trap_leave(frame: *mut u8) {
 /// # Safety
 /// `frame` must be the live architecture trap frame for the current task.
 pub unsafe fn user_trap_status(frame: *mut u8) -> Option<i32> {
-    USER_TRAP_STATUS.get().and_then(|hook| unsafe { hook(frame) })
+    USER_TRAP_STATUS
+        .get()
+        .and_then(|hook| unsafe { hook(frame) })
 }

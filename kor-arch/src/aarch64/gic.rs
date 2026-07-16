@@ -83,4 +83,3 @@ pub fn enable_spi(intid: u32) {
             .write_volatile(0x01);
     }
 }
-

@@ -28,14 +28,14 @@ pub mod trap_callbacks;
 pub mod vfs;
 
 // Convenience re-exports at the crate root.
-pub use arch::{current, install, phys_to_virt, virt_to_phys, ArchProvider, TaskContext};
+pub use arch::{ArchProvider, TaskContext, current, install, phys_to_virt, virt_to_phys};
 pub use block::{BlockDevice, BlockError};
-pub use console::{install_console, putc, Console};
-pub use interrupt::{controller, enable_device_irq, install_controller, InterruptController};
+pub use console::{Console, install_console, putc};
+pub use interrupt::{InterruptController, controller, enable_device_irq, install_controller};
 pub use mapping::{MapError, MapSize, MappingFlags};
 pub use trap_callbacks::{
-    callbacks, dispatch_external, install_callbacks, install_syscall_handler, on_timer,
-    syscall_handler, TrapCallbacks,
+    TrapCallbacks, callbacks, dispatch_external, install_callbacks, install_syscall_handler,
+    on_timer, syscall_handler,
 };
 pub use vfs::{FileSystemDriver, FileType, FsError, FsInfo, INode, Metadata, SuperBlock};
 

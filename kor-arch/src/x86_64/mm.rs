@@ -26,8 +26,7 @@ pub fn boot_cmdline() -> Option<String> {
         if flags & MULTIBOOT_INFO_CMDLINE == 0 {
             return None;
         }
-        let cmdline_phys =
-            core::ptr::read_unaligned(base.add(MBI_CMDLINE) as *const u32) as usize;
+        let cmdline_phys = core::ptr::read_unaligned(base.add(MBI_CMDLINE) as *const u32) as usize;
         if cmdline_phys == 0 {
             return None;
         }
@@ -99,8 +98,7 @@ unsafe fn parse_multiboot_regions(
 
     if flags & MULTIBOOT_INFO_MMAP == 0 {
         if flags & 1 != 0 {
-            let mem_upper_kb =
-                core::ptr::read_unaligned(base.add(8) as *const u32) as usize;
+            let mem_upper_kb = core::ptr::read_unaligned(base.add(8) as *const u32) as usize;
             let end = mem_upper_kb * 1024;
             if end > 0x100000 {
                 add_region(0x100000, end);

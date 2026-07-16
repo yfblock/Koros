@@ -376,9 +376,10 @@ impl INode for RamINode {
             children.insert(new_name.to_string(), child.clone());
         }
         if child.file_type == FileType::Directory {
-            child.parent.lock().replace(
-                new_parent.self_ref.lock().clone().ok_or(FsError::IoError)?,
-            );
+            child
+                .parent
+                .lock()
+                .replace(new_parent.self_ref.lock().clone().ok_or(FsError::IoError)?);
         }
         Ok(())
     }

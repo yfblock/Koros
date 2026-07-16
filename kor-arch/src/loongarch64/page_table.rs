@@ -13,7 +13,12 @@ pub fn dynamic_maps_supported() -> bool {
     false
 }
 
-pub fn map(_vaddr: usize, _paddr: usize, _flags: MappingFlags, _size: MapSize) -> Result<(), MapError> {
+pub fn map(
+    _vaddr: usize,
+    _paddr: usize,
+    _flags: MappingFlags,
+    _size: MapSize,
+) -> Result<(), MapError> {
     Err(MapError::Unsupported)
 }
 

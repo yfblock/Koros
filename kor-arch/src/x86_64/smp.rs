@@ -114,9 +114,8 @@ pub fn start_secondaries() -> usize {
             continue;
         }
         // Point the trampoline at this AP's stack.
-        let sp = unsafe {
-            core::ptr::addr_of!(SECONDARY_STACKS[apic]) as usize + SECONDARY_STACK_SIZE
-        };
+        let sp =
+            unsafe { core::ptr::addr_of!(SECONDARY_STACKS[apic]) as usize + SECONDARY_STACK_SIZE };
         // SAFETY: writing the trampoline's stack slot before the SIPI.
         unsafe { (mm::phys_to_virt(SLOT_STACK) as *mut usize).write_volatile(sp) };
 

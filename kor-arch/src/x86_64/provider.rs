@@ -14,8 +14,9 @@ pub struct X86_64Provider;
 pub static PROVIDER: X86_64Provider = X86_64Provider;
 
 // x86_64 callee-saved context (just `rsp` = 1 usize) fits trivially.
-const _: () =
-    assert!(core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>());
+const _: () = assert!(
+    core::mem::size_of::<super::context::TaskContext>() <= core::mem::size_of::<TaskContext>()
+);
 
 impl ArchProvider for X86_64Provider {
     fn kernel_offset(&self) -> usize {

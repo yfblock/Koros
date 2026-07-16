@@ -23,11 +23,7 @@ pub fn register_filesystem(driver: &'static dyn FileSystemDriver) {
 
 /// Look up a registered filesystem driver by its [`FileSystemDriver::name`].
 pub fn find_filesystem(name: &str) -> Option<&'static dyn FileSystemDriver> {
-    FS_DRIVERS
-        .lock()
-        .iter()
-        .find(|d| d.name() == name)
-        .copied()
+    FS_DRIVERS.lock().iter().find(|d| d.name() == name).copied()
 }
 
 /// Convenience: look up `name`, mount an instance on `device`, and mount it at

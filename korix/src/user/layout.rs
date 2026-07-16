@@ -2,6 +2,7 @@
 
 pub const PAGE_SIZE: usize = 4096;
 pub const LOAD_BASE: usize = 0x0001_0000;
+pub const INTERP_BASE: usize = 0x4000_0000;
 pub const STACK_SIZE: usize = 64 * 1024;
 
 #[cfg(target_arch = "riscv64")]

@@ -130,7 +130,8 @@ pub fn parse_block(buf: &[u8]) -> Result<Vec<Attr>, FsError> {
         }
         let index = buf[off + 1];
         let value_offs = u16::from_le_bytes([buf[off + 2], buf[off + 3]]) as usize;
-        let value_block = u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
+        let value_block =
+            u32::from_le_bytes([buf[off + 4], buf[off + 5], buf[off + 6], buf[off + 7]]);
         let value_size =
             u32::from_le_bytes([buf[off + 8], buf[off + 9], buf[off + 10], buf[off + 11]]) as usize;
 

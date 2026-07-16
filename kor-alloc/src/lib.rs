@@ -8,4 +8,4 @@ extern crate alloc;
 
 pub mod slab_heap;
 
-pub use slab_heap::{LockedSlabHeap, SlabHeap, MIN_HEAP_BYTES};
+pub use slab_heap::{LockedSlabHeap, MIN_HEAP_BYTES, SlabHeap};

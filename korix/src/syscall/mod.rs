@@ -79,6 +79,9 @@ mod x86_nr {
     pub const READ: usize = 0;
     pub const WRITE: usize = 1;
     pub const CLOSE: usize = 3;
+    pub const OPEN: usize = 2;
+    pub const STAT: usize = 4;
+    pub const LSTAT: usize = 6;
     pub const FSTAT: usize = 5;
     pub const LSEEK: usize = 8;
     pub const MMAP: usize = 9;
@@ -177,7 +180,9 @@ fn current_user_phys(address: usize, write: bool) -> Option<usize> {
     crate::sched::with_current_process(|process| {
         let process = process.lock();
         let space = process.address_space()?;
-        space.validate_range(address, 1, write).then(|| space.translate(address))?
+        space
+            .validate_range(address, 1, write)
+            .then(|| space.translate(address))?
     })?
 }
 
@@ -775,6 +780,9 @@ pub fn dispatch(num: usize, args: &[usize]) -> isize {
     }
     #[cfg(target_arch = "x86_64")]
     match raw_num {
+        x86_nr::OPEN => return sys_openat(AT_FDCWD as usize, args[0], args[1], args[2]),
+        x86_nr::STAT => return sys_fstatat(AT_FDCWD as usize, args[0], args[1], 0),
+        x86_nr::LSTAT => return sys_fstatat(AT_FDCWD as usize, args[0], args[1], 0x100),
         x86_nr::RENAME => {
             return sys_renameat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1]);
         }
@@ -1031,10 +1039,10 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         145 => 0,               // sched_getscheduler: SCHED_OTHER
         146 => -38,             // sched_getparam requires an output parameter
         178 => current_pid() as isize,
-        3 => -38,   // io_cancel
-        0 => -38,   // io_setup
-        2 => -2,    // legacy open
-        293 => -38, // rseq
+        3 => -38, // io_cancel
+        0 => -38, // io_setup
+        2 => -2,  // legacy open
+        293 => 0, // rseq: single-threaded userspace needs no restartable sequence area
         261 => {
             // prlimit64 → return default limits
             if args[3] != 0 {
@@ -1072,7 +1080,6 @@ fn stdio_target(fd: usize) -> Option<usize> {
     }
     crate::sched::current_process().and_then(|process| process.lock().stdio.get(&fd).copied())
 }
-
 
 fn alloc_fd(inode: Arc<dyn INode>, path: String) -> Option<usize> {
     let process = crate::sched::current_process()?;
@@ -1518,7 +1525,6 @@ fn sys_getrandom(buf: usize, count: usize) -> isize {
     }
 }
 
-
 fn is_at_fdcwd(dirfd: usize) -> bool {
     dirfd as isize == AT_FDCWD || dirfd as u32 == AT_FDCWD as i32 as u32
 }
@@ -1595,8 +1601,7 @@ fn sys_getcwd(buf: usize, size: usize) -> isize {
     if required > size {
         return -34;
     }
-    if copy_to_user(buf, cwd.as_bytes()).is_none()
-        || copy_to_user(buf + cwd.len(), &[0]).is_none()
+    if copy_to_user(buf, cwd.as_bytes()).is_none() || copy_to_user(buf + cwd.len(), &[0]).is_none()
     {
         -14
     } else {
@@ -1613,8 +1618,7 @@ fn sys_chdir(path: usize) -> isize {
         Ok(inode) => inode,
         Err(error) => return fs_errno(error),
     };
-    if inode.getattr().map_err(fs_errno).map(|meta| meta.file_type)
-        != Ok(kor::FileType::Directory)
+    if inode.getattr().map_err(fs_errno).map(|meta| meta.file_type) != Ok(kor::FileType::Directory)
     {
         return -20;
     }
@@ -1989,19 +1993,44 @@ fn linux_stat(meta: kor::Metadata) -> LinuxStat {
     #[cfg(not(target_arch = "x86_64"))]
     {
         LinuxStat {
-            st_dev: 0, st_ino: 0, st_mode: mode, st_nlink: 1, st_uid: 0, st_gid: 0,
-            st_rdev: 0, _pad: 0, st_size: meta.size as i64, st_blksize: 512, _pad2: 0,
-            st_blocks: ((meta.size as u64) + 511) / 512, st_atime: 0, st_mtime: 0, st_ctime: 0,
+            st_dev: 0,
+            st_ino: 0,
+            st_mode: mode,
+            st_nlink: 1,
+            st_uid: 0,
+            st_gid: 0,
+            st_rdev: 0,
+            _pad: 0,
+            st_size: meta.size as i64,
+            st_blksize: 512,
+            _pad2: 0,
+            st_blocks: ((meta.size as u64) + 511) / 512,
+            st_atime: 0,
+            st_mtime: 0,
+            st_ctime: 0,
         }
     }
     #[cfg(target_arch = "x86_64")]
     {
         LinuxStat {
-            st_dev: 0, st_ino: 0, st_nlink: 1, st_mode: mode, st_uid: 0, st_gid: 0,
-            _pad0: 0, st_rdev: 0, st_size: meta.size as i64, st_blksize: 512,
-            st_blocks: ((meta.size as u64) + 511) as i64 / 512, st_atime: 0,
-            st_atime_nsec: 0, st_mtime: 0, st_mtime_nsec: 0, st_ctime: 0,
-            st_ctime_nsec: 0, _unused: [0; 3],
+            st_dev: 0,
+            st_ino: 0,
+            st_nlink: 1,
+            st_mode: mode,
+            st_uid: 0,
+            st_gid: 0,
+            _pad0: 0,
+            st_rdev: 0,
+            st_size: meta.size as i64,
+            st_blksize: 512,
+            st_blocks: ((meta.size as u64) + 511) as i64 / 512,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+            _unused: [0; 3],
         }
     }
 }
@@ -2204,9 +2233,11 @@ fn sys_unlinkat(dirfd: usize, path: usize, flags: usize) -> isize {
             Ok(target) => target,
             Err(error) => return fs_errno(error),
         };
-        let file_type = target.getattr().map_err(fs_errno).map(|meta| meta.file_type);
-        if file_type == Ok(kor::FileType::Symlink)
-        {
+        let file_type = target
+            .getattr()
+            .map_err(fs_errno)
+            .map(|meta| meta.file_type);
+        if file_type == Ok(kor::FileType::Symlink) {
             return parent.unlink(name).map(|()| 0).unwrap_or_else(fs_errno);
         }
     }
@@ -2249,7 +2280,13 @@ fn sys_renameat(old_dirfd: usize, old_path: usize, new_dirfd: usize, new_path: u
         .unwrap_or_else(fs_errno)
 }
 
-fn sys_linkat(old_dirfd: usize, old_path: usize, new_dirfd: usize, new_path: usize, flags: usize) -> isize {
+fn sys_linkat(
+    old_dirfd: usize,
+    old_path: usize,
+    new_dirfd: usize,
+    new_path: usize,
+    flags: usize,
+) -> isize {
     const AT_SYMLINK_FOLLOW: usize = 0x400;
     if flags & !AT_SYMLINK_FOLLOW != 0 {
         return -22;
@@ -2270,7 +2307,10 @@ fn sys_linkat(old_dirfd: usize, old_path: usize, new_dirfd: usize, new_path: usi
         Ok(node) => node,
         Err(error) => return fs_errno(error),
     };
-    parent.link(name, &target).map(|()| 0).unwrap_or_else(fs_errno)
+    parent
+        .link(name, &target)
+        .map(|()| 0)
+        .unwrap_or_else(fs_errno)
 }
 
 fn sys_symlinkat(target: usize, new_dirfd: usize, link_path: usize) -> isize {
@@ -2479,10 +2519,7 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) -> Option<i32>
     let Some(process) = crate::sched::current_process() else {
         return None;
     };
-    if kor_sched::current()
-        .with_user_context(|active| core::ptr::eq(active, frame))
-        != Some(true)
-    {
+    if kor_sched::current().with_user_context(|active| core::ptr::eq(active, frame)) != Some(true) {
         return None;
     }
     loop {
@@ -2785,10 +2822,7 @@ pub unsafe fn user_trap_enter(frame: *mut u8) {
 
 pub unsafe fn user_trap_leave(frame: *mut u8) {
     let task = kor_sched::current();
-    if task
-        .with_user_context(|active| core::ptr::eq(active, frame))
-        == Some(true)
-    {
+    if task.with_user_context(|active| core::ptr::eq(active, frame)) == Some(true) {
         task.clear_user_context();
     }
 }

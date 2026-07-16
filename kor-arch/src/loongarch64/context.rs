@@ -14,7 +14,12 @@ pub struct TaskContext {
 
 impl TaskContext {
     pub const fn zero() -> Self {
-        Self { ra: 0, sp: 0, fp: 0, s: [0; 9] }
+        Self {
+            ra: 0,
+            sp: 0,
+            fp: 0,
+            s: [0; 9],
+        }
     }
 
     /// Prepare a fresh context so the first switch starts at `entry` on
