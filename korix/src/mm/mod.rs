@@ -129,6 +129,20 @@ impl AddressSpace {
         }
     }
 
+    /// Return whether every page in the aligned range is currently unmapped.
+    pub fn range_is_free(&self, start: usize, length: usize) -> bool {
+        if start & (PAGE_SIZE - 1) != 0 || length == 0 || length & (PAGE_SIZE - 1) != 0 {
+            return false;
+        }
+        let Some(end) = start.checked_add(length) else {
+            return false;
+        };
+        end <= USER_ADDRESS_LIMIT
+            && (start..end)
+                .step_by(PAGE_SIZE)
+                .all(|address| !self.pages.contains_key(&address))
+    }
+
     pub fn map_zeroed(&mut self, vaddr: usize, flags: MappingFlags) -> Result<usize, MapError> {
         if vaddr & (PAGE_SIZE - 1) != 0
             || vaddr >= USER_ADDRESS_LIMIT
@@ -315,6 +329,40 @@ impl AddressSpace {
         for (vaddr, page) in pages {
             self.pages.remove(&vaddr);
             kor_frame::free_frames(page.phys, 1);
+        }
+        Ok(())
+    }
+
+    /// Copy bytes into mapped pages while constructing an image or mmap.
+    ///
+    /// Unlike [`AddressSpace::write`], this ignores user-visible write
+    /// permissions; the kernel owns the pages and uses the direct map.
+    pub fn populate(&self, vaddr: usize, bytes: &[u8]) -> Result<(), MapError> {
+        if !self.validate_range(vaddr, bytes.len(), false) {
+            return Err(MapError::BlockedByExistingMapping);
+        }
+        let mut written = 0;
+        while written < bytes.len() {
+            let address = vaddr
+                .checked_add(written)
+                .ok_or(MapError::BlockedByExistingMapping)?;
+            let paddr = self
+                .translate(address)
+                .ok_or(MapError::BlockedByExistingMapping)?;
+            let chunk = core::cmp::min(
+                PAGE_SIZE - (address & (PAGE_SIZE - 1)),
+                bytes.len() - written,
+            );
+            // SAFETY: `validate_range` and `translate` prove that each direct-
+            // map destination is an owned mapped page for this address space.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    bytes.as_ptr().add(written),
+                    kor::arch::current().phys_to_virt(paddr) as *mut u8,
+                    chunk,
+                );
+            }
+            written += chunk;
         }
         Ok(())
     }

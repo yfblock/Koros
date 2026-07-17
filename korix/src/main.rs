@@ -9,6 +9,7 @@ extern crate alloc;
 mod fs;
 mod heap;
 mod mm;
+mod net;
 mod panic;
 mod registries;
 mod sched;
@@ -109,6 +110,7 @@ extern "C" fn kernel_main() -> ! {
             kor_frame::add_region(s, e)
         });
     });
+    HEAP.enable_frame_growth();
     heap::self_test();
     kor::arch::current().page_table_init();
     kor::arch::current().timer_init();

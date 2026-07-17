@@ -82,8 +82,14 @@ ifdef EXT2_IMG
   # 'virt' machines use the virtio-mmio bus.
   ifneq ($(filter $(ARCH),x86_64 loongarch64),)
     QEMU_EXEC += -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-pci,drive=ext2drv
+    ifeq ($(BIN), korix)
+      QEMU_EXEC += -netdev user,id=net0 -device virtio-net-pci,netdev=net0
+    endif
   else
     QEMU_EXEC += -global virtio-mmio.force-legacy=false -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-device,drive=ext2drv
+    ifeq ($(BIN), korix)
+      QEMU_EXEC += -netdev user,id=net0 -device virtio-net-device,netdev=net0
+    endif
   endif
 endif
 

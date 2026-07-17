@@ -58,6 +58,12 @@ def prepare_root(root, arch):
     with open(profile, "a", encoding="ascii") as output:
         output.write("\nexport PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n")
     os.makedirs(os.path.join(root, "etc", "profile.d"), exist_ok=True)
+    with open(os.path.join(root, "etc", "resolv.conf"), "w", encoding="ascii") as output:
+        output.write("nameserver 10.0.2.3\n")
+    repositories = os.path.join(root, "etc", "apk", "repositories")
+    with open(repositories, "w", encoding="ascii") as output:
+        output.write(f"http://dl-cdn.alpinelinux.org/alpine/{BRANCH}/main\n")
+        output.write(f"http://dl-cdn.alpinelinux.org/alpine/{BRANCH}/community\n")
     busybox = os.path.join(root, "bin", "busybox")
     shutil.copy2(BUSYBOXES[arch], busybox)
     os.chmod(busybox, 0o755)

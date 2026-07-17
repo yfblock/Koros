@@ -29,6 +29,9 @@ pub struct ProcessState {
     pub clear_child_tid: usize,
     pub files: BTreeMap<usize, crate::syscall::SharedFile>,
     pub stdio: BTreeMap<usize, usize>,
+    pub sockets: BTreeMap<usize, usize>,
+    /// File descriptors created through AF_INET6; transport remains IPv4-only.
+    pub ipv6_fds: BTreeMap<usize, ()>,
     pub robust_list: usize,
     pub robust_list_len: usize,
     pub name: [u8; 16],
@@ -53,6 +56,8 @@ impl ProcessState {
             clear_child_tid: 0,
             files: BTreeMap::new(),
             stdio: BTreeMap::new(),
+            sockets: BTreeMap::new(),
+            ipv6_fds: BTreeMap::new(),
             robust_list: 0,
             robust_list_len: 0,
             name: [0; 16],
@@ -201,6 +206,7 @@ pub fn exit_current(code: i32) -> ! {
         process.exit_code = code;
         process.state = STATE_ZOMBIE;
         process.files.clear();
+        process.sockets.clear();
         (
             process.pid,
             process.parent,

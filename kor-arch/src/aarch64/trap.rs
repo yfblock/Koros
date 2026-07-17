@@ -26,6 +26,7 @@ const _: () = assert!(core::mem::align_of::<TrapFrame>() == core::mem::align_of:
 const USER_PSTATE_MASK: usize = 0xf000_0000;
 const INSTRUCTION_ALIGN: usize = 4;
 const STACK_ALIGN: usize = 16;
+const USER_SEGFAULT_STATUS: i32 = 128 + 11;
 
 /// Capture the integer user context represented by `frame`.
 ///
@@ -151,6 +152,9 @@ extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
             }
         }
 
+        if source == 2 {
+            kor::trap_callbacks::user_exit(USER_SEGFAULT_STATUS);
+        }
         println!("");
         println!("=== TRAP ===");
         println!(

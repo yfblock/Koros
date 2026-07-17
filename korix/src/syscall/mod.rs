@@ -78,6 +78,26 @@ pub const SYS_GETRANDOM: usize = 278;
 pub const SYS_WRITEV: usize = 66;
 pub const SYS_READV: usize = 65;
 pub const SYS_MPROTECT: usize = 226;
+pub const SYS_SOCKET: usize = 198;
+pub const SYS_CONNECT: usize = 203;
+pub const SYS_SENDTO: usize = 206;
+pub const SYS_RECVFROM: usize = 207;
+pub const SYS_GETSOCKNAME: usize = 204;
+pub const SYS_GETPEERNAME: usize = 205;
+pub const SYS_SETSOCKOPT: usize = 208;
+pub const SYS_GETSOCKOPT: usize = 209;
+pub const SYS_SENDMSG: usize = 211;
+pub const SYS_RECVMSG: usize = 212;
+pub const SYS_SHUTDOWN: usize = 210;
+const SYS_FCHOWNAT: usize = 54;
+const SYS_PSELECT6: usize = 72;
+const SYS_PPOLL: usize = 73;
+const SYS_UTIMENSAT: usize = 88;
+const SYS_CLOCK_GETTIME: usize = 113;
+const SYS_SETSID: usize = 157;
+const SYS_GETTIMEOFDAY: usize = 169;
+const SYS_TIME: usize = 201;
+const SYS_MREMAP: usize = 216;
 
 // x86_64 syscall numbers — a different table from the generic (riscv64/aarch64)
 // one used by dispatch_inner. translate_syscall() maps these to generic numbers.
@@ -101,6 +121,31 @@ mod x86_nr {
     pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
     pub const WRITEV: usize = 20;
+    pub const SOCKET: usize = 41;
+    pub const ACCESS: usize = 21;
+    pub const GETXATTR: usize = 191;
+    pub const STATFS: usize = 137;
+    pub const FSTATFS: usize = 138;
+    pub const GETPRIORITY: usize = 140;
+    pub const BIND: usize = 49;
+    pub const CONNECT: usize = 42;
+    pub const SENDTO: usize = 44;
+    pub const SENDMSG: usize = 46;
+    pub const RECVMSG: usize = 47;
+    pub const RECVFROM: usize = 45;
+    pub const SHUTDOWN: usize = 48;
+    pub const GETSOCKNAME: usize = 51;
+    pub const GETPEERNAME: usize = 52;
+    pub const SETSOCKOPT: usize = 54;
+    pub const GETSOCKOPT: usize = 55;
+    pub const FLOCK: usize = 73;
+    pub const FCHMOD: usize = 91;
+    pub const FCHOWN: usize = 93;
+    pub const FCHMODAT: usize = 268;
+    pub const FCHOWNAT: usize = 260;
+    pub const SELECT: usize = 23;
+    pub const FACCESSAT: usize = 269;
+    pub const UTIMENSAT: usize = 280;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
     pub const NANOSLEEP: usize = 35;
@@ -345,6 +390,12 @@ const SIGINFO_SIZE: usize = 128;
 const EFAULT: isize = -14;
 const EINVAL: isize = -22;
 const ESRCH: isize = -3;
+const SOCK_AF_INET: usize = 2;
+const SOCK_AF_INET6: usize = 10;
+const SOCKADDR_IN_SIZE: usize = 16;
+const SOCKADDR_IN6_SIZE: usize = 28;
+const SOCKET_TYPE_MASK: usize = 0xff;
+const IPV4_MAPPED_PREFIX: [u8; 12] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff];
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -672,34 +723,26 @@ static SESSION_ID: Mutex<usize> = Mutex::new(1);
 
 pub fn dispatch(num: usize, args: &[usize]) -> isize {
     #[cfg(target_arch = "x86_64")]
-    let raw_num = num;
-    #[cfg(target_arch = "x86_64")]
-    if raw_num == 158 {
-        return sys_arch_prctl(args[0], args[1]);
-    }
-    #[cfg(target_arch = "x86_64")]
-    match raw_num {
-        x86_nr::OPEN => return sys_openat(AT_FDCWD as usize, args[0], args[1], args[2]),
-        x86_nr::STAT => return sys_fstatat(AT_FDCWD as usize, args[0], args[1], 0),
-        x86_nr::LSTAT => return sys_fstatat(AT_FDCWD as usize, args[0], args[1], 0x100),
-        x86_nr::RENAME => {
-            return sys_renameat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1]);
+    {
+        if num == 158 {
+            return sys_arch_prctl(args[0], args[1]);
         }
-        x86_nr::MKDIR => return sys_mkdirat(AT_FDCWD as usize, args[0], args[1]),
-        x86_nr::RMDIR => return sys_unlinkat(AT_FDCWD as usize, args[0], 0x200),
-        x86_nr::LINK => {
-            return sys_linkat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1], 0);
-        }
-        x86_nr::UNLINK => return sys_unlinkat(AT_FDCWD as usize, args[0], 0),
-        x86_nr::SYMLINK => return sys_symlinkat(args[0], AT_FDCWD as usize, args[1]),
-        _ => {}
+        return match num {
+            x86_nr::OPEN => sys_openat(AT_FDCWD as usize, args[0], args[1], args[2]),
+            x86_nr::STAT => sys_fstatat(AT_FDCWD as usize, args[0], args[1], 0),
+            x86_nr::LSTAT => sys_fstatat(AT_FDCWD as usize, args[0], args[1], 0x100),
+            x86_nr::RENAME => sys_renameat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1]),
+            x86_nr::MKDIR => sys_mkdirat(AT_FDCWD as usize, args[0], args[1]),
+            x86_nr::RMDIR => sys_unlinkat(AT_FDCWD as usize, args[0], 0x200),
+            x86_nr::LINK => sys_linkat(AT_FDCWD as usize, args[0], AT_FDCWD as usize, args[1], 0),
+            x86_nr::UNLINK => sys_unlinkat(AT_FDCWD as usize, args[0], 0),
+            x86_nr::SYMLINK => sys_symlinkat(args[0], AT_FDCWD as usize, args[1]),
+            _ => dispatch_inner(translate_syscall(num), args),
+        };
     }
-    #[cfg(target_arch = "x86_64")]
-    let num = translate_syscall(num);
+    #[cfg(not(target_arch = "x86_64"))]
     dispatch_inner(num, args)
 }
-
-/// Map an x86_64 syscall number to the generic number used by dispatch_inner.
 /// x86_64 numbers (read=0, write=1, exit=60, ...) do not align with the
 /// generic table; without translation they would hit the wrong handlers or
 /// collide dangerously (e.g. x86_64 uname=63 == generic read=63).
@@ -717,7 +760,26 @@ fn translate_syscall(nr: usize) -> usize {
         MUNMAP => SYS_MUNMAP,
         BRK => SYS_BRK,
         RT_SIGACTION => SYS_RT_SIGACTION,
+        BIND => 200,
+        SOCKET => SYS_SOCKET,
+        CONNECT => SYS_CONNECT,
+        SENDTO => SYS_SENDTO,
+        RECVFROM => SYS_RECVFROM,
+        SHUTDOWN => SYS_SHUTDOWN,
+        SENDMSG => SYS_SENDMSG,
+        RECVMSG => SYS_RECVMSG,
+        GETSOCKNAME => SYS_GETSOCKNAME,
+        GETPEERNAME => SYS_GETPEERNAME,
+        SETSOCKOPT => SYS_SETSOCKOPT,
+        GETSOCKOPT => SYS_GETSOCKOPT,
         RT_SIGPROCMASK => SYS_RT_SIGPROCMASK,
+        FLOCK => 294,
+        FCHMOD | FCHOWN | FCHMODAT | FCHOWNAT | UTIMENSAT => 200,
+        FACCESSAT => 295,
+        ACCESS => 296,
+        GETXATTR => 297,
+        STATFS | FSTATFS => 298,
+        GETPRIORITY => 0,
         RT_SIGSUSPEND => SYS_RT_SIGSUSPEND,
         RT_SIGRETURN => SYS_RT_SIGRETURN,
         IOCTL => SYS_IOCTL,
@@ -726,6 +788,7 @@ fn translate_syscall(nr: usize) -> usize {
         DUP2 => SYS_DUP2,
         NANOSLEEP => SYS_NANOSLEEP,
         POLL => 73, // poll → ppoll handler
+        SELECT => 299,
         GETPID => SYS_GETPID,
         CLONE => SYS_CLONE,
         FORK => SYS_CLONE, // fork → clone handler
@@ -786,7 +849,6 @@ fn translate_syscall(nr: usize) -> usize {
         GETRANDOM => SYS_GETRANDOM,
         RSEQ => 293,
         201 => 201, // time (identity)
-        // Unknown x86_64 syscalls → ENOSYS via dispatch_inner's catch-all.
         _ => 0xFFFF,
     }
 }
@@ -906,7 +968,18 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_SET_TID_ADDRESS => 1,
         SYS_SET_ROBUST_LIST => sys_set_robust_list(args[0], args[1]),
         SYS_FUTEX => sys_futex(args[0], args[1], args[2]),
+        200 => 0,
         SYS_IOCTL => sys_ioctl(args[0], args[1], args[2]),
+        SYS_SOCKET => sys_socket(args[0], args[1], args[2]),
+        SYS_CONNECT => sys_connect(args[0], args[1], args[2]),
+        SYS_SENDTO => sys_sendto(args[0], args[1], args[2], args[4], args[5]),
+        SYS_SENDMSG => sys_sendmsg(args[0], args[1]),
+        SYS_RECVMSG => sys_recvmsg(args[0], args[1]),
+        SYS_RECVFROM => sys_recvfrom(args[0], args[1], args[2], args[4], args[5]),
+        SYS_GETSOCKNAME | SYS_GETPEERNAME => sys_socket_name(args[0], args[1], args[2]),
+        SYS_SETSOCKOPT => 0,
+        SYS_GETSOCKOPT => sys_getsockopt(args[3], args[4]),
+        SYS_SHUTDOWN => 0,
         SYS_FCNTL => sys_fcntl(args[0], args[1], args[2]),
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
@@ -919,16 +992,19 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_CHDIR => sys_chdir(args[0]),
         SYS_READLINKAT => sys_readlinkat(args[0], args[1], args[2], args[3]),
         SYS_MOUNT | SYS_UMOUNT2 => -38,
-        113 => sys_clock_gettime(args[1]),
-        157 => {
+        SYS_MREMAP => sys_mremap(args[0], args[1], args[2], args[3]),
+        SYS_FCHOWNAT | SYS_UTIMENSAT => 0,
+        SYS_CLOCK_GETTIME => sys_clock_gettime(args[1]),
+        SYS_SETSID => {
             let pid = current_pid();
             *SESSION_ID.lock() = pid;
             *PROCESS_GROUP.lock() = pid;
             pid as isize
         }
-        169 => sys_gettimeofday(args[0]),
-        201 => sys_time(args[0]),
-        73 => sys_ppoll(args[0], args[1]), // ppoll
+        SYS_GETTIMEOFDAY => sys_gettimeofday(args[0]),
+        SYS_TIME => sys_time(args[0]),
+        SYS_PPOLL => sys_ppoll(args[0], args[1]),
+        SYS_PSELECT6 => sys_select(args[0], args[1], args[2], args[3]),
 
         167 => sys_prctl(args),
         154 | 149 => -38, // sched_getaffinity
@@ -937,11 +1013,63 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         144 | 143 | 148 => -38, // scheduler mutation is unsupported
         145 => 0,               // sched_getscheduler: SCHED_OTHER
         146 => -38,             // sched_getparam requires an output parameter
+        32 => 0,                // flock: package database access is serialized by this kernel
         178 => current_pid() as isize,
         3 => -38, // io_cancel
         0 => -38, // io_setup
         2 => -2,  // legacy open
         293 => 0, // rseq: single-threaded userspace needs no restartable sequence area
+        294 => 0, // flock: single-kernel package database access is serialized
+        295 => {
+            let path = match user_absolute_path(args[0], args[1]) {
+                Ok(path) => path,
+                Err(error) => return error,
+            };
+            match crate::fs::resolve(&path) {
+                Ok(_) => 0,
+                Err(error) => fs_errno(error),
+            }
+        }
+        296 => {
+            let path = match user_absolute_path(AT_FDCWD as usize, args[0]) {
+                Ok(path) => path,
+                Err(error) => return error,
+            };
+            match crate::fs::resolve(&path) {
+                Ok(_) => 0,
+                Err(error) => fs_errno(error),
+            }
+        }
+        297 => {
+            let path = match user_absolute_path(AT_FDCWD as usize, args[0]) {
+                Ok(path) => path,
+                Err(error) => return error,
+            };
+            let inode = match crate::fs::resolve(&path) {
+                Ok(inode) => inode,
+                Err(error) => return fs_errno(error),
+            };
+            let name = match user_to_str(args[1], 256) {
+                Some(name) => name,
+                None => return -14,
+            };
+            let value = match inode.getxattr(&name) {
+                Ok(value) => value,
+                Err(kor::FsError::NotFound) => return -61,
+                Err(error) => return fs_errno(error),
+            };
+            if args[3] == 0 {
+                value.len() as isize
+            } else if args[3] < value.len() {
+                -34
+            } else if copy_to_user(args[2], &value).is_some() {
+                value.len() as isize
+            } else {
+                -14
+            }
+        }
+        298 => 0,
+        299 => sys_select(args[0], args[1], args[2], args[3]),
         261 => {
             // prlimit64 → return default limits
             if args[3] != 0 {
@@ -956,6 +1084,318 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
     }
 }
 
+fn read_sockaddr(address: usize, length: usize) -> Result<([u8; 4], u16), isize> {
+    const AF_INET: u16 = SOCK_AF_INET as u16;
+    const AF_INET6: u16 = SOCK_AF_INET6 as u16;
+
+    let family = read_user::<u16>(address).ok_or(-14isize)?;
+    let port = u16::from_be_bytes([
+        read_user::<u8>(address + 2).ok_or(-14isize)?,
+        read_user::<u8>(address + 3).ok_or(-14isize)?,
+    ]);
+    match family {
+        AF_INET => {
+            if length < SOCKADDR_IN_SIZE {
+                return Err(-22);
+            }
+            let raw = read_user::<[u8; SOCKADDR_IN_SIZE]>(address).ok_or(-14isize)?;
+            Ok(([raw[4], raw[5], raw[6], raw[7]], port))
+        }
+        AF_INET6 => {
+            if length < SOCKADDR_IN6_SIZE {
+                return Err(-22);
+            }
+            let raw = read_user::<[u8; SOCKADDR_IN6_SIZE]>(address).ok_or(-14isize)?;
+            if raw[8..20] != IPV4_MAPPED_PREFIX {
+                return Err(-101);
+            }
+            Ok(([raw[20], raw[21], raw[22], raw[23]], port))
+        }
+        _ => Err(-97),
+    }
+}
+
+fn write_sockaddr(
+    address: usize,
+    length: usize,
+    ip: [u8; 4],
+    port: u16,
+    ipv6: bool,
+) -> Result<usize, isize> {
+    const AF_INET: u16 = SOCK_AF_INET as u16;
+    const AF_INET6: u16 = SOCK_AF_INET6 as u16;
+
+    if address == 0 || length == 0 {
+        return Ok(0);
+    }
+    if ipv6 {
+        if length < SOCKADDR_IN6_SIZE {
+            return Err(-22);
+        }
+        let mut raw = [0u8; SOCKADDR_IN6_SIZE];
+        raw[..2].copy_from_slice(&AF_INET6.to_ne_bytes());
+        raw[2..4].copy_from_slice(&port.to_be_bytes());
+        raw[8..20].copy_from_slice(&IPV4_MAPPED_PREFIX);
+        raw[20..24].copy_from_slice(&ip);
+        copy_to_user(address, &raw).ok_or(-14isize)?;
+        Ok(SOCKADDR_IN6_SIZE)
+    } else {
+        if length < SOCKADDR_IN_SIZE {
+            return Err(-22);
+        }
+        let mut raw = [0u8; SOCKADDR_IN_SIZE];
+        raw[..2].copy_from_slice(&AF_INET.to_ne_bytes());
+        raw[2..4].copy_from_slice(&port.to_be_bytes());
+        raw[4..8].copy_from_slice(&ip);
+        copy_to_user(address, &raw).ok_or(-14isize)?;
+        Ok(SOCKADDR_IN_SIZE)
+    }
+}
+
+fn sys_socket(domain: usize, socket_type: usize, _protocol: usize) -> isize {
+    if !matches!(domain, SOCK_AF_INET | SOCK_AF_INET6) {
+        return -97;
+    }
+    let socket = match crate::net::socket((socket_type & SOCKET_TYPE_MASK) as i32) {
+        Ok(socket) => socket,
+        Err(error) => return error,
+    };
+    let Some(process) = crate::sched::current_process() else {
+        let _ = crate::net::close(socket);
+        return -24;
+    };
+    let mut process = process.lock();
+    let fd = next_fd(&process);
+    process.sockets.insert(fd, socket);
+    if domain == SOCK_AF_INET6 {
+        process.ipv6_fds.insert(fd, ());
+    }
+    fd as isize
+}
+
+fn socket_id(fd: usize) -> Result<usize, isize> {
+    crate::sched::current_process()
+        .and_then(|process| process.lock().sockets.get(&fd).copied())
+        .ok_or(-9)
+}
+
+fn socket_is_ipv6(fd: usize) -> bool {
+    crate::sched::current_process().is_some_and(|process| process.lock().ipv6_fds.contains_key(&fd))
+}
+
+fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
+    let (ip, port) = match read_sockaddr(address, length) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let socket = match socket_id(fd) {
+        Ok(socket) => socket,
+        Err(error) => return error,
+    };
+    match crate::net::connect(socket, ip, port) {
+        Ok(()) => 0,
+        Err(error) => error,
+    }
+}
+
+fn sys_sendto(
+    fd: usize,
+    buffer: usize,
+    length: usize,
+    address: usize,
+    address_length: usize,
+) -> isize {
+    let socket = match socket_id(fd) {
+        Ok(socket) => socket,
+        Err(error) => return error,
+    };
+    let mut data = alloc::vec![0u8; length];
+    if copy_from_user(buffer, &mut data).is_none() {
+        return -14;
+    }
+    let destination = if address == 0 {
+        None
+    } else {
+        match read_sockaddr(address, address_length) {
+            Ok(value) => Some(value),
+            Err(error) => return error,
+        }
+    };
+    match crate::net::send(socket, &data, destination) {
+        Ok(count) => count as isize,
+        Err(error) => error,
+    }
+}
+
+fn sys_recvfrom(
+    fd: usize,
+    buffer: usize,
+    length: usize,
+    address: usize,
+    address_length: usize,
+) -> isize {
+    let socket = match socket_id(fd) {
+        Ok(socket) => socket,
+        Err(error) => return error,
+    };
+    let mut data = alloc::vec![0u8; length];
+    let (count, ip, port) = match crate::net::recv(socket, &mut data) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    if copy_to_user(buffer, &data[..count]).is_none() {
+        return -14;
+    }
+    let supplied = if address_length == 0 {
+        0
+    } else {
+        read_user::<u32>(address_length).unwrap_or(0) as usize
+    };
+    let address_size = match write_sockaddr(address, supplied, ip, port, socket_is_ipv6(fd)) {
+        Ok(size) => size as u32,
+        Err(_) => return -14,
+    };
+    if address_length != 0 && write_user(address_length, &address_size).is_none() {
+        return -14;
+    }
+    count as isize
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct LinuxMsgHdr {
+    name: usize,
+    name_length: u32,
+    _pad: u32,
+    iov: usize,
+    iov_length: usize,
+    control: usize,
+    control_length: usize,
+    flags: i32,
+    _pad2: u32,
+}
+
+fn sys_sendmsg(fd: usize, message: usize) -> isize {
+    let socket = match socket_id(fd) {
+        Ok(socket) => socket,
+        Err(error) => return error,
+    };
+    let header = match read_user::<LinuxMsgHdr>(message) {
+        Some(header) => header,
+        None => return -14,
+    };
+    let destination = if header.name == 0 {
+        None
+    } else {
+        match read_sockaddr(header.name, header.name_length as usize) {
+            Ok(value) => Some(value),
+            Err(error) => return error,
+        }
+    };
+    let mut data = Vec::new();
+    for index in 0..header.iov_length {
+        let base = match read_user::<usize>(header.iov + index * 16) {
+            Some(value) => value,
+            None => return -14,
+        };
+        let length = match read_user::<usize>(header.iov + index * 16 + 8) {
+            Some(value) => value,
+            None => return -14,
+        };
+        let old = data.len();
+        data.resize(old + length, 0);
+        if copy_from_user(base, &mut data[old..]).is_none() {
+            return -14;
+        }
+    }
+    match crate::net::send(socket, &data, destination) {
+        Ok(count) => count as isize,
+        Err(error) => error,
+    }
+}
+
+fn sys_recvmsg(fd: usize, message: usize) -> isize {
+    let socket = match socket_id(fd) {
+        Ok(socket) => socket,
+        Err(error) => return error,
+    };
+    let mut header = match read_user::<LinuxMsgHdr>(message) {
+        Some(header) => header,
+        None => return -14,
+    };
+    let mut capacity = 0usize;
+    for index in 0..header.iov_length {
+        capacity =
+            capacity.saturating_add(read_user::<usize>(header.iov + index * 16 + 8).unwrap_or(0));
+    }
+    let mut data = alloc::vec![0u8; capacity];
+    let (count, ip, port) = match crate::net::recv(socket, &mut data) {
+        Ok(value) => value,
+        Err(error) => return error,
+    };
+    let mut copied = 0;
+    for index in 0..header.iov_length {
+        let base = match read_user::<usize>(header.iov + index * 16) {
+            Some(value) => value,
+            None => return -14,
+        };
+        let length = read_user::<usize>(header.iov + index * 16 + 8)
+            .unwrap_or(0)
+            .min(count - copied);
+        if copy_to_user(base, &data[copied..copied + length]).is_none() {
+            return -14;
+        }
+        copied += length;
+        if copied == count {
+            break;
+        }
+    }
+    if header.name != 0 {
+        header.name_length = match write_sockaddr(
+            header.name,
+            header.name_length as usize,
+            ip,
+            port,
+            socket_is_ipv6(fd),
+        ) {
+            Ok(size) => size as u32,
+            Err(_) => return -14,
+        };
+    }
+    header.flags = 0;
+    if write_user(message, &header).is_none() {
+        return -14;
+    }
+    count as isize
+}
+fn sys_socket_name(fd: usize, address: usize, address_length: usize) -> isize {
+    if socket_id(fd).is_err() {
+        return -9;
+    }
+    let supplied = if address_length == 0 {
+        0
+    } else {
+        read_user::<u32>(address_length).unwrap_or(0) as usize
+    };
+    let size = match write_sockaddr(address, supplied, [10, 0, 2, 15], 0, socket_is_ipv6(fd)) {
+        Ok(size) => size as u32,
+        Err(_) => return -14,
+    };
+    if address_length != 0 && write_user(address_length, &size).is_none() {
+        return -14;
+    }
+    0
+}
+
+fn sys_getsockopt(value: usize, length: usize) -> isize {
+    if value != 0 && write_user(value, &0i32).is_none() {
+        return -14;
+    }
+    if length != 0 && write_user(length, &4u32).is_none() {
+        return -14;
+    }
+    0
+}
 pub(crate) struct FileEntry {
     inode: Arc<dyn INode>,
     offset: u64,
@@ -963,9 +1403,21 @@ pub(crate) struct FileEntry {
 }
 pub(crate) type SharedFile = Arc<Mutex<FileEntry>>;
 
+fn next_fd(process: &crate::sched::ProcessState) -> usize {
+    let mut fd = 3;
+    while process.files.contains_key(&fd)
+        || process.stdio.contains_key(&fd)
+        || process.sockets.contains_key(&fd)
+    {
+        fd += 1;
+    }
+    fd
+}
+
 fn current_file(fd: usize) -> Option<SharedFile> {
     crate::sched::with_current_process(|process| process.lock().files.get(&fd).cloned())?
 }
+
 fn stdio_target(fd: usize) -> Option<usize> {
     if fd <= 2 {
         return Some(fd);
@@ -976,10 +1428,7 @@ fn stdio_target(fd: usize) -> Option<usize> {
 fn alloc_fd(inode: Arc<dyn INode>, path: String) -> Option<usize> {
     let process = crate::sched::current_process()?;
     let mut process = process.lock();
-    let mut fd = 3;
-    while process.files.contains_key(&fd) {
-        fd += 1;
-    }
+    let fd = next_fd(&process);
     process.files.insert(
         fd,
         Arc::new(Mutex::new(FileEntry {
@@ -1001,6 +1450,12 @@ fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
     let mut data = alloc::vec![0u8; count];
     if copy_from_user(buf, &mut data).is_none() {
         return -14;
+    }
+    if let Ok(socket) = socket_id(fd) {
+        return match crate::net::send(socket, &data, None) {
+            Ok(written) => written as isize,
+            Err(error) => error,
+        };
     }
     let entry = current_file(fd);
     if let Some(entry) = entry {
@@ -1027,6 +1482,18 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
         return -14;
     }
     let mut data = alloc::vec![0u8; count];
+    if let Ok(socket) = socket_id(fd) {
+        return match crate::net::recv(socket, &mut data) {
+            Ok((read, _, _)) => {
+                if copy_to_user(buf, &data[..read]).is_some() {
+                    read as isize
+                } else {
+                    -14
+                }
+            }
+            Err(error) => error,
+        };
+    }
     let read = if stdio_target(fd) == Some(0) {
         let mut read = 0;
         while read == 0 {
@@ -1108,9 +1575,6 @@ fn sys_prctl(args: &[usize]) -> isize {
 }
 
 fn sys_writev(fd: usize, iov: usize, iovcnt: usize) -> isize {
-    if fd != 1 && fd != 2 {
-        return -9;
-    }
     if iovcnt > 1024 {
         return -22;
     }
@@ -1122,17 +1586,14 @@ fn sys_writev(fd: usize, iov: usize, iovcnt: usize) -> isize {
         let Some(length) = read_user::<usize>(iov + index * 16 + 8) else {
             return -14;
         };
-        let mut data = alloc::vec![0u8; length];
-        if copy_from_user(base, &mut data).is_none() {
-            return -14;
+        let result = sys_write(fd, base, length);
+        if result < 0 {
+            return if total == 0 { result } else { total as isize };
         }
-        for byte in data {
-            kor::console::putc(byte);
-        }
-        let Some(next) = total.checked_add(length) else {
-            return -22;
+        total = match total.checked_add(result as usize) {
+            Some(value) => value,
+            None => return -22,
         };
-        total = next;
     }
     total as isize
 }
@@ -1154,6 +1615,8 @@ fn sys_clone(args: &[usize]) -> isize {
         child_cwd,
         child_files,
         child_stdio,
+        child_sockets,
+        child_ipv6_fds,
     ) = {
         let parent = parent.lock();
         (
@@ -1165,6 +1628,8 @@ fn sys_clone(args: &[usize]) -> isize {
             parent.cwd.clone(),
             parent.files.clone(),
             parent.stdio.clone(),
+            parent.sockets.clone(),
+            parent.ipv6_fds.clone(),
         )
     };
     let child_space = match parent
@@ -1209,6 +1674,8 @@ fn sys_clone(args: &[usize]) -> isize {
         child.mmap_next = child_mmap_next;
         child.files = child_files;
         child.stdio = child_stdio;
+        child.sockets = child_sockets;
+        child.ipv6_fds = child_ipv6_fds;
         child.set_fork_context(context);
     }
     let pid = child.lock().pid;
@@ -1245,6 +1712,8 @@ fn fork_child_entry() {
             .take_fork_context()
             .expect("fork child has no user context")
     };
+    // The architecture trampoline masks IRQs immediately before restoring the
+    // detached user register set, closing the kernel-to-user transition window.
     unsafe { kor_arch::resume_user_context(&context) }
 }
 
@@ -1288,11 +1757,27 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
         Ok(image) => image,
         Err(error) => return fs_errno(error),
     };
+    let interpreter_path = match crate::user::elf::interpreter_path(&image) {
+        Ok(path) => path,
+        Err(_) => return -8,
+    };
+    let interpreter = match interpreter_path.as_deref() {
+        Some(path) => match crate::fs::read_file(path) {
+            Ok(image) => Some(image),
+            Err(error) => return fs_errno(error),
+        },
+        None => None,
+    };
     let mut replacement = match crate::mm::AddressSpace::empty() {
         Ok(address_space) => address_space,
         Err(_) => return -12,
     };
-    let program = match crate::user::elf::load_elf(&mut replacement, &image, &args) {
+    let program = match crate::user::elf::load_program(
+        &mut replacement,
+        &image,
+        interpreter.as_deref(),
+        &args,
+    ) {
         Ok(program) => program,
         Err(_) => return -8,
     };
@@ -1597,10 +2082,20 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
     const O_EXCL: usize = 0o200;
     const O_TRUNC: usize = 0o1000;
     const O_DIRECTORY: usize = 0o200000;
-    let path_str = match user_absolute_path(dirfd, path) {
+    const O_TMPFILE: usize = 0o20000000;
+    let temporary = flags & O_TMPFILE != 0;
+    let flags = flags & !O_TMPFILE;
+    let mut path_str = match user_absolute_path(dirfd, path) {
         Ok(path) => path,
         Err(error) => return error,
     };
+    if temporary {
+        const TEMPORARY_NAME: &str = ".korix-tmp";
+        if path_str != "/" {
+            path_str.push('/');
+        }
+        path_str.push_str(TEMPORARY_NAME);
+    }
     if path_str == "/dev/null" {
         return 3;
     }
@@ -1614,24 +2109,48 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
             return 3;
         }
     }
-    let inode = match crate::fs::resolve(&path_str) {
-        Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -17,
-        Ok(inode) => inode,
-        Err(kor::FsError::NotFound) if flags & O_CREAT != 0 => {
-            let (parent_path, name) = match split_absolute_parent(&path_str) {
-                Ok(parts) => parts,
-                Err(error) => return error,
-            };
-            let parent = match crate::fs::resolve(parent_path) {
-                Ok(node) => node,
+    let inode = if temporary {
+        let (parent_path, name) = match split_absolute_parent(&path_str) {
+            Ok(parts) => parts,
+            Err(error) => return error,
+        };
+        let parent = match crate::fs::resolve(parent_path) {
+            Ok(node) => node,
+            Err(error) => return fs_errno(error),
+        };
+        match parent.create(name, kor::FileType::Regular, (mode as u32) & 0o777) {
+            Ok(node) => node,
+            Err(kor::FsError::AlreadyExists) => match parent.lookup(name) {
+                Ok(node) => {
+                    if let Err(error) = node.truncate(0) {
+                        return fs_errno(error);
+                    }
+                    node
+                }
                 Err(error) => return fs_errno(error),
-            };
-            match parent.create(name, kor::FileType::Regular, (mode as u32) & 0o777) {
-                Ok(node) => node,
-                Err(error) => return fs_errno(error),
-            }
+            },
+            Err(error) => return fs_errno(error),
         }
-        Err(error) => return fs_errno(error),
+    } else {
+        match crate::fs::resolve(&path_str) {
+            Ok(_) if flags & O_CREAT != 0 && flags & O_EXCL != 0 => return -17,
+            Ok(inode) => inode,
+            Err(kor::FsError::NotFound) if flags & O_CREAT != 0 => {
+                let (parent_path, name) = match split_absolute_parent(&path_str) {
+                    Ok(parts) => parts,
+                    Err(error) => return error,
+                };
+                let parent = match crate::fs::resolve(parent_path) {
+                    Ok(node) => node,
+                    Err(error) => return fs_errno(error),
+                };
+                match parent.create(name, kor::FileType::Regular, (mode as u32) & 0o777) {
+                    Ok(node) => node,
+                    Err(error) => return fs_errno(error),
+                }
+            }
+            Err(error) => return fs_errno(error),
+        }
     };
     let metadata = match inode.getattr() {
         Ok(metadata) => metadata,
@@ -1658,6 +2177,10 @@ fn sys_close(fd: usize) -> isize {
         return -9;
     };
     let mut process = process.lock();
+    process.ipv6_fds.remove(&fd);
+    if let Some(socket) = process.sockets.remove(&fd) {
+        return if crate::net::close(socket) { 0 } else { -9 };
+    }
     if process.files.remove(&fd).is_some() || process.stdio.remove(&fd).is_some() {
         0
     } else {
@@ -1676,17 +2199,20 @@ fn sys_dup(fd: usize) -> isize {
     } else {
         process.stdio.get(&fd).copied()
     };
-    if file.is_none() && stdio.is_none() {
+    let socket = process.sockets.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() {
         return -9;
     }
-    let mut newfd = 3;
-    while process.files.contains_key(&newfd) || process.stdio.contains_key(&newfd) {
-        newfd += 1;
-    }
+    let newfd = next_fd(&process);
     if let Some(entry) = file {
         process.files.insert(newfd, entry);
     } else if let Some(target) = stdio {
         process.stdio.insert(newfd, target);
+    } else if let Some(socket) = socket {
+        process.sockets.insert(newfd, socket);
+        if process.ipv6_fds.contains_key(&fd) {
+            process.ipv6_fds.insert(newfd, ());
+        }
     }
     newfd as isize
 }
@@ -1702,7 +2228,8 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     } else {
         process.stdio.get(&fd).copied()
     };
-    if file.is_none() && stdio.is_none() {
+    let socket = process.sockets.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() {
         return -9;
     }
     if fd == newfd {
@@ -1710,10 +2237,17 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     }
     process.files.remove(&newfd);
     process.stdio.remove(&newfd);
+    process.sockets.remove(&newfd);
+    process.ipv6_fds.remove(&newfd);
     if let Some(entry) = file {
         process.files.insert(newfd, entry);
     } else if let Some(target) = stdio {
         process.stdio.insert(newfd, target);
+    } else if let Some(socket) = socket {
+        process.sockets.insert(newfd, socket);
+        if process.ipv6_fds.contains_key(&fd) {
+            process.ipv6_fds.insert(newfd, ());
+        }
     }
     newfd as isize
 }
@@ -1735,13 +2269,17 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
     } else {
         process.stdio.get(&fd).copied()
     };
-    if file.is_none() && stdio.is_none() {
+    let socket = process.sockets.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() {
         return -9;
     }
     match command {
         F_DUPFD | F_DUPFD_CLOEXEC => {
             let mut newfd = argument.max(3);
-            while process.files.contains_key(&newfd) || process.stdio.contains_key(&newfd) {
+            while process.files.contains_key(&newfd)
+                || process.stdio.contains_key(&newfd)
+                || process.sockets.contains_key(&newfd)
+            {
                 newfd = match newfd.checked_add(1) {
                     Some(value) => value,
                     None => return -24,
@@ -1751,6 +2289,11 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
                 process.files.insert(newfd, entry);
             } else if let Some(target) = stdio {
                 process.stdio.insert(newfd, target);
+            } else if let Some(socket) = socket {
+                process.sockets.insert(newfd, socket);
+                if process.ipv6_fds.contains_key(&fd) {
+                    process.ipv6_fds.insert(newfd, ());
+                }
             }
             newfd as isize
         }
@@ -1875,7 +2418,7 @@ struct LinuxStat {
     _unused: [i64; 3],
 }
 
-fn linux_stat(meta: kor::Metadata) -> LinuxStat {
+fn linux_stat(meta: kor::Metadata, inode: u64) -> LinuxStat {
     let mode = match meta.file_type {
         kor::FileType::Regular => 0o100664,
         kor::FileType::Directory => 0o040755,
@@ -1886,7 +2429,7 @@ fn linux_stat(meta: kor::Metadata) -> LinuxStat {
     {
         LinuxStat {
             st_dev: 0,
-            st_ino: 0,
+            st_ino: inode,
             st_mode: mode,
             st_nlink: 1,
             st_uid: 0,
@@ -1905,8 +2448,8 @@ fn linux_stat(meta: kor::Metadata) -> LinuxStat {
     #[cfg(target_arch = "x86_64")]
     {
         LinuxStat {
-            st_dev: 0,
-            st_ino: 0,
+            st_dev: 1,
+            st_ino: inode,
             st_nlink: 1,
             st_mode: mode,
             st_uid: 0,
@@ -1933,7 +2476,8 @@ fn sys_fstat(fd: usize, stat: usize) -> isize {
         None => return -9,
     };
     let entry = entry.lock();
-    let st = linux_stat(entry.inode.getattr().unwrap());
+    let inode = entry.inode.ino() as u64;
+    let st = linux_stat(entry.inode.getattr().unwrap(), inode);
     if write_user(stat, &st).is_none() {
         -14
     } else {
@@ -1958,14 +2502,69 @@ fn sys_lseek(fd: usize, offset: i64, whence: usize) -> isize {
     entry.offset = new as u64;
     new as isize
 }
+fn sys_mremap(old_address: usize, old_size: usize, new_size: usize, flags: usize) -> isize {
+    const PAGE_SIZE: usize = 4096;
+    const MREMAP_MAYMOVE: usize = 1;
+    if old_address & (PAGE_SIZE - 1) != 0
+        || old_size == 0
+        || new_size == 0
+        || flags & !MREMAP_MAYMOVE != 0
+    {
+        return -22;
+    }
+    let Some(old_rounded) = old_size
+        .checked_add(PAGE_SIZE - 1)
+        .map(|value| value & !(PAGE_SIZE - 1))
+    else {
+        return -22;
+    };
+    let Some(new_rounded) = new_size
+        .checked_add(PAGE_SIZE - 1)
+        .map(|value| value & !(PAGE_SIZE - 1))
+    else {
+        return -22;
+    };
+    if new_rounded <= old_rounded {
+        return old_address as isize;
+    }
+    let Some(process) = crate::sched::current_process() else {
+        return -12;
+    };
+    let mut process = process.lock();
+    let Some(address_space) = process.address_space_mut() else {
+        return -12;
+    };
+    let growth_start = match old_address.checked_add(old_rounded) {
+        Some(address) => address,
+        None => return -22,
+    };
+    let growth = new_rounded - old_rounded;
+    if !address_space.range_is_free(growth_start, growth) {
+        return -12;
+    }
+    let mapping_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
+    let mut mapped = 0;
+    while mapped < growth {
+        if let Err(error) = address_space.map_zeroed(growth_start + mapped, mapping_flags) {
+            let _ = address_space.unmap_range(growth_start, mapped);
+            return if error == kor::MapError::OutOfMemory {
+                -12
+            } else {
+                -22
+            };
+        }
+        mapped += PAGE_SIZE;
+    }
+    old_address as isize
+}
 
 fn sys_mmap(
     address: usize,
     mut length: usize,
     prot: usize,
     flags: usize,
-    _fd: usize,
-    _offset: i64,
+    fd: usize,
+    offset: i64,
 ) -> isize {
     if length == 0 {
         length = 4096;
@@ -1981,8 +2580,20 @@ fn sys_mmap(
             return -12;
         };
         let mut process = process.lock();
-        let start = process.mmap_next;
-        let Some(next) = start.checked_add((length + 4095) & !4095) else {
+        let Some(rounded) = length.checked_add(4095).map(|value| value & !4095) else {
+            return -12;
+        };
+        let Some(space) = process.address_space() else {
+            return -12;
+        };
+        let mut start = process.mmap_next;
+        while !space.range_is_free(start, rounded) {
+            let Some(next) = start.checked_add(4096) else {
+                return -12;
+            };
+            start = next;
+        }
+        let Some(next) = start.checked_add(rounded) else {
             return -12;
         };
         process.mmap_next = next;
@@ -2007,6 +2618,11 @@ fn sys_mmap(
         return -12;
     };
     let mut process = process.lock();
+    let backing_file = if flags & 0x20 == 0 {
+        process.files.get(&fd).cloned()
+    } else {
+        None
+    };
     let Some(address_space) = process.address_space_mut() else {
         return -12;
     };
@@ -2027,6 +2643,28 @@ fn sys_mmap(
         }
         Ok(())
     };
+    if result.is_ok() && flags & 0x20 == 0 {
+        if offset < 0 {
+            let _ = address_space.unmap_range(page_start, rounded);
+            return -22;
+        }
+        let Some(file) = backing_file else {
+            let _ = address_space.unmap_range(page_start, rounded);
+            return -9;
+        };
+        let mut data = alloc::vec![0u8; length];
+        let read = match file.lock().inode.read_at(offset as usize, &mut data) {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = address_space.unmap_range(page_start, rounded);
+                return fs_errno(error);
+            }
+        };
+        if address_space.populate(page_start, &data[..read]).is_err() {
+            let _ = address_space.unmap_range(page_start, rounded);
+            return -14;
+        }
+    }
     match result {
         Ok(()) => page_start as isize,
         Err(kor::MapError::OutOfMemory) => -12,
@@ -2648,7 +3286,7 @@ fn sys_nanosleep(request: usize) -> isize {
     0
 }
 
-/// ppoll — block until stdin has data, then return POLLIN.
+/// ppoll — block until stdin or a socket has data, then return POLLIN.
 /// struct pollfd { int fd; short events; short revents; } = 8 bytes
 fn sys_ppoll(fds: usize, nfds: usize) -> isize {
     if nfds == 0 {
@@ -2663,8 +3301,8 @@ fn sys_ppoll(fds: usize, nfds: usize) -> isize {
     const POLLIN: u16 = 0x001;
     loop {
         let mut ready = 0;
-        for i in 0..nfds {
-            let Some(pfd) = fds.checked_add(i * 8) else {
+        for index in 0..nfds {
+            let Some(pfd) = fds.checked_add(index * 8) else {
                 return -14;
             };
             let Some(fd) = read_user::<i32>(pfd) else {
@@ -2674,9 +3312,14 @@ fn sys_ppoll(fds: usize, nfds: usize) -> isize {
                 return -14;
             };
             let mut revents = 0u16;
-            if fd == 0 && events & POLLIN != 0 && rx_has_data() {
-                revents = POLLIN;
-
+            if events & POLLIN != 0 {
+                let readable = (fd == 0 && rx_has_data())
+                    || (fd >= 0 && socket_id(fd as usize).is_ok_and(crate::net::has_data));
+                if readable {
+                    revents = POLLIN;
+                }
+            }
+            if revents != 0 {
                 ready += 1;
             }
             if write_user(pfd + 6, &revents).is_none() {
@@ -2686,11 +3329,74 @@ fn sys_ppoll(fds: usize, nfds: usize) -> isize {
         if ready != 0 {
             return ready;
         }
-        if kor_sched::is_ready() {
-            kor_sched::sleep_ms(10);
+        crate::net::wait();
+    }
+}
+
+fn sys_select(nfds: usize, readfds: usize, writefds: usize, exceptfds: usize) -> isize {
+    const BITS_PER_WORD: usize = usize::BITS as usize;
+    let word_count = nfds.div_ceil(BITS_PER_WORD);
+    let mut requested_read = Vec::with_capacity(word_count);
+    let mut requested_write = Vec::with_capacity(word_count);
+    let mut requested_except = Vec::with_capacity(word_count);
+    for word in 0..word_count {
+        let offset = word * core::mem::size_of::<usize>();
+        requested_read.push(if readfds == 0 {
+            0
         } else {
-            core::hint::spin_loop();
+            read_user::<usize>(readfds + offset).unwrap_or(0)
+        });
+        requested_write.push(if writefds == 0 {
+            0
+        } else {
+            read_user::<usize>(writefds + offset).unwrap_or(0)
+        });
+        requested_except.push(if exceptfds == 0 {
+            0
+        } else {
+            read_user::<usize>(exceptfds + offset).unwrap_or(0)
+        });
+    }
+    loop {
+        let mut ready = 0;
+        let mut ready_read = alloc::vec![0usize; word_count];
+        let mut ready_write = alloc::vec![0usize; word_count];
+        for fd in 0..nfds {
+            let word = fd / BITS_PER_WORD;
+            let bit = 1usize << (fd % BITS_PER_WORD);
+            if requested_read[word] & bit != 0 {
+                let readable =
+                    (fd == 0 && rx_has_data()) || socket_id(fd).is_ok_and(crate::net::has_data);
+                if readable {
+                    ready_read[word] |= bit;
+                    ready += 1;
+                }
+            }
+            if requested_write[word] & bit != 0
+                && (socket_id(fd).is_ok()
+                    || current_file(fd).is_some()
+                    || matches!(stdio_target(fd), Some(1 | 2)))
+            {
+                ready_write[word] |= bit;
+                ready += 1;
+            }
         }
+        if ready != 0 {
+            for word in 0..word_count {
+                let offset = word * core::mem::size_of::<usize>();
+                if readfds != 0 && write_user(readfds + offset, &ready_read[word]).is_none() {
+                    return -14;
+                }
+                if writefds != 0 && write_user(writefds + offset, &ready_write[word]).is_none() {
+                    return -14;
+                }
+                if exceptfds != 0 && write_user(exceptfds + offset, &0usize).is_none() {
+                    return -14;
+                }
+            }
+            return ready;
+        }
+        crate::net::wait();
     }
 }
 #[unsafe(no_mangle)]
@@ -2766,7 +3472,7 @@ fn sys_fstatat(dirfd: usize, path: usize, stat: usize, flags: usize) -> isize {
         Ok(metadata) => metadata,
         Err(error) => return fs_errno(error),
     };
-    let st = linux_stat(metadata);
+    let st = linux_stat(metadata, inode.ino() as u64);
     if write_user(stat, &st).is_none() {
         -14
     } else {

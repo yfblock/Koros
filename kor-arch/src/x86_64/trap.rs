@@ -634,6 +634,7 @@ pub fn prepare_user_entry() {
 pub unsafe fn resume_user_context(context: &crate::UserTrapContext) -> ! {
     // Set FS base for TLS before loading GPRs.
     write_fs_base(context.tls as u64);
+    prepare_user_entry();
 
     let ctx_ptr = context as *const _ as usize;
     unsafe {

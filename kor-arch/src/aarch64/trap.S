@@ -161,6 +161,7 @@ aarch64_resume_user:
     msr     sp_el0, x9
     ldr     x9, [x30, #(35 * 8)]
     msr     tpidr_el0, x9
+    msr     daifset, #2
     ldp     x0,  x1,  [x30, #(0 * 8)]
     ldp     x2,  x3,  [x30, #(2 * 8)]
     ldp     x4,  x5,  [x30, #(4 * 8)]

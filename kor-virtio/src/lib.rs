@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use kor::{BlockDevice, BlockError};
 use spin::Mutex;
 use virtio_drivers::device::blk::{BlkReq, BlkResp, SECTOR_SIZE, VirtIOBlk};
+use virtio_drivers::device::net::VirtIONet;
 use virtio_drivers::transport::Transport;
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
@@ -207,6 +208,53 @@ impl<T: Transport> VirtioBlock<T> {
     }
 }
 
+/// Polling packet interface backed by a VirtIO network device.
+pub trait NetworkDevice: Send + Sync {
+    /// Device MAC address.
+    fn mac_address(&self) -> [u8; 6];
+    /// Send one complete Ethernet frame.
+    fn send(&self, frame: &[u8]) -> Result<(), ()>;
+    /// Receive one complete Ethernet frame, or `None` when no frame is ready.
+    fn receive(&self, frame: &mut [u8]) -> Option<usize>;
+}
+
+const NET_QUEUE_SIZE: usize = 64;
+const NET_BUFFER_SIZE: usize = 2048;
+
+struct VirtioNetwork<T: Transport> {
+    inner: Mutex<VirtIONet<KorHal, T, NET_QUEUE_SIZE>>,
+}
+
+// SAFETY: all transport access is serialized by `inner`.
+unsafe impl<T: Transport> Send for VirtioNetwork<T> {}
+// SAFETY: all transport access is serialized by `inner`.
+unsafe impl<T: Transport> Sync for VirtioNetwork<T> {}
+
+impl<T: Transport> NetworkDevice for VirtioNetwork<T> {
+    fn mac_address(&self) -> [u8; 6] {
+        self.inner.lock().mac_address()
+    }
+
+    fn send(&self, frame: &[u8]) -> Result<(), ()> {
+        let mut network = self.inner.lock();
+        let mut buffer = network.new_tx_buffer(frame.len());
+        buffer.packet_mut().copy_from_slice(frame);
+        network.send(buffer).map_err(|_| ())
+    }
+
+    fn receive(&self, frame: &mut [u8]) -> Option<usize> {
+        let mut network = self.inner.lock();
+        if !network.can_recv() {
+            return None;
+        }
+        let buffer = network.receive().ok()?;
+        let length = buffer.packet().len().min(frame.len());
+        frame[..length].copy_from_slice(&buffer.packet()[..length]);
+        network.recycle_rx_buffer(buffer).ok()?;
+        Some(length)
+    }
+}
+
 /// Interrupt controls exposed to a composition-owned IRQ registry.
 pub trait InterruptBlockDevice: BlockDevice {
     /// Acknowledge a device interrupt and wake a pending request.
@@ -229,18 +277,36 @@ impl<T: Transport + 'static> InterruptBlockDevice for VirtioBlock<T> {
     }
 }
 
-/// Callback used by MMIO probing to hand a discovered device to a composition root.
+/// Callback used by MMIO probing to hand a discovered block device to a composition root.
 pub type MmioBlockFound = fn(&kor::driver::DtDevice, Arc<dyn InterruptBlockDevice>);
 
-/// Device-tree driver for VirtIO MMIO block devices.
+/// Callback used by MMIO probing to hand a discovered network device to a composition root.
+pub type MmioNetworkFound = fn(&kor::driver::DtDevice, Arc<dyn NetworkDevice>);
+
+/// Device-tree driver for VirtIO MMIO block and network devices.
 pub struct VirtioMmioDriver {
     block_found: MmioBlockFound,
+    network_found: Option<MmioNetworkFound>,
 }
 
 impl VirtioMmioDriver {
-    /// Construct a driver that reports each block device through `block_found`.
+    /// Construct a block-only driver that reports devices through `block_found`.
     pub const fn new(block_found: MmioBlockFound) -> Self {
-        Self { block_found }
+        Self {
+            block_found,
+            network_found: None,
+        }
+    }
+
+    /// Construct a driver that reports block and network devices.
+    pub const fn with_network(
+        block_found: MmioBlockFound,
+        network_found: MmioNetworkFound,
+    ) -> Self {
+        Self {
+            block_found,
+            network_found: Some(network_found),
+        }
     }
 }
 
@@ -261,18 +327,39 @@ impl kor::driver::DeviceDriver for VirtioMmioDriver {
             Ok(transport) => transport,
             Err(_) => return Ok(()),
         };
-        if transport.device_type() != DeviceType::Block {
-            return Ok(());
+        match transport.device_type() {
+            DeviceType::Block => {
+                let block = VirtIOBlk::<KorHal, _>::new(transport)
+                    .map_err(|_| kor::driver::DriverError::Probe)?;
+                kor::println!(
+                    "virtio-blk (mmio) at {:#x}: {} sectors",
+                    device.reg_base,
+                    block.capacity()
+                );
+                (self.block_found)(device, Arc::new(VirtioBlock::new(block)));
+            }
+            DeviceType::Network => {
+                let Some(network_found) = self.network_found else {
+                    return Ok(());
+                };
+                let mut network =
+                    VirtIONet::<KorHal, _, NET_QUEUE_SIZE>::new(transport, NET_BUFFER_SIZE)
+                        .map_err(|_| kor::driver::DriverError::Probe)?;
+                network.enable_interrupts();
+                kor::println!(
+                    "virtio-net (mmio) at {:#x} mac={:02x?}",
+                    device.reg_base,
+                    network.mac_address()
+                );
+                network_found(
+                    device,
+                    Arc::new(VirtioNetwork {
+                        inner: Mutex::new(network),
+                    }),
+                );
+            }
+            _ => {}
         }
-
-        let block =
-            VirtIOBlk::<KorHal, _>::new(transport).map_err(|_| kor::driver::DriverError::Probe)?;
-        kor::println!(
-            "virtio-blk (mmio) at {:#x}: {} sectors",
-            device.reg_base,
-            block.capacity()
-        );
-        (self.block_found)(device, Arc::new(VirtioBlock::new(block)));
         Ok(())
     }
 }
@@ -480,4 +567,40 @@ pub fn discover_pci_blk() -> Option<Arc<dyn BlockDevice>> {
             None
         }
     }
+}
+
+/// Probe x86 PCI configuration mechanism 1 for the first VirtIO network device.
+#[cfg(target_arch = "x86_64")]
+pub fn discover_pci_net() -> Option<Arc<dyn NetworkDevice>> {
+    use virtio_drivers::transport::DeviceType;
+    use virtio_drivers::transport::pci::bus::{Command, DeviceFunction, PciRoot};
+    use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
+
+    const ROOT_BUS: u8 = 0;
+    let mut root = PciRoot::new(PortCam);
+    let mut target: Option<DeviceFunction> = None;
+    for (device_function, info) in root.enumerate_bus(ROOT_BUS) {
+        if matches!(virtio_device_type(&info), Some(DeviceType::Network)) {
+            target = Some(device_function);
+            break;
+        }
+    }
+    let device_function = target?;
+    let (_status, command) = root.get_status_command(device_function);
+    root.set_command(
+        device_function,
+        command | Command::MEMORY_SPACE | Command::BUS_MASTER,
+    );
+    let transport = PciTransport::new::<KorHal, _>(&mut root, device_function).ok()?;
+    let mut network =
+        VirtIONet::<KorHal, _, NET_QUEUE_SIZE>::new(transport, NET_BUFFER_SIZE).ok()?;
+    network.enable_interrupts();
+    kor::println!(
+        "virtio-drivers: found virtio-net (pci) {:?} mac={:02x?}",
+        device_function,
+        network.mac_address()
+    );
+    Some(Arc::new(VirtioNetwork {
+        inner: Mutex::new(network),
+    }))
 }

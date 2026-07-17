@@ -36,5 +36,9 @@ pub fn self_test() {
     let large: Vec<u8> = alloc::vec![0xAB; 5000];
     assert_eq!(large.len(), 5000);
 
-    kor::println!("mm: slab heap OK (frame-backed)");
+    const LARGE_ALLOCATION_BYTES: usize = 128 * 1024;
+    let dynamic: Vec<u8> = alloc::vec![0xCD; LARGE_ALLOCATION_BYTES];
+    assert_eq!(dynamic.len(), LARGE_ALLOCATION_BYTES);
+    assert!(dynamic.iter().all(|&byte| byte == 0xCD));
+    kor::println!("mm: slab heap OK (dynamic frame growth)");
 }

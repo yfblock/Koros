@@ -18,6 +18,9 @@ pub const MIN_HEAP_BYTES: usize = NUM_SLABS * MIN_SLAB_BYTES;
 
 /// Pages added to one size class when it runs dry.
 const GROW_PAGES: usize = 8;
+/// Whether frame-backed allocation is available after physical-memory discovery.
+static FRAME_GROWTH_ENABLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlabClass {
@@ -213,6 +216,9 @@ impl SlabHeap {
     }
 
     fn alloc_large(layout: Layout) -> Option<NonNull<u8>> {
+        if !FRAME_GROWTH_ENABLED.load(core::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
         let frames = large_extent_frames(layout)?;
         let phys = kor_frame::alloc_frames(frames)?;
         let va = kor::arch::phys_to_virt(phys);
@@ -264,7 +270,16 @@ impl LockedSlabHeap {
         *self.0.lock() = Some(unsafe { SlabHeap::new(start, size) });
     }
 
+    /// Allow slab exhaustion and large allocations to draw pages from the
+    /// physical-frame allocator. Call once after all RAM regions are registered.
+    pub fn enable_frame_growth(&self) {
+        FRAME_GROWTH_ENABLED.store(true, core::sync::atomic::Ordering::Release);
+    }
+
     fn grow_from_frames(&self, class: SlabClass) -> bool {
+        if !FRAME_GROWTH_ENABLED.load(core::sync::atomic::Ordering::Acquire) {
+            return false;
+        }
         if class == SlabClass::Large {
             return false;
         }
@@ -289,10 +304,13 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let class = SlabHeap::class_for(&layout);
 
-        // Large or over-aligned allocations go directly to the allocation-free
-        // frame allocator, bypassing the slab mutex. The frame allocator
-        // rounds the requested extent to a power of two and aligns it to the
-        // same boundary, satisfying every power-of-two Rust Layout alignment.
+        // Once frame growth is enabled, large or over-aligned allocations draw
+        // a right-sized contiguous extent directly from physical memory.
+        if class == SlabClass::Large
+            && !FRAME_GROWTH_ENABLED.load(core::sync::atomic::Ordering::Acquire)
+        {
+            return core::ptr::null_mut();
+        }
         if class == SlabClass::Large {
             if let Some(frames) = large_extent_frames(layout)
                 && let Some(phys) = kor_frame::alloc_frames(frames)

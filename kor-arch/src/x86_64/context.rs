@@ -2,17 +2,17 @@
 
 use core::arch::naked_asm;
 
-/// The whole saved state is the stack pointer; callee-saved registers and the
-/// return address live on that task's stack.
+/// Saved stack pointer and user FS base for one schedulable task.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct TaskContext {
     rsp: usize,
+    fs_base: usize,
 }
 
 impl TaskContext {
     pub const fn zero() -> Self {
-        Self { rsp: 0 }
+        Self { rsp: 0, fs_base: 0 }
     }
 
     /// Build an initial stack frame matching what [`context_switch`] restores:
@@ -37,8 +37,17 @@ impl TaskContext {
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn context_switch(prev: *mut TaskContext, next: *const TaskContext) {
-    // rdi = prev, rsi = next (Rust inline asm uses Intel syntax by default)
+    // rdi = prev, rsi = next. Save and restore IA32_FS_BASE because a task may
+    // block in a user syscall while another process changes its TLS base.
     naked_asm!(
+        "push rdi",
+        "push rsi",
+        "mov ecx, 0xC0000100",
+        "rdmsr",
+        "pop rsi",
+        "pop rdi",
+        "mov [rdi + 8], eax",
+        "mov [rdi + 12], edx",
         "push rbp",
         "push rbx",
         "push r12",
@@ -47,6 +56,11 @@ pub unsafe extern "C" fn context_switch(prev: *mut TaskContext, next: *const Tas
         "push r15",
         "mov [rdi], rsp",
         "mov rsp, [rsi]",
+        "mov rax, [rsi + 8]",
+        "mov ecx, 0xC0000100",
+        "mov rdx, rax",
+        "shr rdx, 32",
+        "wrmsr",
         "pop r15",
         "pop r14",
         "pop r13",

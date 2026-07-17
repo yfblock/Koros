@@ -995,7 +995,6 @@ impl Ext2INode {
 
         let dir_ft = file_type_to_dir_byte(file_type);
         if let Err(e) = super::dir::add_dir_entry(self, name, new_inode_num, dir_ft) {
-            let _ = self.fs.free_inode(new_inode_num);
             return Err(e);
         }
 
