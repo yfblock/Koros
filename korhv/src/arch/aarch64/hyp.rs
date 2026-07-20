@@ -8,6 +8,7 @@
 //! Stage-1 MMU + CNTV saved/restored on switch (deferred, not per-exit).
 //! Key fixes: HPFAR_EL2 << 8 (QEMU TCG IPA bug), tlbi alle2 (stage-2 coherency).
 
+use super::console_mux::{ConsoleMux, InputAction};
 use core::arch::{asm, global_asm};
 
 const EC_WFI: u64 = 0x01;
@@ -35,7 +36,6 @@ const GUEST_DTB_IPA: u64 = 0x4900_0000;
 const GUEST0_DTB_HPA: u64 = 0x4820_0000;
 const GUEST1_DTB_HPA: u64 = 0x4840_0000;
 const STAGE2_BLOCK_SIZE: u64 = 0x20_0000;
-const S2_READ_ONLY_BLOCK: u64 = 0x1 | (0xF << 2) | (0x1 << 6) | (1 << 10) | (1 << 54);
 
 #[derive(Clone, Copy)]
 struct GuestManifest {
@@ -240,7 +240,7 @@ global_asm!(
     ".align 7",
     "    b el2_guest_exit",
     ".align 7",
-    "    b el2_guest_exit",
+    "    b el2_guest_irq_exit",
     ".align 7",
     "    b el2_guest_exit",
     ".align 7",
@@ -308,9 +308,19 @@ global_asm!(
     "    ldp x9, x10, [x0, #72]",
     "    ldr x11, [x0, #88]",
     "    ldr x0, [x0, #0]",
+    "    msr tpidrro_el0, xzr",
     "    eret",
     ".global el2_guest_exit",
     "el2_guest_exit:",
+    "    msr tpidrro_el0, xzr",
+    "    b el2_guest_exit_common",
+    ".global el2_guest_irq_exit",
+    "el2_guest_irq_exit:",
+    "    str x16, [sp, #-16]!",
+    "    mov x16, #1",
+    "    msr tpidrro_el0, x16",
+    "    ldr x16, [sp], #16",
+    "el2_guest_exit_common:",
     "    str x18, [sp, #-16]!",
     "    mrs x18, tpidr_el2",
     "    stp x0, x1, [x18, #0]",
@@ -336,8 +346,13 @@ global_asm!(
     "    str x1, [x18, #256]",
     "    mrs x1, spsr_el2",
     "    str x1, [x18, #264]",
-    "    mrs x1, esr_el2",
-    "    str x1, [x18, #272]",
+    "    mrs x1, tpidrro_el0",
+    "    cbz x1, 1f",
+    "    mov x1, #1",
+    "    lsl x1, x1, #63",
+    "    b 2f",
+    "1:  mrs x1, esr_el2",
+    "2:  str x1, [x18, #272]",
     "    stp q0, q1, [x18, #384]",
     "    stp q2, q3, [x18, #416]",
     "    stp q4, q5, [x18, #448]",
@@ -428,8 +443,7 @@ pub fn init() {
         let gicc = GICC_BASE as *mut u32;
         gicd.add(0).write_volatile(3); // GICD_CTLR: enable Group 0 + Group 1
         // (IGROUPR0 left at QEMU default — already Group 1)
-        gicd.add(0x100 / 4)
-            .write_volatile((1 << VIRQ_TIMER) | (1 << PPI_CNTP)); // ISENABLER0 (PPI)
+        gicd.add(0x100 / 4).write_volatile(1 << VIRQ_TIMER); // ISENABLER0 (guest timer PPI only)
         // Route all SPIs (32-63) to CPU 0 and set Group 1
         for i in 32..64usize {
             (GICD_BASE as *mut u8).add(0x800 + i).write_volatile(1);
@@ -474,11 +488,11 @@ fn build_stage2(manifest: GuestManifest) -> Stage2Root {
                 .add(start + i)
                 .write_volatile(manifest.hpa_base + i as u64 * STAGE2_BLOCK_SIZE | S2_BLOCK);
         }
-        // Each guest receives a private, read-only, execute-never DTB block.
+        // Linux updates boot-only properties in its private DTB during early boot.
         let dtb_index = ((manifest.dtb_ipa - 0x4000_0000) / STAGE2_BLOCK_SIZE) as usize;
         l2_1v
             .add(dtb_index)
-            .write_volatile(manifest.dtb_hpa | S2_READ_ONLY_BLOCK);
+            .write_volatile(manifest.dtb_hpa | S2_BLOCK);
 
         for off in (0..4096).step_by(64) {
             asm!("dc civac, {}", in(reg) l1v as usize + off);
@@ -513,7 +527,9 @@ fn gicd_read(v: &Vgic, off: usize) -> u32 {
 }
 fn gicd_write(v: &mut Vgic, off: usize, val: u32) {
     match off {
+        0x000 => v.gicd_ctlr = val,
         0x100..=0x11c => v.enabled[(off - 0x100) / 4] |= val,
+        0x180..=0x19c => v.enabled[(off - 0x180) / 4] &= !val,
         0x200..=0x21c => v.pending[(off - 0x200) / 4] |= val,
         0x280..=0x29c => v.pending[(off - 0x280) / 4] &= !val,
         0x400..=0x4ff => v.prio[off - 0x400] = val as u8,
@@ -795,7 +811,7 @@ fn handle_mmio(
         // Accessible from user space via mmap(/dev/mem) — no HVC needed
         if wnr == 0 {
             let fr = unsafe { ((UART_BASE + 0x18) as *const u32).read_volatile() };
-            if fr & 0x80 == 0 {
+            if fr & 0x10 == 0 {
                 let ch = unsafe { (UART_BASE as *const u8).read_volatile() } as u64;
 
                 if srt < 31 {
@@ -910,37 +926,15 @@ impl Guest {
         }
     }
 }
-/// Which guest receives UART input (toggle with Ctrl-A = 0x01).
-static ACTIVE_CONSOLE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-
-/// Poll real UART for input, route to active guest's vUART.
-fn poll_uart_input(gs: &mut [Guest; 2]) {
-    let fr = unsafe { ((UART_BASE + 0x18) as *const u32).read_volatile() };
-    if fr & 0x80 != 0 {
-        return;
-    } // RXFE: no data
-    let ch = unsafe { (UART_BASE as *const u8).read_volatile() };
-    if ch == 0x01 {
-        // Ctrl-A: toggle active console
-        let old = ACTIVE_CONSOLE.load(core::sync::atomic::Ordering::Relaxed);
-        let new = 1 - old;
-        ACTIVE_CONSOLE.store(new, core::sync::atomic::Ordering::Relaxed);
-        kor::println!("\n[el2: console -> G{}]", new);
-        return;
-    }
-    let active = ACTIVE_CONSOLE.load(core::sync::atomic::Ordering::Relaxed);
-    gs[active].vuart.rx_push(ch);
-    gs[active].vgic.inject(33);
-}
-
 pub fn run() {
     let mut gs = [
         Guest::new(GUEST_MANIFESTS[0]),
         Guest::new(GUEST_MANIFESTS[1]),
     ];
+    let mut console = ConsoleMux::new();
+    console.print_banner();
     let mut cur: usize = 0;
     let mut prev_cur: usize = 2;
-    let mut slice_fires: u64 = 0;
     kor::println!("el2: 2 Linux guests with owned stage-2 roots and private RAM/DTB");
     assert!(gs[0].memory.0.hpa_base != gs[1].memory.0.hpa_base);
     assert!(gs[0].memory.0.dtb_hpa != gs[1].memory.0.dtb_hpa);
@@ -1017,11 +1011,9 @@ pub fn run() {
                 let one: u64 = 1;
                 asm!("msr cntp_ctl_el0, {}", in(reg) one);
                 gs[cur].started = true;
-                slice_fires = 0;
                 prev_cur = cur;
             }
-            let hp = gs[cur].vgic.has_pending();
-            let hcr = if hp {
+            let hcr = if gs[cur].vgic.has_pending() {
                 (HCR_EL2_BASE | HCR_VI) & !HCR_TWI
             } else {
                 HCR_EL2_BASE
@@ -1030,10 +1022,40 @@ pub fn run() {
             asm!("isb");
         }
         let esr = unsafe { vcpu_enter(&mut gs[cur].vcpu as *mut Vcpu) };
-        poll_uart_input(&mut gs);
-        let ec = esr >> 26;
-        let iar = unsafe { ((GICC_BASE + 0x0c) as *const u32).read_volatile() };
-        if iar < 0x3fe {
+        let uart_flags = unsafe { ((UART_BASE + 0x18) as *const u32).read_volatile() };
+        if uart_flags & 0x10 == 0 {
+            let input = unsafe { (UART_BASE as *const u8).read_volatile() };
+            match console.input(input) {
+                InputAction::Attach(guest) if guest < gs.len() && !gs[guest].done => {
+                    console.attach(guest);
+                }
+                InputAction::Status => {
+                    for (id, guest) in gs.iter().enumerate() {
+                        kor::println!(
+                            "guest {}: {} pc={:#x}",
+                            id,
+                            if guest.done { "stopped" } else { "running" },
+                            guest.vcpu.elr
+                        );
+                    }
+                    console.prompt();
+                }
+                InputAction::GuestByte { guest, byte } => {
+                    gs[guest].vuart.rx_push(byte);
+                    gs[guest].vgic.inject(33);
+                }
+                _ => {}
+            }
+        }
+        let physical_irq = (esr >> 63) != 0;
+        let guest_esr = esr & !(1u64 << 63);
+        let ec = guest_esr >> 26;
+        let iar = if physical_irq {
+            unsafe { ((GICC_BASE + 0x0c) as *const u32).read_volatile() }
+        } else {
+            0x3ff
+        };
+        if physical_irq && iar < 0x3fe {
             if iar == VIRQ_TIMER as u32 {
                 gs[cur].vgic.inject(VIRQ_TIMER);
                 gs[cur].cntv_ctl = 0;
@@ -1042,14 +1064,8 @@ pub fn run() {
                 }
             } else if iar == PPI_CNTP as u32 {
                 unsafe {
-                    asm!("msr cntp_tval_el0, {}", in(reg) SLICE_TICKS);
-                    let one: u64 = 1;
-                    asm!("msr cntp_ctl_el0, {}", in(reg) one);
+                    asm!("msr cntp_ctl_el0, xzr");
                 }
-                slice_fires += 1;
-                if slice_fires >= 50 {
-                    cur = 1 - cur;
-                } // 200ms time slice
             } else if iar >= 32 {
                 // G1's device uses SPI 49 but guest expects IRQ 48 (shared DTB)
                 let virq = if iar == 49 && cur == 1 { 48 } else { iar };
@@ -1065,7 +1081,7 @@ pub fn run() {
                 if gs[cur].vcpu.regs[0] == 0x100 {
                     // HVC getchar: read directly from real UART, skip nulls, fallback to vUART
                     let fr = unsafe { ((UART_BASE + 0x18) as *const u32).read_volatile() };
-                    if fr & 0x80 == 0 {
+                    if fr & 0x10 == 0 {
                         let ch = unsafe { (UART_BASE as *const u8).read_volatile() } as u64;
                         gs[cur].vcpu.regs[0] = if ch != 0 { ch } else { 0xffffffff };
                     } else {
@@ -1085,24 +1101,24 @@ pub fn run() {
                 // Guest is idle. Clear CNTP GIC pending so QEMU TCG halts CPU
                 // and runs main loop (chardev reads stdin). Timer still runs,
                 // will re-raise interrupt after SLICE_TICKS to wake CPU.
-                unsafe {
-                    ((GICD_BASE + 0x280) as *mut u32).write_volatile(1u32 << PPI_CNTP);
-                }
                 // Poll real UART for input
                 let fr = unsafe { ((UART_BASE + 0x18) as *const u32).read_volatile() };
-                if fr & 0x80 == 0 {
+                if fr & 0x10 == 0 {
                     let ch = unsafe { (UART_BASE as *const u8).read_volatile() };
                     if ch != 0 {
                         gs[cur].vuart.rx_push(ch);
                     }
                 }
                 gs[cur].vcpu.elr += 4;
+                if !gs[1 - cur].done {
+                    cur = 1 - cur;
+                }
             }
             EC_IABT | EC_DABT => {
                 let guest = &mut gs[cur];
                 if !handle_mmio(
                     &mut guest.vcpu,
-                    esr,
+                    guest_esr,
                     &mut guest.vgic,
                     &mut guest.vuart,
                     cur,

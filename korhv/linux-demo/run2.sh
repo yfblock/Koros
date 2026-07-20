@@ -1,8 +1,7 @@
 #!/bin/sh
-# Run the korhv aarch64 2-Linux-guest demo with interactive shell.
-# Serial on stdio. Both guests show shell prompt via /dev/kmsg (earlycon).
-# Input via magic MMIO at 0x0a010000 (mmap /dev/mem) — traps to hypervisor.
-# Ctrl-A toggles between G0 and G1 input.
+# Run the Korhv aarch64 two-Linux-guest demo.
+# Korhv starts at its own shell. Use `enter 0` or `enter 1` to attach a guest,
+# then press Ctrl-O to return to the Korhv shell.
 #
 # NOTE: Shell input requires QEMU to deliver stdin to PL011 RX FIFO.
 # This works when running interactively in a real terminal (tty),
@@ -29,7 +28,7 @@ cp "$DTB" "$DTB0"
 cp "$DTB" "$DTB1"
 
 exec qemu-system-aarch64 \
-  -machine virt,virtualization=on -cpu cortex-a72 -m 256M -smp 1 \
+  -machine virt,virtualization=on -cpu cortex-a72 -m 512M -smp 1 \
   -kernel "$KORHV" \
   -device loader,file="$IMAGE",addr=0x40200000 \
   -device loader,file="$IMAGE",addr=0x44200000 \

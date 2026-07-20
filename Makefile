@@ -110,7 +110,11 @@ ifneq ($(KERNEL_IMG),$(KERNEL_ELF))
 endif
 
 run: build $(EXT2_IMG)
-	$(QEMU_EXEC)
+	@if [ "$(ARCH)" = "aarch64" ] && [ "$(BIN)" = "korhv" ]; then \
+		exec korhv/linux-demo/run2.sh; \
+	else \
+		exec $(QEMU_EXEC); \
+	fi
 
 
 os-images/ext2-test.img:

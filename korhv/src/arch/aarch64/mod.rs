@@ -1,9 +1,50 @@
-//! aarch64 arch layer for korhv: an EL2 boot into the hypervisor (identity
-//! mapped, no high-half -- non-VHE EL2 has a single translation regime), a
-//! PL011 console, a minimal ArchProvider, and the EL2 hypervisor (hyp).
+//! AArch64 architecture layer for Korhv.
 
 pub mod boot;
 pub mod console;
+pub mod console_mux;
+pub mod guest_image;
 pub mod hyp;
 pub mod mm;
 pub mod provider;
+pub mod vuart;
+
+const GUEST_RESERVED_START: usize = 0x4020_0000;
+const GUEST_RESERVED_END: usize = 0x5000_0000;
+
+pub fn platform_config() -> kor::config::PlatformConfig {
+    kor::config::PlatformConfig {
+        console: kor::config::Console::Pl011Mmio { base: 0x0900_0000 },
+        firmware_phys_start: 0x4000_0000,
+        dtb: 0,
+        pci: None,
+    }
+}
+
+pub fn add_free_region(start: usize, end: usize) {
+    kor::regions::clip_region(
+        start,
+        end,
+        GUEST_RESERVED_START,
+        GUEST_RESERVED_END,
+        kor_frame::add_region,
+    );
+}
+
+struct Runtime;
+
+impl crate::hypervisor::Hypervisor for Runtime {
+    fn init(&self) {
+        hyp::init();
+    }
+
+    fn run(&self) {
+        hyp::run();
+    }
+}
+
+static RUNTIME: Runtime = Runtime;
+
+pub fn hypervisor() -> &'static dyn crate::hypervisor::Hypervisor {
+    &RUNTIME
+}
