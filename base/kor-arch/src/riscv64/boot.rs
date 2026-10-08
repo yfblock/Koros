@@ -1,13 +1,12 @@
-//! riscv64 boot — Sv39 page table setup, MMU enable, jump to high-half VA.
+//! riscv64 boot — generic MMU trampoline (see `boot.S`).
+//!
+//! The application provides `boot_mmu_build`, which fills the boot table
+//! buffer and returns the phys→virt offset; this module only wires the
+//! trampoline and hands control to `kernel_main`.
 
 use core::arch::global_asm;
 
-const KERNEL_OFFSET: usize = 0xFFFF_FFC0_0000_0000;
-
-global_asm!(
-    include_str!("boot.S"),
-    kernel_offset = const KERNEL_OFFSET,
-);
+global_asm!(include_str!("boot.S"));
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry(hart_id: usize, dtb: usize) {

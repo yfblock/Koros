@@ -1,46 +1,35 @@
-# RISC-V Sv39 boot — page table setup and MMU enable.
+# RISC-V boot trampoline — MMU bring-up delegated to the application.
 #
-# Uses 1 GiB superpages at L2 level to map the low 4 GiB at both
-# identity and high-half addresses. This covers the kernel (0x80000000)
-# and UART (0x10000000).
-
-# Page table flags
-.set PTE_V, (1 << 0)
-.set PTE_R, (1 << 1)
-.set PTE_W, (1 << 2)
-.set PTE_X, (1 << 3)
-.set PTE_A, (1 << 6)
-.set PTE_D, (1 << 7)
-.set LEAF_FLAGS, (PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D)
+# The app links in `boot_mmu_build(table_pa, table_len) -> offset` (an
+# extern "C" symbol): it fills the table buffer and returns the phys->virt
+# offset of the mapping it built, or 0 to run unmapped.  This trampoline is
+# policy-free: BSS clear, physical stack, call the builder, enable Sv39 if
+# asked, and jump to the post-offset entry — so one trampoline serves both
+# MMU and no-MMU applications.
+#
+# Pre-MMU addressing note: with PC still physical, every `la` below yields
+# the *physical* address of its symbol (PC-relative auipc), which is what
+# makes the BSS clear, the stack, the buffer pointer, and the builder call
+# work before any offset is known.
 
 # SATP mode Sv39
 .set SATP_MODE_SV39, (8 << 60)
 
-.section .data.boot_page_table
+# Boot page-table buffer (root level + one spare page for app policies
+# that want finer granularity at boot).  Lives in BSS: the trampoline
+# clears BSS before calling the builder.
+.section .bss.boot_page_table,"aw",@nobits
 .balign 4096
+.global _boot_pt_buffer
+_boot_pt_buffer:
+    .space 4096 * 2
 
-# Root page table (L2) — using 1 GiB leaf entries
-_boot_root_table:
-    # Entry 0: 0x00000000-0x3FFFFFFF
-    .quad (0x00000000 >> 2) | LEAF_FLAGS
-    # Entry 1: 0x40000000-0x7FFFFFFF
-    .quad (0x40000000 >> 2) | LEAF_FLAGS
-    # Entry 2: 0x80000000-0xBFFFFFFF (kernel)
-    .quad (0x80000000 >> 2) | LEAF_FLAGS
-    # Entry 3: 0xC0000000-0xFFFFFFFF
-    .quad (0xC0000000 >> 2) | LEAF_FLAGS
-    # Entries 4-255: unused
-    .zero (252 * 8)
-    # Entry 256: 0xFFFFFFC000000000-0xFFFFFFC03FFFFFFF
-    .quad (0x00000000 >> 2) | LEAF_FLAGS
-    # Entry 257: 0xFFFFFFC040000000-0xFFFFFFC07FFFFFFF
-    .quad (0x40000000 >> 2) | LEAF_FLAGS
-    # Entry 258: 0xFFFFFFC080000000-0xFFFFFFC0BFFFFFFF (kernel high-half)
-    .quad (0x80000000 >> 2) | LEAF_FLAGS
-    # Entry 259: 0xFFFFFFC0C0000000-0xFFFFFFC0FFFFFFFF
-    .quad (0xC0000000 >> 2) | LEAF_FLAGS
-    # Entries 260-511: unused
-    .zero (252 * 8)
+# Phys->virt offset published by the boot hart; the secondary trampoline
+# reads it before enabling paging.
+.section .bss.boot_mmu_offset,"aw",@nobits
+.balign 8
+_boot_mmu_offset:
+    .space 8
 
 .section .text.entry
 .global _start
@@ -50,7 +39,7 @@ _start:
     mv      s1, a1
 
     # --- Clear BSS (physical addresses — PC is physical before MMU) ---
-    la      t0, _sbss               # physical addr: auipc uses physical PC
+    la      t0, _sbss
     la      t1, _ebss
     bgeu    t0, t1, 2f
 1:
@@ -58,42 +47,61 @@ _start:
     addi    t0, t0, 8
     bltu    t0, t1, 1b
 2:
-
-    # --- Set stack pointer (physical address) ---
+    # --- Early stack (physical) ---
     la      sp, bstack_top
 
+    # --- Ask the application to build the boot page tables ---
+    la      a0, _boot_pt_buffer       # physical (no MMU yet)
+    li      a1, 4096 * 2
+    call    boot_mmu_build            # a0 = phys->virt offset (0 = unmapped)
+
+    # Publish the offset for the secondary-hart trampoline.
+    la      t2, _boot_mmu_offset
+    sd      a0, (t2)
+
+    beqz    a0, 5f                    # no-MMU app: stay on physical PCs
     # --- Enable Sv39 paging ---
-    la      t0, _boot_root_table    # physical address (no MMU yet)
-    srli    t0, t0, 12              # PPN for satp
+    la      t0, _boot_pt_buffer
+    srli    t0, t0, 12                # PPN for satp
     li      t1, SATP_MODE_SV39
     or      t0, t0, t1
     csrw    satp, t0
     sfence.vma
 
-    # --- Jump to high-half virtual address ---
-    la      t0, 3f                  # physical address of label 3
-    li      t1, {kernel_offset}
-    add     t0, t0, t1              # virtual address
+    # --- Jump to the post-offset virtual address ---
+    la      t0, 3f
+    add     t0, t0, a0
     jr      t0
 3:
-    # Now running at high-half VA — convert sp to high-half address
-    li      t0, {kernel_offset}
-    add     sp, sp, t0
-    mv      a0, s0              # restore hart_id
-    mv      a1, s1              # restore DTB pointer
+    # Now running on virtual PCs — move sp across the same offset.
+    add     sp, sp, a0
+    mv      a0, s0                    # restore hart_id
+    mv      a1, s1                    # restore DTB pointer
+    call    rust_entry
+    j       .
+5:
+    # Unmapped path: enter Rust on physical PCs (the app must be linked
+    # for a physical/identity model, like korhv does on aarch64).
+    mv      a0, s0
+    mv      a1, s1
     call    rust_entry
     j       .
 
 # --- Secondary hart entry (via SBI hart_start) --------------------------
 # SBI enters here in S-mode with the MMU off: a0 = hart_id, a1 = opaque
-# (per-hart stack top VA).  Enable paging with the shared boot page table,
-# switch to the high-half, set the stack, and call rust_entry_secondary.
+# (per-hart stack top, in the coordinate system the app published).
+# Enable paging with the tables the boot hart's builder produced, switch
+# across the published offset, set the stack, and call rust_entry_secondary.
 .global _secondary_start
 _secondary_start:
     mv      s0, a0                  # hart_id
-    mv      s1, a1                  # stack top (VA), used only after paging
+    mv      s1, a1                  # stack top (VA after paging)
 
-    la      t0, _boot_root_table
+    la      t0, _boot_mmu_offset    # physical (no MMU yet)
+    ld      t2, (t0)                # offset published by the boot hart
+    beqz    t2, 4f                  # no-MMU app: skip enable
+
+    la      t0, _boot_pt_buffer
     srli    t0, t0, 12
     li      t1, SATP_MODE_SV39
     or      t0, t0, t1
@@ -101,11 +109,10 @@ _secondary_start:
     sfence.vma
 
     la      t0, 4f
-    li      t1, {kernel_offset}
-    add     t0, t0, t1
+    add     t0, t0, t2
     jr      t0
 4:
-    mv      sp, s1              # per-hart stack top (high-half VA)
+    mv      sp, s1              # per-hart stack top (post-offset address)
     mv      tp, s0              # tp = hart_id
     mv      a0, s0
     call    rust_entry_secondary

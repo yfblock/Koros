@@ -13,6 +13,7 @@ static HEAP: kor_alloc::LockedSlabHeap = kor_alloc::LockedSlabHeap::empty();
 // The storage benchmark runs on riscv64/x86_64 only (see `kernel_main`).
 #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
 mod bench;
+mod boot_mmu;
 mod ext2_test;
 mod heap;
 mod mmu_test;

@@ -16,7 +16,26 @@ const PTE_A: usize = 1 << 6;
 const PTE_D: usize = 1 << 7;
 const PTE_RW: usize = PTE_R | PTE_W | PTE_X;
 
+/// Entries per page-table page (512 × 64-bit PTEs).
 const PTE_NUM: usize = 512;
+
+
+/// Build the default boot root: 1 GiB leaves mapping the low 4 GiB both
+/// identity (entries 0-3) and at the high-half window (entries 256-259).
+/// Returns the phys→virt offset of that window.
+///
+/// Pure and static-free on purpose: it executes at a physical PC with the
+/// MMU off, called from the kor-arch trampoline via the app's
+/// `boot_mmu_build` hook.
+pub fn boot_table_identity_high(table: &mut [usize; PTE_NUM]) -> usize {
+    for gib in 0..4usize {
+        let pa = gib << 30;
+        let entry = leaf_pte(pa, MappingFlags::KERNEL_RWX);
+        table[gib] = entry;
+        table[256 + gib] = entry;
+    }
+    0xFFFF_FFC0_0000_0000
+}
 
 /// Kernel (boot) root captured during init. Shutdown switches back to it
 /// before touching the identity-mapped syscon, because user address spaces

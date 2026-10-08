@@ -6,6 +6,7 @@
 
 extern crate alloc;
 
+mod boot_mmu;
 mod fs;
 mod heap;
 mod mm;

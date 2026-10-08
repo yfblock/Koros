@@ -28,8 +28,6 @@ SECTIONS
 
     .data ALIGN(4K): {
         _sdata = .;
-        . = ALIGN(4K);
-        *(.data.boot_page_table)
 
         *(.data .data.*)
         *(.sdata .sdata.*)
