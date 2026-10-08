@@ -1,4 +1,12 @@
 # x86_64 Multiboot boot — 32-bit entry to long mode, then call rust_entry.
+#
+# ISA constraint: long mode REQUIRES paging, so the boot tables must exist
+# before any 64-bit code (including a Rust builder) can run.  The tables
+# are therefore built right here in the 32-bit stage with a fixed policy
+# (identity low 4 GiB + high-half window, 2 MiB leaves) — the arch-specific
+# counterpart of the app-provided `boot_mmu_build` hook on riscv64/aarch64.
+# After entering 64-bit mode no builder call happens: the app inherits this
+# mapping and may refine it later through kor-mmu.
 
 .macro Page2MTable base
     .set    n, \base

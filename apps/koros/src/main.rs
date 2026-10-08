@@ -11,9 +11,9 @@ extern crate alloc;
 static HEAP: kor_alloc::LockedSlabHeap = kor_alloc::LockedSlabHeap::empty();
 
 // The storage benchmark runs on riscv64/x86_64 only (see `kernel_main`).
+mod arch;
 #[cfg(any(target_arch = "riscv64", target_arch = "x86_64"))]
 mod bench;
-mod boot_mmu;
 mod ext2_test;
 mod heap;
 mod mmu_test;
@@ -22,45 +22,7 @@ mod registries;
 mod virtio;
 
 use kor::cmdline;
-#[cfg(target_arch = "loongarch64")]
-use kor::config::PciEcam;
-use kor::config::{self, Console as ConsoleCfg, PlatformConfig};
-
-/// Board / platform configuration for the QEMU targets.
-fn platform_config() -> PlatformConfig {
-    #[cfg(target_arch = "riscv64")]
-    return PlatformConfig {
-        console: ConsoleCfg::Ns16550aMmio { base: 0x1000_0000 },
-        firmware_phys_start: 0x8000_0000,
-        dtb: 0, // passed by OpenSBI in a1
-        pci: None,
-    };
-    #[cfg(target_arch = "aarch64")]
-    return PlatformConfig {
-        console: ConsoleCfg::Pl011Mmio { base: 0x0900_0000 },
-        firmware_phys_start: 0x4000_0000,
-        dtb: 0, // passed in x0
-        pci: None,
-    };
-    #[cfg(target_arch = "loongarch64")]
-    return PlatformConfig {
-        console: ConsoleCfg::Ns16550aMmio { base: 0x1FE0_01E0 },
-        firmware_phys_start: 0x8000_0000,
-        dtb: 0x100000, // fixed QEMU address (no register-passed pointer)
-        pci: Some(PciEcam {
-            ecam_base: 0x2000_0000,
-            mmio_base: 0x4000_0000,
-            mmio_size: 0x4000_0000,
-        }),
-    };
-    #[cfg(target_arch = "x86_64")]
-    return PlatformConfig {
-        console: ConsoleCfg::Ns16550aPort { base: 0x3F8 },
-        firmware_phys_start: 0,
-        dtb: 0,
-        pci: None,
-    };
-}
+use kor::config;
 
 /// Timer + external-IRQ behaviour installed as the trap callbacks.
 struct KernelTrapCallbacks;
@@ -83,7 +45,7 @@ extern "C" fn kernel_main() -> ! {
     // 1. Console (before any println).
     kor::install_console(kor_arch::console());
     // 2. Platform config (firmware region, dtb, pci — read back by mm/driver probe).
-    config::init(platform_config());
+    config::init(arch::platform_config());
     // 3. Arch provider.
     kor::install(kor_arch::provider());
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).

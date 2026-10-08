@@ -9,10 +9,31 @@ use kor::mapping::MappingFlags;
 /// 512 GiB slot — L0 index 1 is unused by the boot 1 GiB block map at L0[0].
 
 pub(crate) const PTE_VALID: usize = 1 << 0;
+
+/// Entries per page-table page (512 × 64-bit PTEs).
+const PTE_NUM: usize = 512;
 pub(crate) const PTE_TABLE: usize = 1 << 1;
+
+/// Build the default boot tables: L0[0] -> L1, L1[i] = 1 GiB identity
+/// block (covers the first 512 GiB).  TTBR0 and TTBR1 share the root, so
+/// the same physical layout is reachable both at the low window and at
+/// `0xFFFF_0000_0000_0000` (the returned offset).
+///
+/// Pure and static-free on purpose: it executes at a physical PC with the
+/// MMU off, called from the kor-arch trampoline via the app's
+/// `boot_mmu_build` hook.  `pages` is the two-page buffer (L0 then L1).
+pub fn boot_table_identity_512g(pages: &mut [usize; PTE_NUM * 2]) -> usize {
+    let l1_pa = pages.as_ptr() as usize + PTE_NUM * 8;
+    let (l0, l1) = pages.split_at_mut(PTE_NUM);
+    // Table descriptor: VALID | TABLE, pointing at the second page.
+    l0[0] = l1_pa | PTE_VALID | PTE_TABLE;
+    for gib in 0..PTE_NUM {
+        l1[gib] = block_pte(gib << 30, MappingFlags::KERNEL_RWX);
+    }
+    0xFFFF_0000_0000_0000
+}
 const PTE_AF: usize = 1 << 10;
 const PTE_ATTR: usize = 1 << 2; // MAIR index 1 (Normal WB), matches boot.S
-const PTE_NUM: usize = 512;
 
 pub fn init() {}
 

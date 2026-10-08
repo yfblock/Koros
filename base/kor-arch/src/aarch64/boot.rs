@@ -1,4 +1,4 @@
-//! aarch64 boot — page table setup, MMU enable, jump to high-half VA.
+//! aarch64 boot — generic MMU trampoline (see `boot.S`).
 
 use core::arch::global_asm;
 

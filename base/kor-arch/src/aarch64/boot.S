@@ -1,45 +1,48 @@
-// AArch64 boot — page table setup, MMU enable, jump to high-half VA.
+// AArch64 boot trampoline — MMU bring-up delegated to the application.
 //
-// Reference: polyhal/polyhal-boot/src/arch/aarch64.rs
-// VIRT_ADDR_START = 0xFFFF000000000000
-
-// PTE flags
-.set PTE_VALID,      (1 << 0)
-.set PTE_TYPE_TABLE, (1 << 1)   // set for table/page, clear for block
-.set PTE_AF,         (1 << 10)
-.set PTE_ATTR_INDX,  (1 << 2)   // MAIR index 1 = Normal, Write-Back cacheable
-
-// L1 1 GiB block descriptor: VALID | AF | AttrIndx=1
-.set L1_BLOCK_FLAGS, (PTE_VALID | PTE_AF | PTE_ATTR_INDX)
+// The app links in `boot_mmu_build(table_pa, table_len) -> offset` (an
+// extern "C" symbol): it fills the table buffer and returns the phys->virt
+// offset of the mapping it built, or 0 to run unmapped.  This trampoline is
+// policy-free: BSS clear, physical stack, call the builder, program
+// MAIR/TCR/TTBR and enable the MMU if asked, then jump across the offset —
+// so one trampoline serves both MMU and no-MMU applications.
+//
+// Pre-MMU addressing note: the image is linked for high-half VAs, so every
+// absolute `ldr =sym` below is converted to its physical address by
+// subtracting the runtime load delta (link VA - PC, computed once via
+// `adr`); no offset constant is baked in.
 
 // L0 table descriptor: VALID | TYPE_TABLE
-.set L0_TABLE_FLAGS, (PTE_VALID | PTE_TYPE_TABLE)
+.set L0_TABLE_FLAGS, ((1 << 0) | (1 << 1))
 
-// Kernel virtual-to-physical offset
-.set KERNEL_OFFSET, 0xFFFF000000000000
-
-.section .data.boot_page_table
+.section .bss.boot_page_table,"aw",%nobits
 .balign 4096
+.global _boot_pt_buffer
+_boot_pt_buffer:
+    .zero 8192                  // L0 root + one L1 table
 
-// BOOT_PT: two pages
-// Page 0: L0 table (512 entries)
-// Page 1: L1 table (512 entries of 1 GiB blocks)
-_boot_page_table:
-    .zero 8192
+.section .bss.boot_mmu_offset,"aw",%nobits
+.balign 8
+_boot_mmu_offset:
+    .zero 8
 
 .section .text.entry
 .global _start
 _start:
-    mov     x19, x0             // save DTB pointer (x0 on entry)
+    mov     x19, x0             // save DTB pointer (PA from firmware)
     mrs     x20, mpidr_el1      // save CPU ID
+
+    // --- Runtime load delta: x24 = link VA here - physical PC here ---
+    adr     x0, 9f
+    ldr     x1, =9f
+    sub     x24, x1, x0
+9:
 
     // --- Clear BSS (physical addresses, MMU off) ---
     ldr     x0, =_sbss
-    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
-    sub     x0, x0, x1              // physical _sbss
+    sub     x0, x0, x24
     ldr     x1, =_ebss
-    movz    x2, #0xFFFF, lsl #48   // x2 = KERNEL_OFFSET
-    sub     x1, x1, x2              // physical _ebss
+    sub     x1, x1, x24
     cmp     x0, x1
     b.ge    2f
 1:
@@ -47,36 +50,28 @@ _start:
     cmp     x0, x1
     b.lt    1b
 2:
-
     // --- Set stack pointer (physical address) ---
     ldr     x0, =bstack_top
-    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
-    sub     x0, x0, x1
+    sub     x0, x0, x24
     mov     sp, x0
 
-    // --- Build page tables ---
-    // L0[0] -> L1 table (at BOOT_PT + 4096)
-    ldr     x0, =_boot_page_table
-    sub     x0, x0, x1
-    add     x1, x0, #0x1000
-    orr     x1, x1, #L0_TABLE_FLAGS
-    str     x1, [x0]
+    // --- Ask the application to build the boot page tables ---
+    ldr     x0, =_boot_pt_buffer
+    sub     x0, x0, x24         // physical buffer address
+    mov     x1, #8192
+    ldr     x8, =boot_mmu_build
+    sub     x8, x8, x24         // physical function address
+    blr     x8                  // x0 = phys->virt offset (0 = unmapped)
+    mov     x23, x0
 
-    // L1[i] = 1 GiB block for i * 0x40000000
-    add     x2, x0, #0x1000
-    mov     x3, #0
-    mov     x4, #0x200
-    movz    x6, #L1_BLOCK_FLAGS
-    movz    x7, #0x0000, lsl #0
-    movk    x7, #0x4000, lsl #16
-1:
-    orr     x5, x3, x6
-    str     x5, [x2], #8
-    add     x3, x3, x7
-    subs    x4, x4, #1
-    b.ne    1b
+    // Publish the offset for the secondary-core trampoline.
+    ldr     x1, =_boot_mmu_offset
+    sub     x1, x1, x24
+    str     x23, [x1]
 
-    // --- Init MMU ---
+    cbz     x23, 5f             // no-MMU app: stay on physical PCs
+
+    // --- Init MMU (mechanism, policy-free) ---
     // MAIR_EL1: Attr0=Device(0x00), Attr1=Normal-WB(0xFF), Attr2=Normal-NonCache(0x44)
     movz    x0, #0xFF00
     movk    x0, #0x0044, lsl #16
@@ -87,14 +82,12 @@ _start:
     msr     tcr_el1, x0
     isb
 
-    // TTBR0_EL1 and TTBR1_EL1 point to same root table
-    ldr     x0, =_boot_page_table
-    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
-    sub     x0, x0, x1
+    // TTBR0_EL1 and TTBR1_EL1 point to the app-built root
+    ldr     x0, =_boot_pt_buffer
+    sub     x0, x0, x24
     msr     ttbr0_el1, x0
     msr     ttbr1_el1, x0
 
-    // Flush TLB
     tlbi    vmalle1
     dsb     sy
     isb
@@ -106,34 +99,52 @@ _start:
     msr     sctlr_el1, x0
     isb
 
-    // --- Jump to high-half VA ---
+    // --- Jump across the offset to the virtual PC ---
     adr     x0, 3f
-    movz    x1, #0xFFFF, lsl #48   // x1 = KERNEL_OFFSET
-    add     x0, x0, x1
+    add     x0, x0, x23
     br      x0
 3:
-    // Now running at high-half VA
-    // Convert stack pointer and DTB pointer to high-half VA
-    movz    x0, #0xFFFF, lsl #48   // KERNEL_OFFSET
-    add     sp, sp, x0
-    add     x19, x19, x0           // DTB pointer → high-half VA
+    // Now running on virtual PCs — move sp and the DTB pointer across.
+    add     sp, sp, x23
+    add     x19, x19, x23
 
-    and     x0, x20, #0xffffff      // hart_id from mpidr_el1
-    mov     x1, x19                 // DTB pointer
+    and     x0, x20, #0xffffff  // hart_id from mpidr_el1
+    mov     x1, x19             // DTB pointer (VA)
     ldr     x8, =rust_entry
+    blr     x8
+    b       .
+5:
+    // Unmapped path: enter Rust on physical PCs (the app must be linked
+    // for a physical/identity model).
+    and     x0, x20, #0xffffff
+    mov     x1, x19             // DTB stays a physical pointer
+    ldr     x8, =rust_entry
+    sub     x8, x8, x24
     blr     x8
     b       .
 
 // --- Secondary core entry (via PSCI CPU_ON) -----------------------------
 // PSCI enters here at EL1 with the MMU off; x0 = context id (our per-CPU
-// stack top VA).  The boot page table is already built, so we only re-enable
-// the MMU on this core, switch to the high-half, set the stack, and call
-// rust_entry_secondary.
+// stack top VA).  The boot core's builder already produced the tables and
+// published the offset, so this path re-enables the MMU with them, crosses
+// the offset, sets the stack, and calls rust_entry_secondary.
 .global _secondary_start
 _secondary_start:
     mov     x20, x0                 // per-CPU stack top (VA), used after MMU on
     mrs     x19, mpidr_el1
     and     x19, x19, #0xffffff     // cpu id
+
+    // Runtime load delta (this core's PC is physical here).
+    adr     x0, 9f
+    ldr     x1, =9f
+    sub     x24, x1, x0
+9:
+
+    // Offset published by the boot core.
+    ldr     x0, =_boot_mmu_offset
+    sub     x0, x0, x24
+    ldr     x23, [x0]
+    cbz     x23, 5f                 // no-MMU app: skip enable
 
     // MAIR / TCR (same config as the boot core)
     movz    x0, #0xFF00
@@ -143,10 +154,9 @@ _secondary_start:
     msr     tcr_el1, x0
     isb
 
-    // TTBR0/1 = physical base of the already-built boot page table
-    ldr     x0, =_boot_page_table
-    movz    x1, #0xFFFF, lsl #48
-    sub     x0, x0, x1
+    // TTBR0/1 = physical base of the app-built tables
+    ldr     x0, =_boot_pt_buffer
+    sub     x0, x0, x24
     msr     ttbr0_el1, x0
     msr     ttbr1_el1, x0
     tlbi    vmalle1
@@ -161,13 +171,19 @@ _secondary_start:
     isb
 
     // Jump to the high-half VA
-    adr     x0, 5f
-    movz    x1, #0xFFFF, lsl #48
-    add     x0, x0, x1
+    adr     x0, 4f
+    add     x0, x0, x23
     br      x0
-5:
-    mov     sp, x20                 // per-CPU stack top (high-half VA)
+4:
+    mov     sp, x20                 // per-CPU stack top (post-offset address)
     mov     x0, x19                 // cpu id
     ldr     x8, =rust_entry_secondary
+    blr     x8
+    b       .
+5:
+    mov     sp, x20
+    mov     x0, x19
+    ldr     x8, =rust_entry_secondary
+    sub     x8, x8, x24
     blr     x8
     b       .
