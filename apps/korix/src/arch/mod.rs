@@ -1,5 +1,5 @@
 //! Arch-specific application code: boot MMU policy + platform constants.
-use kor::config::{self, PlatformConfig};
+use kor::config::PlatformConfig;
 
 kor_arch::boot_stack!(0x80000);
 
@@ -23,21 +23,21 @@ kor_arch::boot_trampoline_aarch64!(bstack_top, rust_entry);
 pub(crate) fn platform_config() -> PlatformConfig {
     #[cfg(target_arch = "riscv64")]
     return PlatformConfig {
-        console: config::Console::Ns16550aMmio { base: 0x1000_0000 },
+        console: kor::config::Console::Ns16550aMmio { base: 0x1000_0000 },
         firmware_phys_start: 0x8000_0000,
         dtb: 0,
         pci: None,
     };
     #[cfg(target_arch = "aarch64")]
     return PlatformConfig {
-        console: config::Console::Pl011Mmio { base: 0x0900_0000 },
+        console: kor::config::Console::Pl011Mmio { base: 0x0900_0000 },
         firmware_phys_start: 0x4000_0000,
         dtb: 0,
         pci: None,
     };
     #[cfg(target_arch = "x86_64")]
     return PlatformConfig {
-        console: config::Console::Ns16550aPort { base: 0x3F8 },
+        console: kor::config::Console::Ns16550aPort { base: 0x3F8 },
         firmware_phys_start: 0,
         dtb: 0,
         pci: None,
@@ -51,8 +51,8 @@ pub(crate) fn platform_config() -> PlatformConfig {
 }
 
 #[cfg(target_arch = "aarch64")]
-mod boot_aarch64;
+mod aarch64;
 #[cfg(target_arch = "riscv64")]
-mod boot_riscv64;
+mod riscv64;
 #[cfg(target_arch = "x86_64")]
-mod boot_x86_64;
+mod x86_64;
