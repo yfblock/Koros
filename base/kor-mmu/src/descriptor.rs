@@ -59,16 +59,13 @@ impl PageDesc {
         }
     }
 
-    /// Acquire the table-page lock (part of a transaction's lock set).
-    pub fn acquire(&self) {
-        self.lock.lock();
-    }
-
-    /// Release the table-page lock.
-    pub fn release(&self) {
-        // SAFETY: callers pair `release` with a preceding `acquire` on the
-        // same descriptor (transaction bookkeeping in RCursor).
-        unsafe { self.lock.force_unlock() };
+    /// Lock the table page (part of a transaction's lock set) and return
+    /// the RAII guard; dropping it releases the page.
+    ///
+    /// Descriptors are `&'static`, so the guard outlives any cursor that
+    /// stores it.
+    pub fn acquire(&self) -> spin::MutexGuard<'_, ()> {
+        self.lock.lock()
     }
 
     /// Read the per-PTE status at `index`, if metadata exists.

@@ -26,8 +26,32 @@ pub fn translate(_vaddr: usize) -> Option<usize> {
     None
 }
 
-/// No paging: there is no format to drive the generic engine with.
-pub static FORMAT: Option<&'static dyn crate::format::MmuFormat> = None;
+/// Placeholder encoding items so the arch-neutral engine links; never used
+/// at runtime (every facade entry point checks `PAGING_SUPPORTED` first).
+impl crate::AddrSpace {
+    pub const LEVELS: usize = 1;
+    pub const PAGING_SUPPORTED: bool = false;
+
+    pub fn table_entry(_table_phys: usize) -> usize {
+        0
+    }
+    pub fn leaf_entry(_phys: usize, _flags: MappingFlags, _level: usize) -> usize {
+        0
+    }
+    pub fn entry_present(_entry: usize) -> bool {
+        false
+    }
+    pub fn entry_is_leaf(_entry: usize, _level: usize) -> bool {
+        false
+    }
+    pub fn entry_phys(_entry: usize, _level: usize) -> usize {
+        0
+    }
+    pub fn entry_flags(_entry: usize) -> MappingFlags {
+        MappingFlags::R
+    }
+    pub fn flush_tlb(_va: Option<usize>) {}
+}
 
 pub fn unmap(_vaddr: usize, _size: MapSize) -> Result<usize, MapError> {
     Err(MapError::Unsupported)

@@ -19,7 +19,7 @@ const TWO_MIB: usize = 2 * 1024 * 1024;
 
 /// Run the kor-mmu self-check; prints `kor-mmu: ... OK` lines.
 pub fn run() {
-    if kor_mmu::current_format().is_none() {
+    if !kor_mmu::PAGING_SUPPORTED {
         println!("kor-mmu: no paging on this architecture, skipped");
         return;
     }

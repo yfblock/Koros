@@ -2,14 +2,15 @@
 //!
 //! Following CortenMM (SOSP '25): a single-level abstraction with
 //! per-table-page descriptors ([`descriptor`]), a transactional cursor
-//! ([`page_table::RCursor`]), and one small trait hiding PTE-format
-//! differences ([`format::MmuFormat`]).
+//! ([`page_table::RCursor`]) with per-arch PTE encoding supplied as inherent
+//! associated items of [`AddrSpace`] (compile-time dispatch, no vtables).
 //!
 //! Layout:
-//! - [`arch`]: per-architecture back-ends — PTE flags/encoders, `MmuFormat`
-//!   impls, active-space switching, fork cloning, boot identity surgery.
-//!   Selected by `cfg` in one place ([`arch::current`]).
-//! - [`format`]/[`descriptor`]/[`page_table`]: the arch-neutral engine.
+//! - [`arch`]: per-architecture back-ends — PTE encoders as inherent
+//!   associated items of `AddrSpace` (statically dispatched), active-space
+//!   switching, fork cloning, boot identity surgery.  Selected by `cfg` in
+//!   one place ([`arch::current`]).
+//! - [`descriptor`]/[`page_table`]: the arch-neutral engine.
 //!
 //! The free functions below mirror the (removed) `ArchProvider` page-table
 //! methods one-to-one, so composition crates call `kor_mmu::map(...)` etc.
@@ -26,19 +27,15 @@ extern crate alloc;
 
 pub mod arch;
 pub mod descriptor;
-pub mod format;
 pub mod page_table;
 
 pub use descriptor::PageStatus;
-pub use format::MmuFormat;
 pub use page_table::{AddrSpace, RCursor};
 
 use kor::mapping::{MapError, MapSize, MappingFlags};
 
-/// The current architecture's page-table format (`None` without paging).
-pub fn current_format() -> Option<&'static dyn MmuFormat> {
-    arch::current::FORMAT
-}
+/// Whether this architecture drives real page tables (false on loongarch64).
+pub const PAGING_SUPPORTED: bool = AddrSpace::PAGING_SUPPORTED;
 
 /// Arch-specific test VA for a 4 KiB mapping (self-test).
 pub const TEST_VA_4K: usize = arch::current::TEST_VA_4K;
@@ -57,17 +54,32 @@ pub fn dynamic_maps_supported() -> bool {
 
 /// Map through the generic engine on the active root.
 pub fn map(vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError> {
-    arch::current::map(vaddr, paddr, flags, size)
+    if !AddrSpace::PAGING_SUPPORTED {
+        return Err(MapError::Unsupported);
+    }
+    // SAFETY: the active root is live for the whole call.
+    let space = unsafe { AddrSpace::from_root(arch::current::root()) };
+    space.map(vaddr, paddr, flags, size)
 }
 
 /// Translate through the generic engine on the active root.
 pub fn translate(vaddr: usize) -> Option<usize> {
-    arch::current::translate(vaddr)
+    if !AddrSpace::PAGING_SUPPORTED {
+        return None;
+    }
+    // SAFETY: read-only walk of the live root inside a transaction.
+    let space = unsafe { AddrSpace::from_root(arch::current::root()) };
+    space.translate(vaddr)
 }
 
 /// Unmap through the generic engine; returns the mapped physical address.
 pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
-    arch::current::unmap(vaddr, size)
+    if !AddrSpace::PAGING_SUPPORTED {
+        return Err(MapError::Unsupported);
+    }
+    // SAFETY: same contract as `map`.
+    let space = unsafe { AddrSpace::from_root(arch::current::root()) };
+    space.unmap(vaddr, size)
 }
 
 /// Physical root of the active address space.

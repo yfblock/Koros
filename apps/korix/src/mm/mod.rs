@@ -77,10 +77,12 @@ impl AddressSpace {
         kor::irq::disable();
         let previous = kor_mmu::address_space_root();
         if previous != self.root {
-            unsafe { kor_mmu::activate_address_space(self.root) };
+            // SAFETY: same contract as `activate`.
+            unsafe { kor_mmu::AddrSpace::from_root(self.root).activate() };
         }
         let result = operation();
         if previous != self.root {
+            // SAFETY: restoring the previously active root.
             unsafe { kor_mmu::activate_address_space(previous) };
         }
         if interrupts_enabled {

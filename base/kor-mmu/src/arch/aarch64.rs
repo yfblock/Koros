@@ -2,7 +2,9 @@
 
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
-use kor::{MapError, MapSize, MappingFlags};
+use crate::AddrSpace;
+use kor::mapping::MapError;
+use kor::mapping::MappingFlags;
 
 /// 512 GiB slot — L0 index 1 is unused by the boot 1 GiB block map at L0[0].
 pub const TEST_VA_4K: usize = 0x0080_0000_0000;
@@ -158,51 +160,6 @@ pub fn dynamic_maps_supported() -> bool {
     true
 }
 
-/// Bytes covered by one mapping of `size`.
-/// Size of one 2 MiB mapping.
-const TWO_MIB: usize = 2 * 1024 * 1024;
-
-fn map_size_bytes(size: MapSize) -> usize {
-    match size {
-        MapSize::Page4K => 4096,
-        MapSize::Page2M => TWO_MIB,
-    }
-}
-
-/// Map through the `kor-mmu` engine on the active root.
-pub fn map(vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError> {
-    // SAFETY: the active root is live for the whole call; the transaction
-    // serializes against other kor-mmu users.
-    let space = unsafe { crate::AddrSpace::from_root(root()) };
-    let mut txn = space.lock(vaddr..vaddr + map_size_bytes(size));
-    txn.map(vaddr, paddr, flags, size)
-}
-
-/// Translate through the `kor-mmu` engine.
-pub fn translate(vaddr: usize) -> Option<usize> {
-    // SAFETY: read-only walk of the live root inside a transaction.
-    let space = unsafe { crate::AddrSpace::from_root(root()) };
-    let txn = space.lock(vaddr..vaddr + 4096);
-    match txn.query(vaddr) {
-        crate::PageStatus::Mapped {
-            phys, granularity, ..
-        } => Some(phys + vaddr % granularity),
-        _ => None,
-    }
-}
-
-/// Unmap through the `kor-mmu` engine; returns the mapped physical address.
-pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
-    let Some(paddr) = translate(vaddr) else {
-        return Err(MapError::BlockedByExistingMapping);
-    };
-    // SAFETY: same contract as `map`.
-    let space = unsafe { crate::AddrSpace::from_root(root()) };
-    let mut txn = space.lock(vaddr..vaddr + map_size_bytes(size));
-    txn.unmap(vaddr..vaddr + map_size_bytes(size))
-        .map(|_| paddr)
-}
-
 pub(crate) fn page_pte(paddr: usize, flags: MappingFlags) -> usize {
     paddr | PTE_VALID | PTE_TABLE | PTE_AF | PTE_ATTR | ap_flags(flags)
 }
@@ -241,43 +198,21 @@ pub(crate) fn pte_address(pte: usize) -> usize {
     pte & 0xFFFF_FFFF_F000
 }
 
-// ---------------------------------------------------------------------------
-// MmuFormat implementation (PTE encoding contract for the generic engine)
-// ---------------------------------------------------------------------------
 
-use crate::format::MmuFormat;
 
-/// AArch64: 4 levels, 4 KiB pages / 2 MiB & 1 GiB blocks.
-pub struct Aarch64Format;
+/// PTE encoding contract for the generic engine (see `page_table`).
+impl AddrSpace {
+    /// Number of radix levels (Sv39-style: four).
+    pub const LEVELS: usize = 4;
 
-pub static FORMAT: Option<&'static dyn crate::format::MmuFormat> = Some(&Aarch64Format);
+    /// This architecture drives real page tables.
+    pub const PAGING_SUPPORTED: bool = true;
 
-/// Bits per page-table index level (9 for 512-entry tables).
-const LEVEL_SHIFT: usize = 9;
-const PAGE_SHIFT: usize = 12;
-
-impl MmuFormat for Aarch64Format {
-    fn levels(&self) -> usize {
-        4
-    }
-
-    fn table_index(&self, va: usize, level: usize) -> usize {
-        (va >> (PAGE_SHIFT + LEVEL_SHIFT * level)) & ((1 << LEVEL_SHIFT) - 1)
-    }
-
-    fn page_offset(&self, va: usize, level: usize) -> usize {
-        va & ((1usize << (PAGE_SHIFT + LEVEL_SHIFT * level)) - 1)
-    }
-
-    fn leaf_size(&self, level: usize) -> usize {
-        1usize << (PAGE_SHIFT + LEVEL_SHIFT * level)
-    }
-
-    fn table_entry(&self, table_phys: usize) -> usize {
+                pub fn table_entry( table_phys: usize) -> usize {
         table_phys | PTE_VALID | PTE_TABLE
     }
 
-    fn leaf_entry(&self, phys: usize, flags: MappingFlags, level: usize) -> usize {
+    pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
         if level == 0 {
             page_pte(phys, flags)
         } else {
@@ -285,11 +220,11 @@ impl MmuFormat for Aarch64Format {
         }
     }
 
-    fn entry_present(&self, entry: usize) -> bool {
+    pub fn entry_present( entry: usize) -> bool {
         is_valid(entry)
     }
 
-    fn entry_is_leaf(&self, entry: usize, level: usize) -> bool {
+    pub fn entry_is_leaf( entry: usize, level: usize) -> bool {
         if level == 0 {
             // L3 valid entries are always 4 KiB page descriptors.
             is_valid(entry)
@@ -298,11 +233,11 @@ impl MmuFormat for Aarch64Format {
         }
     }
 
-    fn entry_phys(&self, entry: usize, _level: usize) -> usize {
+    pub fn entry_phys( entry: usize, _level: usize) -> usize {
         pte_address(entry)
     }
 
-    fn entry_flags(&self, entry: usize) -> MappingFlags {
+    pub fn entry_flags( entry: usize) -> MappingFlags {
         // Present mappings are readable; mirror of `ap_flags`.
         let mut flags = MappingFlags::R;
         // AP[2] (bit 7) set means read-only.
@@ -320,7 +255,7 @@ impl MmuFormat for Aarch64Format {
         flags
     }
 
-    fn flush_tlb(&self, va: Option<usize>) {
+    pub fn flush_tlb( va: Option<usize>) {
         // SAFETY: `tlbi vae1is` invalidates one VA (all ASIDs, inner
         // shareable); `tlbi vmalle1is` flushes everything.
         unsafe {

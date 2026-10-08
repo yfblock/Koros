@@ -2,7 +2,9 @@
 
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
-use kor::{MapError, MapSize, MappingFlags};
+use crate::AddrSpace;
+use kor::mapping::MapError;
+use kor::mapping::MappingFlags;
 
 /// First unused 1 GiB slot in the high-half root (boot leaves use 256–259).
 pub const TEST_VA_4K: usize = 0xFFFF_FFC4_1000_0000;
@@ -220,52 +222,6 @@ pub fn split_identity() {
     }
 }
 
-/// Bytes covered by one mapping of `size`.
-/// Size of one 2 MiB mapping.
-const TWO_MIB: usize = 2 * 1024 * 1024;
-
-fn map_size_bytes(size: MapSize) -> usize {
-    match size {
-        MapSize::Page4K => 4096,
-        MapSize::Page2M => TWO_MIB,
-    }
-}
-
-/// Map through the `kor-mmu` engine on the active root.
-pub fn map(vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError> {
-    // SAFETY: the active root is live for the whole call; the transaction
-    // serializes against other kor-mmu users.
-    let space = unsafe { crate::AddrSpace::from_root(root()) };
-    let mut txn = space.lock(vaddr..vaddr + map_size_bytes(size));
-    txn.map(vaddr, paddr, flags, size)
-}
-
-/// Translate through the `kor-mmu` engine; the leaf granularity carries the
-/// offset bits a megapage PTE does not hold (Sv39 PA[20:12] come from VA).
-pub fn translate(vaddr: usize) -> Option<usize> {
-    // SAFETY: read-only walk of the live root inside a transaction.
-    let space = unsafe { crate::AddrSpace::from_root(root()) };
-    let txn = space.lock(vaddr..vaddr + 4096);
-    match txn.query(vaddr) {
-        crate::PageStatus::Mapped {
-            phys, granularity, ..
-        } => Some(phys + vaddr % granularity),
-        _ => None,
-    }
-}
-
-/// Unmap through the `kor-mmu` engine; returns the mapped physical address.
-pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
-    let Some(paddr) = translate(vaddr) else {
-        return Err(MapError::BlockedByExistingMapping);
-    };
-    // SAFETY: same contract as `map`.
-    let space = unsafe { crate::AddrSpace::from_root(root()) };
-    let mut txn = space.lock(vaddr..vaddr + map_size_bytes(size));
-    txn.unmap(vaddr..vaddr + map_size_bytes(size))
-        .map(|_| paddr)
-}
-
 pub(crate) fn flags_to_hw(flags: MappingFlags) -> usize {
     let mut hw = PTE_V;
     if flags.contains(MappingFlags::R) {
@@ -308,43 +264,21 @@ pub(crate) fn pte_address(pte: usize) -> usize {
     (pte << 2) & 0xFFFF_FFFF_F000
 }
 
-// ---------------------------------------------------------------------------
-// MmuFormat implementation (PTE encoding contract for the generic engine)
-// ---------------------------------------------------------------------------
 
-use crate::format::MmuFormat;
 
-/// Sv39: 3 levels, 4 KiB / 2 MiB / 1 GiB leaves.
-pub struct Sv39Format;
+/// PTE encoding contract for the generic engine (see `page_table`).
+impl AddrSpace {
+    /// Number of radix levels (Sv39-style: three).
+    pub const LEVELS: usize = 3;
 
-pub static FORMAT: Option<&'static dyn crate::format::MmuFormat> = Some(&Sv39Format);
+    /// This architecture drives real page tables.
+    pub const PAGING_SUPPORTED: bool = true;
 
-/// Bits per page-table index level (9 for 512-entry tables).
-const LEVEL_SHIFT: usize = 9;
-const PAGE_SHIFT: usize = 12;
-
-impl MmuFormat for Sv39Format {
-    fn levels(&self) -> usize {
-        3
-    }
-
-    fn table_index(&self, va: usize, level: usize) -> usize {
-        (va >> (PAGE_SHIFT + LEVEL_SHIFT * level)) & ((1 << LEVEL_SHIFT) - 1)
-    }
-
-    fn page_offset(&self, va: usize, level: usize) -> usize {
-        va & ((1usize << (PAGE_SHIFT + LEVEL_SHIFT * level)) - 1)
-    }
-
-    fn leaf_size(&self, level: usize) -> usize {
-        1usize << (PAGE_SHIFT + LEVEL_SHIFT * level)
-    }
-
-    fn table_entry(&self, table_phys: usize) -> usize {
+                pub fn table_entry( table_phys: usize) -> usize {
         table_pte(table_phys)
     }
 
-    fn leaf_entry(&self, phys: usize, flags: MappingFlags, level: usize) -> usize {
+    pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
         match level {
             0 => leaf_pte(phys, flags),
             1 => megapage_2m_pte(phys, flags),
@@ -352,25 +286,25 @@ impl MmuFormat for Sv39Format {
         }
     }
 
-    fn entry_present(&self, entry: usize) -> bool {
+    pub fn entry_present( entry: usize) -> bool {
         is_valid(entry)
     }
 
-    fn entry_is_leaf(&self, entry: usize, _level: usize) -> bool {
+    pub fn entry_is_leaf( entry: usize, _level: usize) -> bool {
         // A PTE with any of R/W/X set is a leaf at every level; V with
         // R=W=X=0 points to the next-level table.
         is_leaf(entry)
     }
 
-    fn entry_phys(&self, entry: usize, _level: usize) -> usize {
+    pub fn entry_phys( entry: usize, _level: usize) -> usize {
         pte_address(entry)
     }
 
-    fn entry_flags(&self, entry: usize) -> MappingFlags {
+    pub fn entry_flags( entry: usize) -> MappingFlags {
         mapping_flags(entry)
     }
 
-    fn flush_tlb(&self, va: Option<usize>) {
+    pub fn flush_tlb( va: Option<usize>) {
         // SAFETY: `sfence.vma` is always executable in S-mode; with an
         // address it flushes that page's translations, else everything.
         unsafe {

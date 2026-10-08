@@ -13,13 +13,34 @@
 //! scope at this scale.
 
 use crate::descriptor::{PT_ENTRIES, PageStatus, descriptor_of};
-use crate::format::MmuFormat;
 use kor::frame::{PAGE_SIZE, alloc_frame, free_frames};
 use kor::mapping::{MapError, MapSize, MappingFlags};
 
-/// The installed format (see [`crate::current_format`]).
-fn format() -> &'static dyn MmuFormat {
-    crate::current_format().expect("kor-mmu: paging unsupported on this architecture")
+/// Bits of virtual address consumed per level (512-entry tables).
+const LEVEL_SHIFT: usize = 9;
+/// Bits below the level indexes (4 KiB base pages).
+const PAGE_SHIFT: usize = 12;
+
+/// Page-table index of `va` at `level` (0 = leaf level).
+///
+/// Identical on every supported format: 9-bit slices above the base page.
+fn table_index(va: usize, level: usize) -> usize {
+    (va >> (PAGE_SHIFT + LEVEL_SHIFT * level)) & (PT_ENTRIES - 1)
+}
+
+/// Bytes covered by one mapping of `size`.
+fn map_size_bytes(size: MapSize) -> usize {
+    match size {
+        MapSize::Page4K => PAGE_SIZE,
+        MapSize::Page2M => 2 * 1024 * 1024,
+    }
+}
+
+/// Span of one entry at `level` — the leaf size there (4 KiB base, 2 MiB,
+/// 1 GiB, ...), which on every supported format is also the region a child
+/// table covers.
+fn span(level: usize) -> usize {
+    1usize << (PAGE_SHIFT + LEVEL_SHIFT * level)
 }
 
 /// Create a mutable view of the table page at physical address `phys`.
@@ -60,6 +81,18 @@ impl AddrSpace {
         self.root_phys
     }
 
+    /// Make this address space the active one on the current CPU and
+    /// invalidate stale translations.
+    ///
+    /// # Safety
+    /// The root must be a valid, page-aligned table containing the kernel
+    /// mappings required by the current execution context.  This is the
+    /// method form of [`crate::activate_address_space`].
+    pub unsafe fn activate(&self) {
+        // SAFETY: forwarded to the arch backend under the same contract.
+        unsafe { crate::arch::current::activate(self.root_phys) };
+    }
+
     /// Begin a transaction on `[start, end)`.
     ///
     /// Locks every page-table page from the root down through the pages
@@ -68,11 +101,43 @@ impl AddrSpace {
     pub fn lock(&self, range: core::ops::Range<usize>) -> RCursor<'_> {
         let mut cursor = RCursor {
             space: self,
-            fmt: format(),
             locked: alloc::vec::Vec::new(),
         };
         cursor.lock_range(range);
         cursor
+    }
+
+    /// Map through a transaction on this address space.
+    pub fn map(
+        &self,
+        va: usize,
+        phys: usize,
+        flags: MappingFlags,
+        size: MapSize,
+    ) -> Result<(), MapError> {
+        let mut txn = self.lock(va..va + map_size_bytes(size));
+        txn.map(va, phys, flags, size)
+    }
+
+    /// Translate: the leaf phys plus the in-page offset a coarse PTE does
+    /// not carry (e.g. Sv39 megapage PA[20:12] come from the VA).
+    pub fn translate(&self, va: usize) -> Option<usize> {
+        let txn = self.lock(va..va + PAGE_SIZE);
+        match txn.query(va) {
+            PageStatus::Mapped {
+                phys, granularity, ..
+            } => Some(phys + va % granularity),
+            _ => None,
+        }
+    }
+
+    /// Unmap through a transaction; returns the mapped physical address.
+    pub fn unmap(&self, va: usize, size: MapSize) -> Result<usize, MapError> {
+        let Some(paddr) = self.translate(va) else {
+            return Err(MapError::BlockedByExistingMapping);
+        };
+        let mut txn = self.lock(va..va + map_size_bytes(size));
+        txn.unmap(va..va + map_size_bytes(size)).map(|_| paddr)
     }
 
     /// Tear the whole address space down, freeing every table page (data
@@ -81,33 +146,31 @@ impl AddrSpace {
     /// # Safety
     /// The address space must not be active on any CPU.
     pub unsafe fn destroy(self) {
-        let fmt = format();
-        descriptor_of(self.root_phys).acquire();
+        let _root_guard = descriptor_of(self.root_phys).acquire();
         // SAFETY: root is locked and exclusively ours.
-        unsafe { Self::free_subtree(fmt, self.root_phys, fmt.levels() - 1) };
-        descriptor_of(self.root_phys).release();
+        unsafe { Self::free_subtree(self.root_phys, Self::LEVELS - 1) };
+        drop(_root_guard);
         free_frames(self.root_phys, 1);
-        fmt.flush_tlb(None);
+        Self::flush_tlb(None);
     }
 
     /// Free a whole table subtree rooted at `phys` (excluding data pages).
     ///
     /// # Safety
     /// `phys` is a live table page at `level`; its descriptor is locked.
-    unsafe fn free_subtree(fmt: &'static dyn MmuFormat, phys: usize, level: usize) {
+    unsafe fn free_subtree(phys: usize, level: usize) {
         let table = unsafe { table_mut(phys) };
         for index in 0..PT_ENTRIES {
             let entry = table[index];
-            if !fmt.entry_present(entry) {
+            if !Self::entry_present(entry) {
                 continue;
             }
-            if level > 0 && !fmt.entry_is_leaf(entry, level) {
-                let child = fmt.entry_phys(entry, level);
-                let desc = descriptor_of(child);
-                desc.acquire();
+            if level > 0 && !Self::entry_is_leaf(entry, level) {
+                let child = Self::entry_phys(entry, level);
+                let _guard = descriptor_of(child).acquire();
                 // SAFETY: child is locked and unreachable after this pass.
-                unsafe { Self::free_subtree(fmt, child, level - 1) };
-                desc.release();
+                unsafe { Self::free_subtree(child, level - 1) };
+                drop(_guard);
                 free_frames(child, 1);
             }
         }
@@ -119,57 +182,51 @@ impl AddrSpace {
 /// Transaction cursor over a locked range of an [`AddrSpace`].
 pub struct RCursor<'a> {
     space: &'a AddrSpace,
-    fmt: &'static dyn MmuFormat,
-    /// Table pages locked by this transaction, root first.
-    locked: alloc::vec::Vec<usize>,
+    /// Table pages locked by this transaction, root first, each with its
+    /// RAII guard.  Dropping a guard releases the page; the custom `Drop`
+    /// pops from the back so release happens in reverse acquisition order
+    /// (CortenMM's unlock protocol).
+    locked: alloc::vec::Vec<(usize, spin::MutexGuard<'static, ()>)>,
 }
 
 impl Drop for RCursor<'_> {
     fn drop(&mut self) {
-        // Reverse-order release, as in CortenMM's unlock.
-        for phys in self.locked.iter().rev() {
-            descriptor_of(*phys).release();
-        }
+        // Reverse-order release, as in CortenMM's unlock: popping from the
+        // back drops each guard (and thus unlocks its page) leaf-first.
+        while self.locked.pop().is_some() {}
     }
 }
 
 impl RCursor<'_> {
-    /// Region covered by one entry of `level`'s table.
-    fn span(&self, level: usize) -> usize {
-        let leaf = self.fmt.leaf_size(level);
-        if leaf != 0 {
-            leaf
-        } else {
-            self.span(level - 1) * PT_ENTRIES
-        }
-    }
-
     /// Lock `page`'s descriptor unless this transaction already holds it.
     fn lock_page(&mut self, page: usize) {
-        if !self.locked.contains(&page) {
-            descriptor_of(page).acquire();
-            self.locked.push(page);
+        if !self.locked.iter().any(|(held, _)| *held == page) {
+            let guard = descriptor_of(page).acquire();
+            self.locked.push((page, guard));
         }
     }
 
     fn lock_range(&mut self, range: core::ops::Range<usize>) {
         let mut page = self.space.root_phys;
         self.lock_page(page);
-        let mut level = self.fmt.levels() - 1;
+        let mut level = AddrSpace::LEVELS - 1;
         loop {
             if level == 0 {
                 break;
             }
             let table = unsafe { table_mut(page) };
-            let index = self.fmt.table_index(range.start, level);
+            let index = table_index(range.start, level);
             let entry = table[index];
-            let child_span = self.span(level - 1);
+            let child_span = span(level - 1);
             // Descend only while one child page covers the whole range.
             let covered = range.end - 1 < (range.start / child_span + 1) * child_span;
-            if !self.fmt.entry_present(entry) || self.fmt.entry_is_leaf(entry, level) || !covered {
+            if !AddrSpace::entry_present(entry)
+                || AddrSpace::entry_is_leaf(entry, level)
+                || !covered
+            {
                 break;
             }
-            page = self.fmt.entry_phys(entry, level);
+            page = AddrSpace::entry_phys(entry, level);
             self.lock_page(page);
             level -= 1;
         }
@@ -180,27 +237,27 @@ impl RCursor<'_> {
     pub fn query(&self, va: usize) -> PageStatus {
         let mut inherited = PageStatus::Invalid;
         let mut page = self.space.root_phys;
-        let mut level = self.fmt.levels() - 1;
+        let mut level = AddrSpace::LEVELS - 1;
         loop {
             let table = unsafe { table_mut(page) };
-            let index = self.fmt.table_index(va, level);
+            let index = table_index(va, level);
             let entry = table[index];
             // SAFETY: the transaction holds this page's descriptor lock.
             let status = unsafe { descriptor_of(page).status(index) };
             if status != PageStatus::Invalid {
                 inherited = status;
             }
-            if !self.fmt.entry_present(entry) {
+            if !AddrSpace::entry_present(entry) {
                 return inherited;
             }
-            if self.fmt.entry_is_leaf(entry, level) || level == 0 {
+            if AddrSpace::entry_is_leaf(entry, level) || level == 0 {
                 return PageStatus::Mapped {
-                    phys: self.fmt.entry_phys(entry, level),
-                    flags: self.fmt.entry_flags(entry),
-                    granularity: self.fmt.leaf_size(level),
+                    phys: AddrSpace::entry_phys(entry, level),
+                    flags: AddrSpace::entry_flags(entry),
+                    granularity: span(level),
                 };
             }
-            page = self.fmt.entry_phys(entry, level);
+            page = AddrSpace::entry_phys(entry, level);
             level -= 1;
         }
     }
@@ -221,18 +278,18 @@ impl RCursor<'_> {
             MapSize::Page4K => 0,
             MapSize::Page2M => 1,
         };
-        let granularity = self.span(target_level);
+        let granularity = span(target_level);
         if va % granularity != 0 || phys % granularity != 0 {
             return Err(MapError::Unsupported);
         }
         let mut page = self.space.root_phys;
-        let mut level = self.fmt.levels() - 1;
+        let mut level = AddrSpace::LEVELS - 1;
         loop {
             let table = unsafe { table_mut(page) };
-            let index = self.fmt.table_index(va, level);
+            let index = table_index(va, level);
             let entry = table[index];
             if level == target_level {
-                if self.fmt.entry_present(entry) {
+                if AddrSpace::entry_present(entry) {
                     // A hardware leaf whose metadata says `Mapped` is an
                     // explicit mapping — refuse to overwrite it.  A leaf
                     // with `Invalid` metadata is filler created by a split
@@ -244,7 +301,7 @@ impl RCursor<'_> {
                         return Err(MapError::BlockedByExistingMapping);
                     }
                 }
-                table[index] = self.fmt.leaf_entry(phys, flags, level);
+                table[index] = AddrSpace::leaf_entry(phys, flags, level);
                 // SAFETY: this transaction holds the page's lock.
                 unsafe {
                     descriptor_of(page).set_status(
@@ -256,22 +313,22 @@ impl RCursor<'_> {
                         },
                     )
                 };
-                self.fmt.flush_tlb(Some(va));
+                AddrSpace::flush_tlb(Some(va));
                 return Ok(());
             }
-            if !self.fmt.entry_present(entry) {
+            if !AddrSpace::entry_present(entry) {
                 let child = alloc_frame().ok_or(MapError::OutOfMemory)?;
                 // SAFETY: fresh frame owned by this transaction.
                 unsafe { kor::addr::PhysAddr::new(child).clear_page() };
-                table[index] = self.fmt.table_entry(child);
+                table[index] = AddrSpace::table_entry(child);
                 self.lock_page(child);
                 page = child;
-            } else if self.fmt.entry_is_leaf(entry, level) {
+            } else if AddrSpace::entry_is_leaf(entry, level) {
                 // Split the larger leaf so finer pages can be mapped inside.
                 self.split_leaf(page, index, level)?;
-                page = self.fmt.entry_phys(table[index], level);
+                page = AddrSpace::entry_phys(table[index], level);
             } else {
-                page = self.fmt.entry_phys(entry, level);
+                page = AddrSpace::entry_phys(entry, level);
                 self.lock_page(page);
             }
             level -= 1;
@@ -282,22 +339,20 @@ impl RCursor<'_> {
     /// same-permission children covering the identical region.
     fn split_leaf(&mut self, page: usize, index: usize, level: usize) -> Result<(), MapError> {
         let old_entry = unsafe { table_mut(page) }[index];
-        let old_phys = self.fmt.entry_phys(old_entry, level);
-        let old_flags = self.fmt.entry_flags(old_entry);
+        let old_phys = AddrSpace::entry_phys(old_entry, level);
+        let old_flags = AddrSpace::entry_flags(old_entry);
         // SAFETY: this transaction holds the page's lock.
 
         let child = alloc_frame().ok_or(MapError::OutOfMemory)?;
         // SAFETY: fresh frame owned by this transaction.
         unsafe { kor::addr::PhysAddr::new(child).clear_page() };
         let child_table = unsafe { table_mut(child) };
-        let child_span = self.span(level - 1);
+        let child_span = span(level - 1);
         for i in 0..PT_ENTRIES {
-            child_table[i] = self
-                .fmt
-                .leaf_entry(old_phys + i * child_span, old_flags, level - 1);
+            child_table[i] = AddrSpace::leaf_entry(old_phys + i * child_span, old_flags, level - 1);
         }
         let parent_table = unsafe { table_mut(page) };
-        parent_table[index] = self.fmt.table_entry(child);
+        parent_table[index] = AddrSpace::table_entry(child);
         // Split filler is metadata-`Invalid`: the hardware leaves carry the
         // old mapping (query reads hardware at leaf level), and finer maps
         // may refine them.  Explicit maps always mark `Mapped`.
@@ -312,7 +367,7 @@ impl RCursor<'_> {
     /// mappings; page faults later turn `Allocated` into real mappings.
     pub fn mark(&mut self, range: core::ops::Range<usize>, flags: MappingFlags) {
         let root = self.space.root_phys;
-        let levels = self.fmt.levels() - 1;
+        let levels = AddrSpace::LEVELS - 1;
         self.mark_in(root, 0, levels, range, flags);
     }
 
@@ -325,9 +380,9 @@ impl RCursor<'_> {
         flags: MappingFlags,
     ) {
         let table = unsafe { table_mut(page) };
-        let span = self.span(level);
-        let first = self.fmt.table_index(range.start, level);
-        let last = self.fmt.table_index(range.end - 1, level);
+        let span = span(level);
+        let first = table_index(range.start, level);
+        let last = table_index(range.end - 1, level);
         for index in first..=last {
             let entry_start = base + index * span;
             let entry_end = entry_start + span;
@@ -339,11 +394,11 @@ impl RCursor<'_> {
                 // SAFETY: this transaction holds the page's lock.
                 unsafe { descriptor_of(page).set_status(index, PageStatus::Allocated(flags)) };
             } else if level > 0
-                && self.fmt.entry_present(entry)
-                && !self.fmt.entry_is_leaf(entry, level)
+                && AddrSpace::entry_present(entry)
+                && !AddrSpace::entry_is_leaf(entry, level)
             {
                 // Partially covered: descend into an existing finer table.
-                let child = self.fmt.entry_phys(entry, level);
+                let child = AddrSpace::entry_phys(entry, level);
                 let lo = range.start.max(entry_start);
                 let hi = range.end.min(entry_end);
                 self.lock_page(child);
@@ -358,9 +413,9 @@ impl RCursor<'_> {
         }
         let mut unmapped = 0usize;
         let root = self.space.root_phys;
-        let levels = self.fmt.levels() - 1;
+        let levels = AddrSpace::LEVELS - 1;
         self.unmap_in(root, 0, levels, range, &mut unmapped)?;
-        self.fmt.flush_tlb(None);
+        AddrSpace::flush_tlb(None);
         Ok(unmapped)
     }
 
@@ -373,18 +428,18 @@ impl RCursor<'_> {
         unmapped: &mut usize,
     ) -> Result<(), MapError> {
         let table = unsafe { table_mut(page) };
-        let span = self.span(level);
-        let first = self.fmt.table_index(range.start, level);
-        let last = self.fmt.table_index(range.end - 1, level);
+        let span = span(level);
+        let first = table_index(range.start, level);
+        let last = table_index(range.end - 1, level);
         for index in first..=last {
             let entry = table[index];
-            if !self.fmt.entry_present(entry) {
+            if !AddrSpace::entry_present(entry) {
                 continue;
             }
             let entry_start = base + index * span;
             let entry_end = entry_start + span;
             let fully = range.start <= entry_start && entry_end <= range.end;
-            if self.fmt.entry_is_leaf(entry, level) {
+            if AddrSpace::entry_is_leaf(entry, level) {
                 if fully || level == 0 {
                     table[index] = 0;
                     // SAFETY: this transaction holds the page's lock.
@@ -392,7 +447,7 @@ impl RCursor<'_> {
                     *unmapped += span / PAGE_SIZE;
                 }
             } else if level > 0 {
-                let child = self.fmt.entry_phys(entry, level);
+                let child = AddrSpace::entry_phys(entry, level);
                 let lo = range.start.max(entry_start);
                 let hi = range.end.min(entry_end);
                 self.lock_page(child);
@@ -405,7 +460,8 @@ impl RCursor<'_> {
                     // SAFETY: the child is unreachable from now on.
                     unsafe { child_desc.drop_metadata() };
                     free_frames(child, 1);
-                    self.locked.retain(|p| *p != child);
+                    // Dropping the guard releases the freed child's lock.
+                    self.locked.retain(|(held, _)| *held != child);
                     table[index] = 0;
                 }
             }
