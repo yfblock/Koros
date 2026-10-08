@@ -20,9 +20,6 @@ kor_arch::boot_trampoline_x86_64!(bstack_top, rust_entry);
 #[cfg(target_arch = "aarch64")]
 kor_arch::boot_trampoline_aarch64!(bstack_top, rust_entry);
 
-#[cfg(target_arch = "riscv64")]
-mod boot_mmu;
-
 pub(crate) fn platform_config() -> PlatformConfig {
     #[cfg(target_arch = "riscv64")]
     return PlatformConfig {

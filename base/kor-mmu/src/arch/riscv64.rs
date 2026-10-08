@@ -25,8 +25,7 @@ const PTE_NUM: usize = 512;
 /// Returns the phys→virt offset of that window.
 ///
 /// Pure and static-free on purpose: it executes at a physical PC with the
-/// MMU off, called from the kor-arch trampoline via the app's
-/// `boot_mmu_build` hook.
+/// MMU off, called from the kor-arch boot trampoline.
 pub fn boot_table_identity_high(table: &mut [usize; PTE_NUM]) -> usize {
     for gib in 0..4usize {
         let pa = gib << 30;
@@ -35,6 +34,22 @@ pub fn boot_table_identity_high(table: &mut [usize; PTE_NUM]) -> usize {
         table[256 + gib] = entry;
     }
     0xFFFF_FFC0_0000_0000
+}
+
+/// Boot-trampoline hook (called with the MMU off at a physical PC): fill
+/// the table buffer with the default mapping and report the offset.
+///
+/// # Safety
+/// Must stay pure and static-free (no panics, no globals): paging is off
+/// and only the trampoline's physical stack exists.  An application that
+/// wants a different boot mapping writes its own trampoline (raw
+/// `global_asm!`) instead of the kor-arch macro.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn boot_mmu_build(table_pa: usize, _table_len: usize) -> usize {
+    // SAFETY: the trampoline passes the physical address of its aligned
+    // BSS buffer, owned for the duration of the call.
+    let table = unsafe { &mut *(table_pa as *mut [usize; PTE_NUM]) };
+    boot_table_identity_high(table)
 }
 
 /// Kernel (boot) root captured during init. Shutdown switches back to it

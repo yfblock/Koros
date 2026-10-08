@@ -14,9 +14,13 @@
 //!
 //! ```ignore
 //! kor_arch::boot_stack!(0x80000);                    // 512 KiB, app policy
-//! kor_arch::boot_trampoline_riscv64!(bstack_top);    // mechanism
+//! kor_arch::boot_trampoline_riscv64!(bstack_top, rust_entry); // mechanism
 //! kor_arch::boot_entry_riscv64!();                   // rust_entry wrapper
 //! ```
+//!
+//! The default boot mapping (and the `boot_mmu_build` hook the trampoline
+//! calls) is provided by kor-mmu per arch; an application wanting a
+//! different mapping or boot shape writes raw `global_asm!` instead.
 
 /// Define the boot stack in `.bss.bstack` (size in bytes, app policy).
 ///
@@ -41,12 +45,9 @@ macro_rules! boot_stack {
 // riscv64
 // ---------------------------------------------------------------------------
 
-/// Emit the Sv39 boot trampoline: BSS clear, physical stack, call the
-/// app's `boot_mmu_build` hook, enable paging when the returned offset is
-/// non-zero, cross the offset, and call `{entry}`.
-///
-/// The app must define `boot_mmu_build(table_pa, len) -> offset`
-/// (`extern "C"`, `#[no_mangle]`); returning 0 runs unmapped.
+/// Emit the Sv39 boot trampoline: BSS clear, physical stack, call
+/// kor-mmu's default `boot_mmu_build` hook, enable paging when the
+/// returned offset is non-zero, cross the offset, and call `{entry}`.
 ///
 /// # Safety
 /// Expands to the raw entry assembly; call once per binary, from the app's
@@ -173,11 +174,9 @@ macro_rules! boot_entry_riscv64 {
 // ---------------------------------------------------------------------------
 
 /// Emit the AArch64 boot trampoline: runtime load delta, BSS clear,
-/// physical stack, `boot_mmu_build` hook, MAIR/TCR/TTBR programming and
-/// MMU enable when the offset is non-zero, offset crossing, `{entry}`.
-///
-/// The app must define `boot_mmu_build(table_pa, len) -> offset`
-/// (`extern "C"`, `#[no_mangle]`); returning 0 runs unmapped.
+/// physical stack, kor-mmu's default `boot_mmu_build` hook, MAIR/TCR/TTBR
+/// programming and MMU enable when the offset is non-zero, offset
+/// crossing, `{entry}`.
 ///
 /// # Safety
 /// Call once per binary; `$stack_top` names the app's boot-stack-top

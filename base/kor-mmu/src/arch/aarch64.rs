@@ -20,8 +20,8 @@ pub(crate) const PTE_TABLE: usize = 1 << 1;
 /// `0xFFFF_0000_0000_0000` (the returned offset).
 ///
 /// Pure and static-free on purpose: it executes at a physical PC with the
-/// MMU off, called from the kor-arch trampoline via the app's
-/// `boot_mmu_build` hook.  `pages` is the two-page buffer (L0 then L1).
+/// MMU off, called from the kor-arch boot trampoline.  `pages` is the
+/// two-page buffer (L0 then L1).
 pub fn boot_table_identity_512g(pages: &mut [usize; PTE_NUM * 2]) -> usize {
     let l1_pa = pages.as_ptr() as usize + PTE_NUM * 8;
     let (l0, l1) = pages.split_at_mut(PTE_NUM);
@@ -31,6 +31,21 @@ pub fn boot_table_identity_512g(pages: &mut [usize; PTE_NUM * 2]) -> usize {
         l1[gib] = block_pte(gib << 30, MappingFlags::KERNEL_RWX);
     }
     0xFFFF_0000_0000_0000
+}
+
+/// Boot-trampoline hook (called with the MMU off at a physical PC): fill
+/// the two-page buffer with the default mapping and report the offset.
+///
+/// # Safety
+/// Must stay pure and static-free: paging is off and only the
+/// trampoline's physical stack exists.  Applications wanting a different
+/// boot mapping write their own trampoline (raw `global_asm!`).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn boot_mmu_build(table_pa: usize, _table_len: usize) -> usize {
+    // SAFETY: the trampoline passes the physical address of its aligned
+    // BSS buffer, owned for the duration of the call.
+    let pages = unsafe { &mut *(table_pa as *mut [usize; PTE_NUM * 2]) };
+    boot_table_identity_512g(pages)
 }
 const PTE_AF: usize = 1 << 10;
 const PTE_ATTR: usize = 1 << 2; // MAIR index 1 (Normal WB), matches boot.S
