@@ -7,9 +7,6 @@ use kor::mapping::MapError;
 use kor::mapping::MappingFlags;
 
 /// First unused 1 GiB slot in the high-half root (boot leaves use 256–259).
-pub const TEST_VA_4K: usize = 0xFFFF_FFC4_1000_0000;
-/// Separate 1 GiB slot (root index 261) for 2 MiB mapping tests.
-pub const TEST_VA_2M: usize = 0xFFFF_FFC5_0000_0000;
 
 const PTE_V: usize = 1 << 0;
 const PTE_R: usize = 1 << 1;
@@ -41,10 +38,6 @@ pub unsafe fn activate_boot_root() {
     if boot != 0 {
         unsafe { activate(boot) };
     }
-}
-
-pub fn dynamic_maps_supported() -> bool {
-    true
 }
 
 /// Read the root installed on this CPU. Address spaces are task state, so a

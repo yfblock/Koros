@@ -4,14 +4,8 @@
 
 use kor::{MapError, MapSize, MappingFlags};
 
-pub const TEST_VA_4K: usize = 0;
-pub const TEST_VA_2M: usize = 0;
 
 pub fn init() {}
-
-pub fn dynamic_maps_supported() -> bool {
-    false
-}
 
 pub fn map(
     _vaddr: usize,

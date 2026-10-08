@@ -8,8 +8,6 @@ use kor::mapping::MappingFlags;
 use x86_64::registers::control::Cr3;
 
 /// First PML4 index after the boot high-half 512 GiB slot (index 256).
-pub const TEST_VA_4K: usize = 0xFFFF_8080_0000_0000;
-pub const TEST_VA_2M: usize = 0xFFFF_8080_0020_0000;
 
 const PTE_P: usize = 1 << 0;
 const PTE_RW: usize = 1 << 1;
@@ -152,10 +150,6 @@ pub fn split_identity() {
         let cr3 = root.raw();
         core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack));
     }
-}
-
-pub fn dynamic_maps_supported() -> bool {
-    true
 }
 
 pub(crate) fn leaf_pte_4k(paddr: usize, flags: MappingFlags) -> usize {

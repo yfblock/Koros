@@ -34,14 +34,6 @@ pub use page_table::{AddrSpace, RCursor};
 
 use kor::mapping::{MapError, MapSize, MappingFlags};
 
-/// Whether this architecture drives real page tables (false on loongarch64).
-pub const PAGING_SUPPORTED: bool = AddrSpace::PAGING_SUPPORTED;
-
-/// Arch-specific test VA for a 4 KiB mapping (self-test).
-pub const TEST_VA_4K: usize = arch::current::TEST_VA_4K;
-/// Arch-specific test VA for a 2 MiB mapping (self-test).
-pub const TEST_VA_2M: usize = arch::current::TEST_VA_2M;
-
 /// Install runtime page-table services (e.g. capture the boot root).
 pub fn page_table_init() {
     arch::current::init();
@@ -49,7 +41,7 @@ pub fn page_table_init() {
 
 /// Whether dynamic mappings are supported (false on unpaged arches).
 pub fn dynamic_maps_supported() -> bool {
-    arch::current::dynamic_maps_supported()
+    AddrSpace::PAGING_SUPPORTED
 }
 
 /// Map through the generic engine on the active root.

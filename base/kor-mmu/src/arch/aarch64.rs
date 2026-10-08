@@ -7,8 +7,6 @@ use kor::mapping::MapError;
 use kor::mapping::MappingFlags;
 
 /// 512 GiB slot — L0 index 1 is unused by the boot 1 GiB block map at L0[0].
-pub const TEST_VA_4K: usize = 0x0080_0000_0000;
-pub const TEST_VA_2M: usize = 0x0080_0020_0000;
 
 pub(crate) const PTE_VALID: usize = 1 << 0;
 pub(crate) const PTE_TABLE: usize = 1 << 1;
@@ -154,10 +152,6 @@ pub fn split_identity() {
         // Flush TLB
         core::arch::asm!("tlbi vmalle1is", "dsb sy", "isb");
     }
-}
-
-pub fn dynamic_maps_supported() -> bool {
-    true
 }
 
 pub(crate) fn page_pte(paddr: usize, flags: MappingFlags) -> usize {

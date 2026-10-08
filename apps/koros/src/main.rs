@@ -173,17 +173,20 @@ extern "C" fn kernel_main() -> ! {
     kor_sched::idle_loop();
 }
 
-/// Exercise frame allocation + dynamic page mapping (mirrors the old
-/// `mm::page_table::self_test`, using the provider + arch test VAs).
+/// Exercise frame allocation + dynamic page mapping on the active root.
 fn page_table_self_test() {
     use kor::{MapSize, MappingFlags};
     if !kor_mmu::dynamic_maps_supported() {
         kor::println!("mm: page-table self-test skipped (no dynamic maps)");
         return;
     }
+    // Self-test fixtures: canonical low-half scratch slots, free in the boot
+    // tables of every paging arch (Sv39 low half tops out at 256 GiB).
+    const TEST_VA_4K: usize = 0x0000_0030_0000_0000;
+    const TEST_VA_2M: usize = 0x0000_0030_0020_0000;
     const MARK: u64 = 0xDEAD_BEEF_CAFE_BABE;
     let phys = kor::frame::alloc_frame().expect("alloc_frame");
-    let va = kor_mmu::TEST_VA_4K;
+    let va = TEST_VA_4K;
     kor_mmu::map(va, phys, MappingFlags::KERNEL_RWX, MapSize::Page4K).expect("map 4K");
     unsafe {
         (va as *mut u64).write_volatile(MARK);
@@ -193,7 +196,7 @@ fn page_table_self_test() {
 
     let phys2m = kor::frame::alloc_huge_2m().expect("alloc_huge_2m");
     // Sv39 L1 megapages take PA[20:12] from VA[20:12]; match those bits.
-    let va2m = (kor_mmu::TEST_VA_2M & !0x1FF_000) | (phys2m & 0x1FF_000);
+    let va2m = (TEST_VA_2M & !0x1FF_000) | (phys2m & 0x1FF_000);
     kor_mmu::map(va2m, phys2m, MappingFlags::KERNEL_RWX, MapSize::Page2M).expect("map 2M");
     assert_eq!(kor_mmu::translate(va2m), Some(phys2m));
     unsafe {
