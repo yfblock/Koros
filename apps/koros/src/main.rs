@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(bad_asm_style)]
 //! Kernel composition root: installs the arch provider, interrupt controller,
 //! console and trap callbacks, brings up memory/SMP/drivers, runs the ext2
 //! self-check, and spawns the scheduler demo tasks.

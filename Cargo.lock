@@ -230,6 +230,7 @@ dependencies = [
  "kor-virtio",
  "smoltcp",
  "spin",
+ "x86_64",
 ]
 
 [[package]]
@@ -246,6 +247,7 @@ dependencies = [
  "kor-sched",
  "kor-virtio",
  "spin",
+ "x86_64",
 ]
 
 [[package]]

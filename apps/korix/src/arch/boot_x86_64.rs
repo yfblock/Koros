@@ -33,7 +33,7 @@ const CR4: u64 = Cr4Flags::PHYSICAL_ADDRESS_EXTENSION.bits()
 const EFER: u64 = EferFlags::LONG_MODE_ENABLE.bits();
 
 global_asm!(
-    include_str!("multiboot.S"),
+    include_str!("multiboot_x86_64.S"),
     mb_hdr_magic  = const MULTIBOOT_MAGIC,
     mb_hdr_flags  = const MULTIBOOT_FLAGS,
     entry         = sym rust_entry,
@@ -47,8 +47,8 @@ global_asm!(
 /// Rust entry called from the 64-bit assembly stub.
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry(_magic: usize, mbi: usize) {
-    crate::x86_64::mm::set_multiboot_info(mbi);
+    kor_arch::x86_64::mm::set_multiboot_info(mbi);
     // SAFETY: `kernel_main` is provided by the `koros` binary crate and never
     // returns.
-    unsafe { crate::kernel_main() }
+    crate::kernel_main()
 }

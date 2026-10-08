@@ -27,8 +27,8 @@ unsafe extern "C" fn _start() -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry() {
-    // SAFETY: `kernel_main` is provided by the `koros` binary crate.
-    unsafe { crate::kernel_main() }
+    // `kernel_main` is this crate's own entry; it never returns.
+    crate::kernel_main()
 }
 
 /// Secondary-core entry, reached after the boot core places the entry address
@@ -48,5 +48,5 @@ unsafe extern "C" fn _secondary_start() -> ! {
 
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry_secondary(cpu_id: usize) -> ! {
-    unsafe { crate::secondary_entry(cpu_id) }
+    crate::secondary_entry(cpu_id)
 }

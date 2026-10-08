@@ -24,3 +24,6 @@ smoltcp = { version = "0.12", default-features = false, features = ["alloc", "me
 
 [build-dependencies]
 # build.rs generates linker script from linker.lds template
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = "0.15"

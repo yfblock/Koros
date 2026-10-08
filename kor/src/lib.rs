@@ -12,7 +12,6 @@ extern crate alloc;
 pub mod addr;
 pub mod arch;
 pub mod block;
-pub mod boot_stack;
 pub mod cmdline;
 pub mod config;
 pub mod console;

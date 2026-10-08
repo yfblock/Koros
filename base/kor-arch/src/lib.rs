@@ -154,10 +154,8 @@ pub fn console() -> &'static dyn kor::Console {
     }
 }
 
-// Provided by the `koros` binary crate; resolved at link time.
+// Provided by the application binary; resolved at link time.
 unsafe extern "C" {
-    /// Kernel entry, called by the arch boot code after early setup.
-    pub fn kernel_main() -> !;
-    /// Secondary-CPU entry, called from the arch secondary boot stub.
+    /// Secondary-CPU entry, called from the arch secondary bring-up stub.
     pub fn secondary_entry(cpu_id: usize) -> !;
 }

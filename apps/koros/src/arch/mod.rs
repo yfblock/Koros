@@ -6,6 +6,28 @@ use kor::config::{Console as ConsoleCfg, PlatformConfig};
 #[cfg(target_arch = "riscv64")]
 mod boot_mmu;
 
+use core::arch::global_asm;
+
+// Boot stack — 512 KiB, placed in BSS by the linker (owned by this app).
+global_asm!(
+    ".section .bss.bstack
+     .global bstack
+     .global bstack_top
+     bstack:
+     .fill 0x80000
+     .size bstack, . - bstack
+     bstack_top:"
+);
+
+#[cfg(target_arch = "aarch64")]
+mod boot_aarch64;
+#[cfg(target_arch = "loongarch64")]
+mod boot_loongarch64;
+#[cfg(target_arch = "riscv64")]
+mod boot_riscv64;
+#[cfg(target_arch = "x86_64")]
+mod boot_x86_64;
+
 /// Board / platform configuration for the QEMU targets.
 pub(crate) fn platform_config() -> PlatformConfig {
     #[cfg(target_arch = "riscv64")]

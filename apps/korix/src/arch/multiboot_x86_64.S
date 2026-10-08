@@ -54,10 +54,9 @@ _start:
     mov     gs, ax
 
     # set stack (physical address, 32-bit mode)
-    # AT&T syntax for immediate load: .intel_syntax treats "mov esp, expr" as memory load!
-    .att_syntax
-    movl    $bstack_top - {kernel_offset}, %esp
-    .intel_syntax noprefix
+    # `mov esp, imm` in Intel syntax is a memory load; encode AT&T-style
+    # immediate directly (Intel syntax default in global_asm).
+    mov     esp, bstack_top - {kernel_offset}
 
     # enable PAE + PGE
     mov     eax, cr4
