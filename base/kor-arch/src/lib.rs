@@ -15,6 +15,7 @@ cfg_select! {
     target_arch = "loongarch64" => { pub mod loongarch64; }
 }
 
+pub mod boot;
 pub mod uart;
 /// Architecture-neutral snapshot of a user trap frame.
 ///

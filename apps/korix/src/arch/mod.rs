@@ -1,6 +1,25 @@
 //! Arch-specific application code: boot MMU policy + platform constants.
 use kor::config::{self, PlatformConfig};
 
+kor_arch::boot_stack!(0x80000);
+
+unsafe extern "C" {
+    static bstack_top: u64;
+    #[cfg(target_arch = "riscv64")]
+    fn rust_entry();
+    #[cfg(target_arch = "x86_64")]
+    fn rust_entry();
+    #[cfg(target_arch = "aarch64")]
+    fn rust_entry();
+}
+
+#[cfg(target_arch = "riscv64")]
+kor_arch::boot_trampoline_riscv64!(bstack_top, rust_entry);
+#[cfg(target_arch = "x86_64")]
+kor_arch::boot_trampoline_x86_64!(bstack_top, rust_entry);
+#[cfg(target_arch = "aarch64")]
+kor_arch::boot_trampoline_aarch64!(bstack_top, rust_entry);
+
 #[cfg(target_arch = "riscv64")]
 mod boot_mmu;
 
@@ -33,19 +52,6 @@ pub(crate) fn platform_config() -> PlatformConfig {
     )))]
     compile_error!("korix supports riscv64, aarch64, and x86_64");
 }
-
-use core::arch::global_asm;
-
-// Boot stack — 512 KiB, placed in BSS by the linker (owned by this app).
-global_asm!(
-    ".section .bss.bstack
-     .global bstack
-     .global bstack_top
-     bstack:
-     .fill 0x80000
-     .size bstack, . - bstack
-     bstack_top:"
-);
 
 #[cfg(target_arch = "aarch64")]
 mod boot_aarch64;
