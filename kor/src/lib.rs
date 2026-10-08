@@ -18,6 +18,7 @@ pub mod config;
 pub mod console;
 pub mod driver;
 pub mod fdt;
+pub mod frame;
 pub mod interrupt;
 pub mod irq;
 pub mod mapping;

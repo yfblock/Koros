@@ -22,9 +22,9 @@ ifeq ($(ARCH), riscv64)
   QEMU_EXEC += -machine virt
   KERNEL_IMG := target/$(TARGET)/release/$(BIN).bin
   ifeq ($(BIN), korix)
-    EXT2_IMG := os-images/$(ROOTFS)-riscv64.img
+    EXT2_IMG := tools/os-images/$(ROOTFS)-riscv64.img
   else ifeq ($(BIN), koros)
-    EXT2_IMG := os-images/ext2-test.img
+    EXT2_IMG := tools/os-images/ext2-test.img
   endif
 else ifeq ($(ARCH), aarch64)
   TARGET := aarch64-unknown-none-softfloat
@@ -35,16 +35,16 @@ else ifeq ($(ARCH), aarch64)
   endif
   KERNEL_IMG := target/$(TARGET)/release/$(BIN).bin
   ifeq ($(BIN), korix)
-    EXT2_IMG := os-images/$(ROOTFS)-aarch64.img
+    EXT2_IMG := tools/os-images/$(ROOTFS)-aarch64.img
   else ifeq ($(BIN), koros)
-    EXT2_IMG := os-images/ext2-test.img
+    EXT2_IMG := tools/os-images/ext2-test.img
   endif
 else ifeq ($(ARCH), loongarch64)
   TARGET := loongarch64-unknown-none
   QEMU_EXEC += -M virt -m 1G
   KERNEL_IMG := target/$(TARGET)/release/$(BIN)
   ifeq ($(BIN), koros)
-    EXT2_IMG := os-images/ext2-test.img
+    EXT2_IMG := tools/os-images/ext2-test.img
   endif
 else ifeq ($(ARCH), x86_64)
   TARGET := x86_64-unknown-none
@@ -58,9 +58,9 @@ else ifeq ($(ARCH), x86_64)
   # x86_64 multiboot needs the ELF, not the raw binary.
   KERNEL_IMG := target/$(TARGET)/release/$(BIN)
   ifeq ($(BIN), korix)
-    EXT2_IMG := os-images/$(ROOTFS)-x86_64.img
+    EXT2_IMG := tools/os-images/$(ROOTFS)-x86_64.img
   else ifeq ($(BIN), koros)
-    EXT2_IMG := os-images/ext2-test.img
+    EXT2_IMG := tools/os-images/ext2-test.img
   endif
 else
   $(error ARCH must be one of: riscv64, x86_64, aarch64, loongarch64)
@@ -111,34 +111,34 @@ endif
 
 run: build $(EXT2_IMG)
 	@if [ "$(ARCH)" = "aarch64" ] && [ "$(BIN)" = "korhv" ]; then \
-		exec korhv/linux-demo/run2.sh; \
+		exec apps/korhv/linux-demo/run2.sh; \
 	else \
 		exec $(QEMU_EXEC); \
 	fi
 
 
-os-images/ext2-test.img:
+tools/os-images/ext2-test.img:
 	@mkdir -p $(dir $@)
 	dd if=/dev/zero of=$@ bs=1M count=4 2>/dev/null
 	mkfs.ext2 -b 1024 -q $@
 
-os-images/korix-riscv64.img: korix/busybox-riscv64 scripts/mk-korix-rootfs.py
-	scripts/mk-korix-rootfs.py riscv64 $@
+tools/os-images/korix-riscv64.img: apps/korix/busybox-riscv64 tools/scripts/mk-korix-rootfs.py
+	tools/scripts/mk-korix-rootfs.py riscv64 $@
 
-os-images/korix-aarch64.img: korix/busybox-aarch64 scripts/mk-korix-rootfs.py
-	scripts/mk-korix-rootfs.py aarch64 $@
+tools/os-images/korix-aarch64.img: apps/korix/busybox-aarch64 tools/scripts/mk-korix-rootfs.py
+	tools/scripts/mk-korix-rootfs.py aarch64 $@
 
-os-images/korix-x86_64.img: korix/busybox-x86_64 scripts/mk-korix-rootfs.py
-	scripts/mk-korix-rootfs.py x86_64 $@
+tools/os-images/korix-x86_64.img: apps/korix/busybox-x86_64 tools/scripts/mk-korix-rootfs.py
+	tools/scripts/mk-korix-rootfs.py x86_64 $@
 
-os-images/alpine-riscv64.img: scripts/mk-alpine-rootfs.py korix/busybox-riscv64
-	scripts/mk-alpine-rootfs.py riscv64 $@
+tools/os-images/alpine-riscv64.img: tools/scripts/mk-alpine-rootfs.py apps/korix/busybox-riscv64
+	tools/scripts/mk-alpine-rootfs.py riscv64 $@
 
-os-images/alpine-aarch64.img: scripts/mk-alpine-rootfs.py korix/busybox-aarch64
-	scripts/mk-alpine-rootfs.py aarch64 $@
+tools/os-images/alpine-aarch64.img: tools/scripts/mk-alpine-rootfs.py apps/korix/busybox-aarch64
+	tools/scripts/mk-alpine-rootfs.py aarch64 $@
 
-os-images/alpine-x86_64.img: scripts/mk-alpine-rootfs.py korix/busybox-x86_64
-	scripts/mk-alpine-rootfs.py x86_64 $@
+tools/os-images/alpine-x86_64.img: tools/scripts/mk-alpine-rootfs.py apps/korix/busybox-x86_64
+	tools/scripts/mk-alpine-rootfs.py x86_64 $@
 
 debug: build
 	$(QEMU_EXEC) -s -S
@@ -148,4 +148,4 @@ clean:
 	rm -rf os-images
 
 verify:
-	./scripts/verify.sh
+	./tools/scripts/verify.sh

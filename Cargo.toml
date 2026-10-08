@@ -1,3 +1,21 @@
 [workspace]
 resolver = "2"
-members = ["kor", "kor-frame", "kor-alloc", "kor-fs", "kor-ext2", "kor-ramfs", "kor-sched", "kor-arch", "kor-virtio", "koros", "korhv", "korix"]
+# Four tiers:
+#   kor/          — foundation crate (traits + registries + frame allocator)
+#   base/         — core kernel services (alloc, arch, mmu, sched, virtio)
+#   filesystems/  — storage stack (fs infrastructure + concrete filesystems)
+#   apps/         — composition roots (koros kernel demo, korix Linux-compat, korhv hypervisor)
+members = [
+    "kor",
+    "base/kor-alloc",
+    "base/kor-arch",
+    "base/kor-mmu",
+    "base/kor-sched",
+    "base/kor-virtio",
+    "filesystems/kor-ext2",
+    "filesystems/kor-fs",
+    "filesystems/kor-ramfs",
+    "apps/korhv",
+    "apps/korix",
+    "apps/koros",
+]

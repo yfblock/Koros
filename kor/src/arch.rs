@@ -7,8 +7,6 @@ extern crate alloc;
 use alloc::string::String;
 use spin::Once;
 
-use crate::mapping::{MapError, MapSize, MappingFlags};
-
 /// Opaque callee-saved register storage, large enough for every supported arch.
 ///
 /// Arch providers cast this buffer to their internal layout with
@@ -30,36 +28,6 @@ pub trait ArchProvider: Send + Sync {
     fn boot_cmdline(&self) -> Option<String>;
     fn detect_memory_regions(&self, add_region: &mut dyn FnMut(usize, usize));
 
-    // Page table
-    fn page_table_init(&self);
-    fn map(
-        &self,
-        vaddr: usize,
-        paddr: usize,
-        flags: MappingFlags,
-        size: MapSize,
-    ) -> Result<(), MapError>;
-    fn translate(&self, vaddr: usize) -> Option<usize>;
-    fn dynamic_maps_supported(&self) -> bool;
-    fn unmap(&self, vaddr: usize, size: MapSize) -> Result<usize, MapError>;
-    /// Physical root of the active address space.
-    fn address_space_root(&self) -> usize;
-    /// Activate an address space root and invalidate stale translations.
-    ///
-    /// # Safety
-    /// `root` must identify a valid architecture page-table root containing
-    /// the kernel mappings required by the current execution context.
-    unsafe fn activate_address_space(&self, root: usize);
-    /// Clone the active address space, deeply copying user pages.
-    fn clone_address_space(&self) -> Result<usize, MapError>;
-    /// Create an empty user address space retaining required kernel mappings.
-    fn new_address_space(&self) -> Result<usize, MapError>;
-    /// Destroy an inactive address space and release its user pages and tables.
-    ///
-    /// # Safety
-    /// `root` must not be active on any CPU.
-    unsafe fn destroy_address_space(&self, root: usize);
-
     // Trap install
     fn trap_init(&self);
 
@@ -76,6 +44,11 @@ pub trait ArchProvider: Send + Sync {
     fn cpu_id(&self) -> usize;
     fn wait_for_interrupt(&self);
     fn start_secondaries(&self) -> usize;
+
+    /// Power the machine off through the firmware (SBI SRST / PSCI
+    /// `SYSTEM_OFF` / ACPI PM1 port write).  Architectures without such a
+    /// path park forever instead.  Never returns.
+    fn shutdown(&self) -> !;
 
     // Context switch
     fn task_context_zero(&self) -> TaskContext;

@@ -1,0 +1,13 @@
+[package]
+name = "kor-virtio"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+kor = { path = "../../kor" }
+kor-sched = { path = "../kor-sched" }
+spin = "0.9"
+virtio-drivers = "0.13.0"
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = "0.15"

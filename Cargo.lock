@@ -136,7 +136,6 @@ name = "kor-alloc"
 version = "0.1.0"
 dependencies = [
  "kor",
- "kor-frame",
  "spin",
 ]
 
@@ -146,7 +145,7 @@ version = "0.1.0"
 dependencies = [
  "cfg-if",
  "kor",
- "kor-frame",
+ "kor-mmu",
  "spin",
  "x86_64",
 ]
@@ -161,19 +160,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "kor-frame"
-version = "0.1.0"
-dependencies = [
- "buddy_system_allocator",
- "kor",
-]
-
-[[package]]
 name = "kor-fs"
 version = "0.1.0"
 dependencies = [
  "kor",
  "spin",
+]
+
+[[package]]
+name = "kor-mmu"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "kor",
+ "spin",
+ "x86_64",
 ]
 
 [[package]]
@@ -190,6 +191,7 @@ version = "0.1.0"
 dependencies = [
  "kor",
  "kor-alloc",
+ "kor-mmu",
  "spin",
 ]
 
@@ -198,7 +200,6 @@ name = "kor-virtio"
 version = "0.1.0"
 dependencies = [
  "kor",
- "kor-frame",
  "kor-sched",
  "spin",
  "virtio-drivers",
@@ -211,7 +212,6 @@ version = "0.1.0"
 dependencies = [
  "kor",
  "kor-alloc",
- "kor-frame",
  "spin",
  "x86_64",
 ]
@@ -225,8 +225,8 @@ dependencies = [
  "kor-alloc",
  "kor-arch",
  "kor-ext2",
- "kor-frame",
  "kor-fs",
+ "kor-mmu",
  "kor-ramfs",
  "kor-sched",
  "kor-virtio",
@@ -242,8 +242,8 @@ dependencies = [
  "kor-alloc",
  "kor-arch",
  "kor-ext2",
- "kor-frame",
  "kor-fs",
+ "kor-mmu",
  "kor-ramfs",
  "kor-sched",
  "kor-virtio",

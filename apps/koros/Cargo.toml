@@ -1,0 +1,20 @@
+[package]
+name = "koros"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "koros"
+path = "src/main.rs"
+
+[dependencies]
+kor = { path = "../../kor" }
+kor-alloc = { path = "../../base/kor-alloc" }
+kor-fs = { path = "../../filesystems/kor-fs" }
+kor-ext2 = { path = "../../filesystems/kor-ext2" }
+kor-ramfs = { path = "../../filesystems/kor-ramfs" }
+kor-sched = { path = "../../base/kor-sched" }
+kor-arch = { path = "../../base/kor-arch" }
+kor-virtio = { path = "../../base/kor-virtio" }
+kor-mmu = { path = "../../base/kor-mmu" }
+spin = "0.9"
