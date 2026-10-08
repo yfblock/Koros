@@ -133,7 +133,7 @@ impl SlabHeap {
     /// `[start, start + size)` must be unused, page-aligned at `start`, and valid for `'static`.
     pub unsafe fn new(start: usize, size: usize) -> Self {
         assert!(
-            start % MIN_SLAB_BYTES == 0,
+            start.is_multiple_of(MIN_SLAB_BYTES),
             "heap start {start:#x} not page-aligned"
         );
         assert!(
@@ -141,7 +141,7 @@ impl SlabHeap {
             "heap size {size:#x} below minimum {MIN_HEAP_BYTES:#x}"
         );
         assert!(
-            size % MIN_HEAP_BYTES == 0,
+            size.is_multiple_of(MIN_HEAP_BYTES),
             "heap size must be a multiple of {MIN_HEAP_BYTES:#x}"
         );
 
@@ -239,7 +239,7 @@ impl SlabHeap {
 }
 
 fn large_extent_frames(layout: Layout) -> Option<usize> {
-    let size_frames = layout.size().max(1).checked_add(PAGE_SIZE - 1)? / PAGE_SIZE;
+    let size_frames = layout.size().max(1).checked_next_multiple_of(PAGE_SIZE)? / PAGE_SIZE;
     let align_frames = layout.align().max(PAGE_SIZE) / PAGE_SIZE;
     Some(size_frames.max(align_frames))
 }

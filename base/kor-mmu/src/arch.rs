@@ -10,10 +10,9 @@
 //! This is the one `cfg`-selected module inside `kor-mmu` (the same narrow
 //! exception `kor-arch` uses); everything above it is arch-neutral.
 
-cfg_if::cfg_if! {
-    if #[cfg(target_arch = "riscv64")]      { pub mod riscv64; pub use riscv64 as current; }
-    else if #[cfg(target_arch = "x86_64")]  { pub mod x86_64; pub use x86_64 as current; }
-    else if #[cfg(target_arch = "aarch64")] { pub mod aarch64; pub use aarch64 as current; }
-    else if #[cfg(target_arch = "loongarch64")] { pub mod loongarch64; pub use loongarch64 as current; }
-    else { compile_error!("kor-mmu: unsupported target_arch"); }
+cfg_select! {
+    target_arch = "riscv64"      => { pub mod riscv64; pub use riscv64 as current; }
+    target_arch = "x86_64"       => { pub mod x86_64; pub use x86_64 as current; }
+    target_arch = "aarch64"      => { pub mod aarch64; pub use aarch64 as current; }
+    target_arch = "loongarch64"  => { pub mod loongarch64; pub use loongarch64 as current; }
 }

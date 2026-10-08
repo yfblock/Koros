@@ -19,6 +19,11 @@ pub struct TaskContext {
 }
 
 /// The architecture-specific service surface, installed once at boot.
+#[diagnostic::on_unimplemented(
+    message = "this target has no `{Self}` implementation",
+    label = "missing `{Self}` impl",
+    note = "porting checklist: provide the impl for this architecture/crate"
+)]
 pub trait ArchProvider: Send + Sync {
     // MM / address translation
     fn kernel_offset(&self) -> usize;

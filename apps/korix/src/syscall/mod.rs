@@ -1364,7 +1364,9 @@ fn sys_clone(args: &[usize]) -> isize {
         Some(address_space) => address_space,
         None => return -12,
     };
-    #[allow(unused_mut)] // loongarch64 (unsupported) has no fixup block
+    // loongarch64 (unsupported) has no per-arch fixup block, so `mut` is
+    // unneeded there — and only there (expect verifies exactly that).
+    #[cfg_attr(target_arch = "loongarch64", expect(unused_mut))]
     let mut context = match kor_sched::current()
         .with_user_context(|tf| unsafe { kor_arch::capture_user_context(tf) })
         .flatten()

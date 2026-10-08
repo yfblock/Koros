@@ -143,7 +143,6 @@ dependencies = [
 name = "kor-arch"
 version = "0.1.0"
 dependencies = [
- "cfg-if",
  "kor",
  "kor-mmu",
  "spin",
@@ -171,7 +170,6 @@ dependencies = [
 name = "kor-mmu"
 version = "0.1.0"
 dependencies = [
- "cfg-if",
  "kor",
  "spin",
  "x86_64",

@@ -109,7 +109,7 @@ pub fn load_program(
 }
 
 /// Load an ELF image without a runtime interpreter.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "staged: pending wiring")]
 pub fn load_elf(
     address_space: &mut AddressSpace,
     data: &[u8],

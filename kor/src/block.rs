@@ -21,6 +21,11 @@ pub enum BlockError {
 /// All I/O is expressed in units of [`BlockDevice::block_size`] bytes.
 /// Implementations must be `Send + Sync` so the device can be shared
 /// across threads via `Arc<dyn BlockDevice>`.
+#[diagnostic::on_unimplemented(
+    message = "this target has no `{Self}` implementation",
+    label = "missing `{Self}` impl",
+    note = "porting checklist: provide the impl for this architecture/crate"
+)]
 pub trait BlockDevice: Send + Sync {
     fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<(), BlockError>;
     fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<(), BlockError>;

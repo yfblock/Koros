@@ -1,9 +1,9 @@
 # Koros Makefile
 # Usage:
-#   make ARCH=riscv64 run                       # boot koros
-#   make ARCH=riscv64 BIN=korix run             # boot korix (Linux-compatible)
-#   make ARCH=aarch64 BIN=korhv run
-#   make ARCH=riscv64 CMDLINE="root=/dev/vda loglevel=7" run
+#   make run                        # boot koros (default: BIN ?= koros)
+#   make koros | korix | korhv      # convenience == BIN=<name> run
+#   make ARCH=x86_64 korhv          # flags still combine with the shortcuts
+#   make ARCH=riscv64 CMDLINE="mmutest shutdown" run
 #
 # BIN defaults to `koros`.  `korhv` selects hypervisor-friendly QEMU CPU/machine
 # settings (AMD SVM via `-cpu max` on x86_64; EL2 via `virtualization=on` on
@@ -101,7 +101,7 @@ endif
 
 export RUSTFLAGS := $(RUSTFLAGS_EXTRA)
 
-.PHONY: build run clean verify
+.PHONY: build run clean verify koros korix korhv
 
 build:
 	cargo build --release --target $(TARGET) -p $(BIN)
@@ -109,12 +109,24 @@ ifneq ($(KERNEL_IMG),$(KERNEL_ELF))
 	$(OBJCOPY) $(KERNEL_ELF) --strip-all -O binary $(KERNEL_IMG)
 endif
 
+
 run: build $(EXT2_IMG)
 	@if [ "$(ARCH)" = "aarch64" ] && [ "$(BIN)" = "korhv" ]; then \
 		exec apps/korhv/linux-demo/run2.sh; \
 	else \
 		exec $(QEMU_EXEC); \
 	fi
+
+# Convenience targets: `make koros` == `make BIN=koros run` (and `make run`
+# defaults to koros because BIN ?= koros).
+koros:
+	$(MAKE) run BIN=koros
+
+korix:
+	$(MAKE) run BIN=korix
+
+korhv:
+	$(MAKE) run BIN=korhv
 
 
 tools/os-images/ext2-test.img:

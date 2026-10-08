@@ -159,10 +159,13 @@ pub fn dynamic_maps_supported() -> bool {
 }
 
 /// Bytes covered by one mapping of `size`.
+/// Size of one 2 MiB mapping.
+const TWO_MIB: usize = 2 * 1024 * 1024;
+
 fn map_size_bytes(size: MapSize) -> usize {
     match size {
         MapSize::Page4K => 4096,
-        MapSize::Page2M => 2 * 1024 * 1024,
+        MapSize::Page2M => TWO_MIB,
     }
 }
 

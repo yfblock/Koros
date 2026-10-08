@@ -68,7 +68,7 @@ impl FrameAllocator {
     /// Register free physical memory `[start, end)` (byte addresses).
     /// Non-page-aligned bounds are rounded inward.
     pub fn add_region(&mut self, start: usize, end: usize) {
-        let start = start.saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+        let start = start.saturating_add(PAGE_SIZE - 1) & !(PAGE_SIZE - 1); // align-up (pow2)
         let end = end & !(PAGE_SIZE - 1);
         if start >= end {
             return;

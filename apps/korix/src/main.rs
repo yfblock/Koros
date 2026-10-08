@@ -99,8 +99,8 @@ extern "C" fn kernel_main() -> ! {
     let mut collected = kor::regions::RegionCollector::new();
     kor::arch::current().detect_memory_regions(&mut |start, end| collected.add(start, end));
     let (ks, ke) = kor::kernel_phys_range();
-    let ks = ks & !(kor::frame::PAGE_SIZE - 1);
-    let ke = (ke + kor::frame::PAGE_SIZE - 1) & !(kor::frame::PAGE_SIZE - 1);
+    let ks = kor::frame::PAGE_SIZE * (ks / kor::frame::PAGE_SIZE); // align-down
+    let ke = ke.next_multiple_of(kor::frame::PAGE_SIZE); // align-up
     let hole_start = match config::firmware_phys_start() {
         0 => ks,
         fw => core::cmp::min(fw, ks),

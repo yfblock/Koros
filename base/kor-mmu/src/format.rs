@@ -15,6 +15,11 @@ use kor::mapping::MappingFlags;
 /// - software can tell PTE validity / leaf-ness, encode permissions, and
 ///   derive the physical address from an entry;
 /// - a per-address or full TLB flush is available.
+#[diagnostic::on_unimplemented(
+    message = "this target has no `{Self}` implementation",
+    label = "missing `{Self}` impl",
+    note = "porting checklist: provide the impl for this architecture/crate"
+)]
 pub trait MmuFormat: Send + Sync {
     /// Number of levels (Sv39: 3, x86-64/AArch64 4-level: 4).  A method
     /// (not an associated const) so the trait stays dyn-compatible.

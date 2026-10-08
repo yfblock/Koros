@@ -162,7 +162,7 @@ pub fn current_process_arc() -> Option<Arc<Mutex<ProcessState>>> {
 }
 
 // Reserved for waitpid(<specific pid>); only the any-child path is wired yet.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "staged: pending wiring")]
 pub fn matching_child(parent: usize, requested: isize) -> Option<Arc<Mutex<ProcessState>>> {
     PROCESSES
         .lock()

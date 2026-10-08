@@ -390,7 +390,7 @@ fn allocate_bars<C>(
         } = info
         {
             if size > 0 {
-                let aligned = (*next + (size - 1)) & !(size - 1);
+                let aligned = (*next).next_multiple_of(size);
                 match address_type {
                     MemoryBarType::Width64 => root.set_bar_64(device_function, bar, aligned),
                     _ => root.set_bar_32(device_function, bar, aligned as u32),

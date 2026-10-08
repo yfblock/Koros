@@ -55,7 +55,7 @@ pub struct Attr {
 
 /// Padded on-disk length of an entry whose name is `name_len` bytes.
 fn entry_len(name_len: usize) -> usize {
-    (ENTRY_HEADER_SIZE + name_len + XATTR_PAD - 1) & !(XATTR_PAD - 1)
+    (ENTRY_HEADER_SIZE + name_len).next_multiple_of(XATTR_PAD)
 }
 
 /// Split a full attribute name (e.g. `"user.foo"`) into its `(name_index,
@@ -173,7 +173,7 @@ pub fn serialize_block(attrs: &mut [Attr], block_size: usize) -> Result<Vec<u8>,
         let name_len = a.name.len();
         let elen = entry_len(name_len);
         let vlen = a.value.len();
-        let vpad = (vlen + XATTR_PAD - 1) & !(XATTR_PAD - 1);
+        let vpad = vlen.next_multiple_of(XATTR_PAD);
 
         let value_offs = if vlen == 0 {
             0

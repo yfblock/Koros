@@ -160,6 +160,9 @@ fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
             println!("virtio bench SKIPPED: read_block @{}", start + i);
             return;
         }
+        // Keep the read loop observable: without a sink the optimizer may
+        // elide loads it can prove dead.
+        core::hint::black_box(rbuf.as_ptr());
     }
     let read_ticks = kor::arch::current().now_ticks() - t2;
 

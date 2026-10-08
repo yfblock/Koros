@@ -385,7 +385,7 @@ pub fn wait() {
 }
 
 /// Return the QEMU user-network DNS server address.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "staged: pending wiring")]
 pub fn dns_server() -> [u8; 4] {
     DNS_IP
 }

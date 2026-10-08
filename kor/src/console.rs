@@ -8,6 +8,11 @@ use spin::Mutex;
 use spin::Once;
 
 /// One-byte console output.  Implemented per-arch for the platform UART.
+#[diagnostic::on_unimplemented(
+    message = "this target has no `{Self}` implementation",
+    label = "missing `{Self}` impl",
+    note = "porting checklist: provide the impl for this architecture/crate"
+)]
 pub trait Console: Send + Sync {
     fn putc(&self, c: u8);
 }
