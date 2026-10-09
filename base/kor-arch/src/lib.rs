@@ -27,6 +27,12 @@ cfg_select! {
     target_arch = "aarch64"      => { pub use self::aarch64::trap::TrapFrame; }
 }
 
+cfg_select! {
+    target_arch = "riscv64"      => { pub use self::riscv64::pte; }
+    target_arch = "x86_64"       => { pub use self::x86_64::pte; }
+    target_arch = "aarch64"      => { pub use self::aarch64::pte; }
+}
+
 pub mod interrupt;
 
 pub use interrupt::{InterruptController, enable_device_irq};

@@ -11,10 +11,7 @@ use x86_64::registers::control::Cr3;
 
 /// First PML4 index after the boot high-half 512 GiB slot (index 256).
 
-const PTE_P: usize = 1 << 0;
-const PTE_RW: usize = 1 << 1;
-const PTE_US: usize = 1 << 2;
-pub(crate) const PTE_PS: usize = 1 << 7;
+use kor_arch::pte::{PTE_P, PTE_PS, PTE_RW, PTE_US, hw_flags};
 const PTE_NUM: usize = 512;
 
 pub fn init() {}
@@ -164,17 +161,6 @@ pub(crate) fn leaf_pte_2m(paddr: usize, flags: MappingFlags) -> usize {
 
 pub(crate) fn table_pte(paddr: usize) -> usize {
     paddr | PTE_P | PTE_RW | PTE_US
-}
-
-pub(crate) fn hw_flags(flags: MappingFlags) -> usize {
-    let mut hw = PTE_P;
-    if flags.contains(MappingFlags::W) {
-        hw |= PTE_RW;
-    }
-    if flags.contains(MappingFlags::U) {
-        hw |= PTE_US;
-    }
-    hw
 }
 
 pub(crate) fn is_present(pte: usize) -> bool {

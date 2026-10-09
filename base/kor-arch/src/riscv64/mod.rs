@@ -9,3 +9,4 @@ pub mod time;
 pub mod trap;
 pub mod trap_macros;
 pub mod boot;
+pub mod pte;

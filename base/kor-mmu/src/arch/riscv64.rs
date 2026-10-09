@@ -10,13 +10,9 @@ use kor::mapping::MappingFlags;
 
 /// First unused 1 GiB slot in the high-half root (boot leaves use 256–259).
 
-const PTE_V: usize = 1 << 0;
-const PTE_R: usize = 1 << 1;
-const PTE_W: usize = 1 << 2;
-const PTE_X: usize = 1 << 3;
-const PTE_A: usize = 1 << 6;
-const PTE_D: usize = 1 << 7;
-const PTE_RW: usize = PTE_R | PTE_W | PTE_X;
+use kor_arch::pte::{
+    PTE_A, PTE_D, PTE_R, PTE_RW, PTE_V, PTE_W, PTE_X, flags_to_hw, mapping_flags,
+};
 
 /// Entries per page-table page (512 × 64-bit PTEs).
 const PTE_NUM: usize = 512;
@@ -169,20 +165,6 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     Ok(cloned)
 }
 
-pub(crate) fn mapping_flags(entry: usize) -> MappingFlags {
-    let mut flags = MappingFlags::U;
-    if entry & PTE_R != 0 {
-        flags = flags | MappingFlags::R;
-    }
-    if entry & PTE_W != 0 {
-        flags = flags | MappingFlags::W;
-    }
-    if entry & PTE_X != 0 {
-        flags = flags | MappingFlags::X;
-    }
-    flags
-}
-
 pub unsafe fn destroy(root: usize) {
     unsafe {
         destroy_table(root, 2);
@@ -259,23 +241,6 @@ pub fn split_identity() {
 
         core::arch::asm!("sfence.vma");
     }
-}
-
-pub(crate) fn flags_to_hw(flags: MappingFlags) -> usize {
-    let mut hw = PTE_V;
-    if flags.contains(MappingFlags::R) {
-        hw |= PTE_R | PTE_A;
-    }
-    if flags.contains(MappingFlags::W) {
-        hw |= PTE_W | PTE_D;
-    }
-    if flags.contains(MappingFlags::X) {
-        hw |= PTE_X;
-    }
-    if flags.contains(MappingFlags::U) {
-        hw |= 1 << 4;
-    }
-    hw
 }
 
 pub(crate) fn leaf_pte(paddr: usize, flags: MappingFlags) -> usize {

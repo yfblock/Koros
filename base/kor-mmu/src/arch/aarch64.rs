@@ -10,11 +10,11 @@ use kor::mapping::MappingFlags;
 
 /// 512 GiB slot — L0 index 1 is unused by the boot 1 GiB block map at L0[0].
 
-pub(crate) const PTE_VALID: usize = 1 << 0;
+use kor_arch::pte::{PTE_VALID, ap_flags};
 
 /// Entries per page-table page (512 × 64-bit PTEs).
 const PTE_NUM: usize = 512;
-pub(crate) const PTE_TABLE: usize = 1 << 1;
+pub(crate) use kor_arch::pte::PTE_TABLE;
 
 /// Build the default boot tables: L0[0] -> L1, L1[i] = 1 GiB identity
 /// block (covers the first 512 GiB).  TTBR0 and TTBR1 share the root, so
@@ -49,8 +49,7 @@ pub unsafe extern "C" fn boot_mmu_build(table_pa: usize, _table_len: usize) -> u
     let pages = unsafe { &mut *(table_pa as *mut [usize; PTE_NUM * 2]) };
     boot_table_identity_512g(pages)
 }
-const PTE_AF: usize = 1 << 10;
-const PTE_ATTR: usize = 1 << 2; // MAIR index 1 (Normal WB), matches boot.S
+use kor_arch::pte::{PTE_AF, PTE_ATTR};
 
 pub fn init() {}
 
@@ -198,20 +197,6 @@ pub(crate) fn page_pte(paddr: usize, flags: MappingFlags) -> usize {
 
 pub(crate) fn block_pte(paddr: usize, flags: MappingFlags) -> usize {
     paddr | PTE_VALID | PTE_AF | PTE_ATTR | ap_flags(flags)
-}
-
-fn ap_flags(flags: MappingFlags) -> usize {
-    let mut extra = 0;
-    if !flags.contains(MappingFlags::W) {
-        extra |= 1 << 7; // AP[2]: read-only
-    }
-    if flags.contains(MappingFlags::U) {
-        extra |= 1 << 6; // AP[1]: EL0
-    }
-    if !flags.contains(MappingFlags::X) {
-        extra |= 1 << 54; // UXN
-    }
-    extra
 }
 
 pub(crate) fn is_valid(pte: usize) -> bool {
