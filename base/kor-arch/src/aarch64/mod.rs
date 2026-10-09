@@ -7,4 +7,5 @@ pub mod mm;
 pub mod smp;
 pub mod time;
 pub mod trap;
+pub mod trap_macros;
 pub mod boot;

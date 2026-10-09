@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+#[cfg(not(target_arch = "x86_64"))]
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -31,12 +32,15 @@ impl BlockRegistry {
 
 pub static BLOCKS: BlockRegistry = BlockRegistry::new();
 
+#[cfg(not(target_arch = "x86_64"))]
 type Handler = Box<dyn Fn() + Send + Sync>;
 
+#[cfg(not(target_arch = "x86_64"))]
 pub struct IrqRegistry {
     handlers: Mutex<Vec<(u32, Handler)>>,
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 impl IrqRegistry {
     pub const fn new() -> Self {
         Self {
@@ -59,4 +63,5 @@ impl IrqRegistry {
     }
 }
 
+#[cfg(not(target_arch = "x86_64"))]
 pub static IRQS: IrqRegistry = IrqRegistry::new();

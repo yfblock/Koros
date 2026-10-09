@@ -24,25 +24,17 @@ use spin::Mutex;
 #[global_allocator]
 static HEAP: kor_alloc::LockedSlabHeap = kor_alloc::LockedSlabHeap::empty();
 
-struct KernelTrapCallbacks;
-impl kor::TrapCallbacks for KernelTrapCallbacks {
-    fn on_timer(&self) {
-        kor_arch::increment_tick();
-        kor_arch::handle_tick();
-        if kor_sched::is_ready() {
-            kor_sched::timer_tick();
-            kor_sched::preempt();
-        }
-        #[cfg(target_arch = "riscv64")]
-        crate::syscall::rx_fill();
-    }
-    fn on_external(&self, irq: u32) {
-        registries::IRQS.handle(irq);
-    }
-}
-
-static TRAP_CB: KernelTrapCallbacks = KernelTrapCallbacks;
 pub static MOUNTS: Mutex<kor_fs::mount::MountTable> = Mutex::new(kor_fs::mount::MountTable::new());
+
+/// Per-task-switch notification for kor-sched (link-time contract):
+/// on x86_64, point the native SYSCALL kernel stack at the new task.
+#[unsafe(no_mangle)]
+extern "C" fn sched_task_switch(user_stack_top: usize) {
+    #[cfg(target_arch = "x86_64")]
+    kor_arch::x86_64::trap::set_syscall_stack(user_stack_top);
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = user_stack_top;
+}
 
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
@@ -52,19 +44,10 @@ extern "C" fn kernel_main() -> ! {
     kor::install_console(kor_arch::console());
     config::init(arch::platform_config());
     kor_arch::interrupt_controller().init();
-    kor::install_callbacks(&TRAP_CB);
-    kor::trap_callbacks::install_user_trap_hooks(
-        syscall::user_trap_enter,
-        syscall::user_trap_leave,
-    );
-    kor::trap_callbacks::install_user_trap_status_hook(syscall::user_trap_status);
-    kor::trap_callbacks::install_user_exit_hook(sched::exit_current);
-    #[cfg(target_arch = "x86_64")]
-    kor::trap_callbacks::install_task_switch_hook(kor_arch::x86_64::trap::set_syscall_stack);
     heap::init_bootstrap();
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
-    kor_arch::trap_init();
+    arch::trap::init();
 
     kor::cmdline::init_from(kor_arch::boot_cmdline().unwrap_or_default());
     let mut collected = kor::regions::RegionCollector::new();
@@ -99,7 +82,6 @@ extern "C" fn kernel_main() -> ! {
     crate::fs::init_rootfs();
 
     // Install syscall handler so ecall from U-mode dispatches to our syscall layer.
-    kor::install_syscall_handler(syscall::dispatch);
 
     // Split identity mapping so user pages can be mapped in low address space.
     #[cfg(target_arch = "riscv64")]
@@ -147,7 +129,7 @@ fn probe_devices() {
 
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(_cpu_id: usize) -> ! {
-    kor_arch::trap_init();
+    arch::trap::init();
     let ic = kor_arch::interrupt_controller();
     ic.init();
     kor_arch::timer_init();

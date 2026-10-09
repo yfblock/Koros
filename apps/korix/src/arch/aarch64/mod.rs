@@ -1,3 +1,4 @@
 //! aarch64 boot for this application.
 
-mod boot;
+pub mod boot;
+pub mod trap;

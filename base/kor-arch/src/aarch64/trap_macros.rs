@@ -1,4 +1,19 @@
-// AArch64 exception vector table.
+//! aarch64 trap vector fragments (see `crate::boot` for the composition
+//! model).  The vector table + save/restore path is pure mechanism; it calls
+//! the application dispatch contract
+//! `#[unsafe(no_mangle)] extern "C" fn trap_dispatch(tf: &mut TrapFrame, kind: u64, source: u64)`
+//! (link-time resolved).
+//!
+//! Composition: `core::arch::global_asm!(kor_arch::trap_kernel_vec_asm!());`
+
+/// The 16-entry EL1 exception vector table (`exception_vector_base`) plus
+/// the register save/restore paths.  `kind`: 0 = sync, 1 = IRQ, 2 = FIQ,
+/// 3 = SError; `source`: 0 = current-EL SP0, 1 = current-EL SPx,
+/// 2 = lower-EL AArch64, 3 = lower-EL AArch32.
+#[macro_export]
+macro_rules! trap_kernel_vec_asm {
+    () => {
+        r####"// AArch64 exception vector table.
 //
 // Hardware assigns exactly 128 bytes to each of the 16 entries.  Keep the
 // table itself to branch stubs and put the full register-save paths after it.
@@ -57,7 +72,7 @@
     mov     x0, sp
     mov     x1, #\kind
     mov     x2, #\source
-    bl      handle_trap
+    bl      trap_dispatch
     b       .Lexception_return
 .endm
 
@@ -148,34 +163,6 @@ exception_vector_base:
     ldr     x30,      [sp, #(TF_REGS + 30 * 8)]
     add     sp, sp, TF_SIZE
     eret
-
-// Resume an owned UserTrapContext. x0 points to the context.
-.global aarch64_resume_user
-aarch64_resume_user:
-    mov     x30, x0
-    ldr     x9, [x30, #(32 * 8)]
-    msr     elr_el1, x9
-    mov     x9, xzr
-    msr     spsr_el1, x9
-    ldr     x9, [x30, #(34 * 8)]
-    msr     sp_el0, x9
-    ldr     x9, [x30, #(35 * 8)]
-    msr     tpidr_el0, x9
-    msr     daifset, #2
-    ldp     x0,  x1,  [x30, #(0 * 8)]
-    ldp     x2,  x3,  [x30, #(2 * 8)]
-    ldp     x4,  x5,  [x30, #(4 * 8)]
-    ldp     x6,  x7,  [x30, #(6 * 8)]
-    ldp     x8,  x9,  [x30, #(8 * 8)]
-    ldp     x10, x11, [x30, #(10 * 8)]
-    ldp     x12, x13, [x30, #(12 * 8)]
-    ldp     x14, x15, [x30, #(14 * 8)]
-    ldp     x16, x17, [x30, #(16 * 8)]
-    ldp     x18, x19, [x30, #(18 * 8)]
-    ldp     x20, x21, [x30, #(20 * 8)]
-    ldp     x22, x23, [x30, #(22 * 8)]
-    ldp     x24, x25, [x30, #(24 * 8)]
-    ldp     x26, x27, [x30, #(26 * 8)]
-    ldp     x28, x29, [x30, #(28 * 8)]
-    ldr     x30,      [x30, #(30 * 8)]
-    eret
+"####
+    };
+}

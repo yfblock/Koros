@@ -6,7 +6,6 @@
 //! polling mode on this architecture.  The stub lets the shared virtio path
 //! compile uniformly and no-ops at runtime.
 
-use kor::TrapCallbacks;
 
 use crate::InterruptController;
 
@@ -25,7 +24,7 @@ impl InterruptController for StubController {
         None
     }
 
-    fn dispatch_external(&self, _callbacks: &dyn TrapCallbacks) {
+    fn dispatch_external(&self, _handle_irq: &mut dyn FnMut(u32), _timer_tick: &mut dyn FnMut()) {
         // x86_64 external IRQs go through IDT vectors, not a controller dispatch.
     }
 }

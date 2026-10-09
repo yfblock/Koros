@@ -1,23 +1,27 @@
-//! aarch64 trap handling.
+//! aarch64 trap *mechanism*: frame layout and user-context operations.
+//! Vector assembly comes from [`super::trap_macros`]; dispatch policy and
+//! `init` live in the application.
 //!
 //! Sets `VBAR_EL1` to a hand-written vector table in assembly that
 //! saves registers, calls the Rust handler, then restores and `eret`.
 
-use core::arch::{asm, global_asm};
-use kor::println;
 
+
+/// Trap frame laid out by the vector assembly (see
+/// `trap_macros::trap_kernel_vec_asm!`); the application dispatch function
+/// receives `&mut TrapFrame`.
 #[repr(C)]
-struct TrapFrame {
-    /// x0 – x30
-    regs: [usize; 31],
-    /// SP_EL0
-    sp: usize,
-    /// ELR_EL1
-    elr: usize,
-    /// SPSR_EL1
-    spsr: usize,
-    /// TPIDR_EL0
-    tpidr: usize,
+pub struct TrapFrame {
+    /// x0-x30 (x8 = syscall nr, x0-x5 = args).
+    pub regs: [usize; 31],
+    /// SP_EL0.
+    pub sp: usize,
+    /// ELR_EL1.
+    pub elr: usize,
+    /// SPSR_EL1.
+    pub spsr: usize,
+    /// TPIDR_EL0.
+    pub tpidr: usize,
 }
 
 const _: () = assert!(core::mem::size_of::<TrapFrame>() == 280);
@@ -26,7 +30,6 @@ const _: () = assert!(core::mem::align_of::<TrapFrame>() == core::mem::align_of:
 const USER_PSTATE_MASK: usize = 0xf000_0000;
 const INSTRUCTION_ALIGN: usize = 4;
 const STACK_ALIGN: usize = 16;
-const USER_SEGFAULT_STATUS: i32 = 128 + 11;
 
 /// Capture the integer user context represented by `frame`.
 ///
@@ -108,83 +111,37 @@ pub unsafe fn resume_user_context(context: &crate::UserTrapContext) -> ! {
     unsafe { aarch64_resume_user(context) }
 }
 
-global_asm!(include_str!("trap.S"));
-
-unsafe extern "C" {
-    fn exception_vector_base();
-}
-
-/// Called from assembly with `x0 = &mut TrapFrame, x1 = kind, x2 = source`.
-#[unsafe(no_mangle)]
-extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
-    // IRQ (kind 1): dispatch through the interrupt controller.
-    if kind == 1 {
-        crate::dispatch_external();
-        return;
-    }
-
-    // Synchronous exception
-    if kind == 0 {
-        let esr: u64;
-        let far: u64;
-        unsafe {
-            asm!("mrs {}, esr_el1", out(reg) esr);
-            asm!("mrs {}, far_el1", out(reg) far);
-        }
-        let ec = esr >> 26;
-
-        // SVC from AArch64 (EC=0x15) — syscall
-        if ec == 0x15 && source == 2 {
-            if let Some(handler) = kor::trap_callbacks::syscall_handler() {
-                unsafe {
-                    kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
-                }
-                let nr = tf.regs[8];
-                let args = [
-                    tf.regs[0], tf.regs[1], tf.regs[2], tf.regs[3], tf.regs[4], tf.regs[5],
-                ];
-                let ret = handler(nr, &args);
-                tf.regs[0] = ret as usize;
-                unsafe {
-                    kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
-                }
-                return;
-            }
-        }
-
-        if source == 2 {
-            kor::trap_callbacks::user_exit(USER_SEGFAULT_STATUS);
-        }
-        println!("");
-        println!("=== TRAP ===");
-        println!(
-            "ESR_EL1 = {:#x} (EC={:#x}, ISS={:#x})",
-            esr,
-            ec,
-            esr & 0xFFFFFF
-        );
-        println!("FAR_EL1 = {:#x}", far);
-        println!("ELR_EL1 = {:#x}", tf.elr);
-        println!("SPSR_EL1 = {:#x}", tf.spsr);
-        panic!("Unhandled trap: EC={:#x}, ELR={:#x}", ec, tf.elr);
-    }
-
-    println!("");
-    println!("=== TRAP ===");
-    println!("kind={} source={}", kind, source);
-    panic!("Unhandled trap");
-}
-
-/// Install the trap handler: set `VBAR_EL1` and enable FPSIMD.
-pub fn init() {
-    unsafe {
-        // Enable FPSIMD/NEON access for EL0 and EL1 (FPEN=0b11)
-        asm!("msr cpacr_el1, {0}", in(reg) 0x300000u64);
-        asm!("isb");
-        asm!("msr vbar_el1, {0}", in(reg) exception_vector_base as *const () as u64);
-    }
-    println!(
-        "trap: VBAR_EL1 set to {:#x}",
-        exception_vector_base as *const () as usize
-    );
-}
+// Detached user resume: enter the context in `x0` directly via eret.
+core::arch::global_asm!(
+    r####"// Resume an owned UserTrapContext. x0 points to the context.
+.global aarch64_resume_user
+aarch64_resume_user:
+    mov     x30, x0
+    ldr     x9, [x30, #(32 * 8)]
+    msr     elr_el1, x9
+    mov     x9, xzr
+    msr     spsr_el1, x9
+    ldr     x9, [x30, #(34 * 8)]
+    msr     sp_el0, x9
+    ldr     x9, [x30, #(35 * 8)]
+    msr     tpidr_el0, x9
+    msr     daifset, #2
+    ldp     x0,  x1,  [x30, #(0 * 8)]
+    ldp     x2,  x3,  [x30, #(2 * 8)]
+    ldp     x4,  x5,  [x30, #(4 * 8)]
+    ldp     x6,  x7,  [x30, #(6 * 8)]
+    ldp     x8,  x9,  [x30, #(8 * 8)]
+    ldp     x10, x11, [x30, #(10 * 8)]
+    ldp     x12, x13, [x30, #(12 * 8)]
+    ldp     x14, x15, [x30, #(14 * 8)]
+    ldp     x16, x17, [x30, #(16 * 8)]
+    ldp     x18, x19, [x30, #(18 * 8)]
+    ldp     x20, x21, [x30, #(20 * 8)]
+    ldp     x22, x23, [x30, #(22 * 8)]
+    ldp     x24, x25, [x30, #(24 * 8)]
+    ldp     x26, x27, [x30, #(26 * 8)]
+    ldp     x28, x29, [x30, #(28 * 8)]
+    ldr     x30,      [x30, #(30 * 8)]
+    eret
+"####
+);

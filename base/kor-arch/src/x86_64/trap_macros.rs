@@ -1,4 +1,20 @@
-# x86_64 trap entry.
+//! x86_64 trap vector fragments (see `crate::boot` for the composition
+//! model).  The IDT stub table, common save path, and native-syscall entry
+//! are pure mechanism; they call the application contracts
+//! `#[unsafe(no_mangle)] extern "C" fn trap_dispatch(tf: &mut TrapFrame)`
+//! and `#[unsafe(no_mangle)] extern "C" fn handle_syscall(tf: &mut TrapFrame) -> i32`
+//! (link-time resolved), plus this crate's `x86_trap_enter`/`x86_trap_leave`
+//! swapgs helpers.
+//!
+//! Composition: `core::arch::global_asm!(kor_arch::trap_kernel_vec_asm!());`
+//! then `kor_arch::x86_64::trap::install_vectors(syscall_entry as usize)`.
+
+/// The 256-entry IDT stub table (`_trap_handlers`), the common trap path,
+/// and the SYSCALL entry (`syscall_entry`).
+#[macro_export]
+macro_rules! trap_kernel_vec_asm {
+    () => {
+        r####"# x86_64 trap entry.
 #
 # 256 handler stubs, each pushing a vector number and jumping to
 # .Ltrap_common, which saves all GPRs and calls handle_trap.
@@ -136,7 +152,7 @@ syscall_entry:
     call    x86_trap_enter
 
     mov     rdi, rsp
-    call    handle_trap
+    call    trap_dispatch
     call    x86_trap_leave
 
     pop     rax
@@ -271,3 +287,6 @@ _load_gdt:
     mov     ax, 0x28
     ltr     ax
     ret
+"####
+    };
+}

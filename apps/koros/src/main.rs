@@ -24,22 +24,12 @@ mod virtio;
 use kor::cmdline;
 use kor::config;
 
-/// Timer + external-IRQ behaviour installed as the trap callbacks.
-struct KernelTrapCallbacks;
-impl kor::TrapCallbacks for KernelTrapCallbacks {
-    fn on_timer(&self) {
-        kor_arch::increment_tick();
-        kor_arch::handle_tick();
-        kor_sched::timer_tick();
-        kor_sched::preempt();
-    }
-    fn on_external(&self, irq: u32) {
-        registries::IRQS.handle(irq);
-    }
-}
-static TRAP_CB: KernelTrapCallbacks = KernelTrapCallbacks;
-
 /// Kernel entry point, called by the `kor-arch` boot code after early setup.
+/// Per-task-switch notification for kor-sched (link-time contract):
+/// no-op — koros has no user stacks to install.
+#[unsafe(no_mangle)]
+extern "C" fn sched_task_switch(_user_stack_top: usize) {}
+
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
     // 1. Console (before any println).
@@ -49,7 +39,6 @@ extern "C" fn kernel_main() -> ! {
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).
     kor_arch::interrupt_controller().init();
     // 5. Trap callbacks (timer tick + external-IRQ dispatch).
-    kor::install_callbacks(&TRAP_CB);
 
     // 6. Bootstrap heap (frame buddy's internal BTreeSet needs it).
     heap::init_bootstrap();
@@ -58,7 +47,7 @@ extern "C" fn kernel_main() -> ! {
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
     // 7. Trap vectors.
-    kor_arch::trap_init();
+    arch::trap::init();
     // 8. Memory init: capture cmdline, detect regions, clip the kernel image,
     //    feed the frame allocator, self-test, then dynamic page tables.
     kor::cmdline::init_from(kor_arch::boot_cmdline().unwrap_or_default());
@@ -172,7 +161,7 @@ fn kernel_phys_range() -> (usize, usize) {
 /// Secondary-CPU entry, called from the `kor-arch` secondary boot stub.
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(cpu_id: usize) -> ! {
-    kor_arch::trap_init();
+    arch::trap::init();
     kor::smp::register_online();
     kor::println!("cpu {} online", cpu_id);
     // Per-CPU interrupt controller init (GIC CPU interface on aarch64).

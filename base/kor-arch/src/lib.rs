@@ -21,14 +21,21 @@ cfg_select! {
     target_arch = "aarch64"      => { pub use self::aarch64::context::TaskContext; }
 }
 
+cfg_select! {
+    target_arch = "riscv64"      => { pub use self::riscv64::trap::TrapFrame; }
+    target_arch = "x86_64"       => { pub use self::x86_64::trap::TrapFrame; }
+    target_arch = "aarch64"      => { pub use self::aarch64::trap::TrapFrame; }
+}
+
 pub mod interrupt;
 
 pub use interrupt::{InterruptController, enable_device_irq};
 
-/// Dispatch pending external IRQs through the installed controller.
-pub fn dispatch_external() {
-    let cb = kor::trap_callbacks::callbacks();
-    interrupt_controller().dispatch_external(cb);
+/// Dispatch pending external IRQs through the active controller: device
+/// IRQs go to `handle_irq`; a controller-delivered timer interrupt (GIC
+/// PPI) calls `timer_tick`.
+pub fn dispatch_external(handle_irq: &mut dyn FnMut(u32), timer_tick: &mut dyn FnMut()) {
+    interrupt_controller().dispatch_external(handle_irq, timer_tick);
 }
 
 pub mod boot;
@@ -144,13 +151,13 @@ pub use self::aarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shut
 
 // --- Timer tick counter (was kor::time) ------------------------------------
 
-/// Timer ticks since boot (incremented by the trap-callback `on_timer`).
+/// Timer ticks since boot (incremented by the app trap dispatch).
 static TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// Timer interrupts per second (the tick rate the arch timer programs).
 pub const TICK_HZ: u64 = 100;
 
-/// Increment the tick counter (called from `TrapCallbacks::on_timer`).
+/// Increment the tick counter (called from the app trap dispatch on timer).
 #[inline]
 pub fn increment_tick() {
     TICKS.fetch_add(1, Ordering::Relaxed);
@@ -168,15 +175,6 @@ pub fn detect_memory_regions(add_region: &mut dyn FnMut(usize, usize)) {
         target_arch = "riscv64"      => { self::riscv64::mm::init(add_region) }
         target_arch = "x86_64"       => { self::x86_64::mm::init(add_region) }
         target_arch = "aarch64"      => { self::aarch64::mm::init(add_region) }
-    }
-}
-
-/// Install trap vectors on the current CPU.
-pub fn trap_init() {
-    cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::trap::init() }
-        target_arch = "x86_64"       => { self::x86_64::trap::init() }
-        target_arch = "aarch64"      => { self::aarch64::trap::init() }
     }
 }
 

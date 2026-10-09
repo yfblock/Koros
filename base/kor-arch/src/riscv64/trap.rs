@@ -1,12 +1,21 @@
-//! riscv64 trap handling.
-use core::arch::{asm, global_asm};
-use kor::println;
+//! riscv64 trap *mechanism*: frame layout, per-hart user scratch, and the
+//! user-context capture/restore/signal/resume operations.  Vector assembly
+//! comes from [`super::trap_macros`] and the dispatch policy lives in the
+//! application.
 
+use core::arch::asm;
+
+/// Kernel/user trap frame laid out by the vector assembly (see
+/// `trap_macros::trap_kernel_vec_asm!`); the application dispatch function
+/// receives `&mut TrapFrame`.
 #[repr(C)]
-struct TrapFrame {
-    regs: [usize; 32],
-    sstatus: usize,
-    sepc: usize,
+pub struct TrapFrame {
+    /// x0-x31; index 0 unused, 2 = sp, 4 = tp, 10-17 = a0-a7, 17 = a7(syscall nr).
+    pub regs: [usize; 32],
+    /// sstatus at trap entry.
+    pub sstatus: usize,
+    /// sepc at trap entry.
+    pub sepc: usize,
 }
 
 const SSTATUS_SPP: usize = 1 << 8;
@@ -161,86 +170,54 @@ fn current_kernel_sp() -> usize {
     sp
 }
 
-global_asm!(include_str!("trap.S"), tf_size = const core::mem::size_of::<TrapFrame>());
-
-unsafe extern "Rust" {
-    fn kernelvec();
-}
-
-#[unsafe(no_mangle)]
-extern "C" fn handle_trap(tf: &mut TrapFrame) {
-    let scause: usize;
-    let stval: usize;
-    unsafe {
-        asm!("csrr {}, scause", out(reg) scause);
-        asm!("csrr {}, stval", out(reg) stval);
-    }
-    let is_interrupt = (scause >> 63) != 0;
-    let code = scause & ((1 << 63) - 1);
-
-    if is_interrupt && code == 5 {
-        kor::on_timer();
-        return;
-    }
-    if is_interrupt && code == 9 {
-        crate::dispatch_external();
-        return;
-    }
-
-    if !is_interrupt && code == 8 {
-        if let Some(handler) = kor::trap_callbacks::syscall_handler() {
-            unsafe {
-                kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
-            }
-            let nr = tf.regs[17];
-            let args = [
-                tf.regs[10],
-                tf.regs[11],
-                tf.regs[12],
-                tf.regs[13],
-                tf.regs[14],
-                tf.regs[15],
-            ];
-            let ret = handler(nr, &args);
-            tf.regs[10] = ret as usize;
-            // PC-advance policy (asm-generic numbers, native to riscv64):
-            // rt_sigreturn restores its own saved PC, and a successful
-            // execve installs a brand-new context — neither may bump sepc.
-            const NR_RT_SIGRETURN: usize = 139;
-            const NR_EXECVE: usize = 221;
-            if nr != NR_RT_SIGRETURN && (nr != NR_EXECVE || ret < 0) {
-                tf.sepc += 4;
-            }
-            unsafe {
-                kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
-            }
-            return;
-        }
-    }
-    println!("");
-    println!("=== TRAP ===");
-    println!(
-        "scause  = {:#x} ({} #{})",
-        scause,
-        if is_interrupt {
-            "Interrupt"
-        } else {
-            "Exception"
-        },
-        code
-    );
-    println!("stval   = {:#x}", stval);
-    println!("sepc    = {:#x}", tf.sepc);
-    println!("sstatus = {:#x}", tf.sstatus);
-    panic!("Unhandled trap: scause={:#x}, sepc={:#x}", scause, tf.sepc);
-}
-
-pub fn init() {
-    unsafe {
-        asm!("csrw stvec, {}", in(reg) kernelvec as *const () as usize);
-    }
-    println!(
-        "trap: stvec set to kernelvec ({:#x})",
-        kernelvec as *const () as usize
-    );
-}
+// Detached user resume: enter the context in `a0` directly via sret.
+core::arch::global_asm!(
+    r#"
+.global riscv_resume_user
+riscv_resume_user:
+    mv      t6, a0
+    ld      t0, 32 * 8(t6)
+    csrw    sepc, t0
+    ld      t0, 33 * 8(t6)
+    li      t1, ((1 << 5) | (3 << 13))
+    or      t0, t0, t1
+    li      t1, (1 << 8)
+    not     t1, t1
+    and     t0, t0, t1
+    csrw    sstatus, t0
+    # `prepare_user_entry` left sscratch pointing at this hart's trap record.
+    ld      ra,   1 * 8(t6)
+    ld      gp,   3 * 8(t6)
+    ld      tp,  35 * 8(t6)
+    ld      t0,   5 * 8(t6)
+    ld      t1,   6 * 8(t6)
+    ld      t2,   7 * 8(t6)
+    ld      s0,   8 * 8(t6)
+    ld      s1,   9 * 8(t6)
+    ld      a0,  10 * 8(t6)
+    ld      a1,  11 * 8(t6)
+    ld      a2,  12 * 8(t6)
+    ld      a3,  13 * 8(t6)
+    ld      a4,  14 * 8(t6)
+    ld      a5,  15 * 8(t6)
+    ld      a6,  16 * 8(t6)
+    ld      a7,  17 * 8(t6)
+    ld      s2,  18 * 8(t6)
+    ld      s3,  19 * 8(t6)
+    ld      s4,  20 * 8(t6)
+    ld      s5,  21 * 8(t6)
+    ld      s6,  22 * 8(t6)
+    ld      s7,  23 * 8(t6)
+    ld      s8,  24 * 8(t6)
+    ld      s9,  25 * 8(t6)
+    ld      s10, 26 * 8(t6)
+    ld      s11, 27 * 8(t6)
+    ld      t3,  28 * 8(t6)
+    ld      t4,  29 * 8(t6)
+    ld      t5,  30 * 8(t6)
+    ld      sp,  34 * 8(t6)
+    ld      t6,  31 * 8(t6)
+    fence.i
+    sret
+"#
+);

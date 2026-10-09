@@ -5,7 +5,6 @@
 //! armed one-by-one via [`crate::enable_device_irq`] and dispatched by
 //! [`dispatch_external`], which claims/ completes each pending source.
 
-use kor::TrapCallbacks;
 
 use crate::InterruptController;
 
@@ -33,7 +32,7 @@ impl InterruptController for PlicController {
         Some(irq)
     }
 
-    fn dispatch_external(&self, callbacks: &dyn TrapCallbacks) {
+    fn dispatch_external(&self, handle_irq: &mut dyn FnMut(u32), _timer_tick: &mut dyn FnMut()) {
         let ctx = super::plic::context(super::smp::cpu_id());
         let claim = super::plic::claim_reg(ctx);
         loop {
@@ -42,7 +41,7 @@ impl InterruptController for PlicController {
             if irq == 0 {
                 break;
             }
-            callbacks.on_external(irq);
+            handle_irq(irq);
             // SAFETY: writing the IRQ back signals completion.
             claim.write::<u32>(irq);
         }

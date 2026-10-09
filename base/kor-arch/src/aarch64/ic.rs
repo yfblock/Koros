@@ -2,10 +2,9 @@
 //!
 //! [`GicController::init`] brings up the distributor + CPU interface (called
 //! per-CPU).  [`dispatch_external`] reads the IAR, routes the generic-timer
-//! PPI to [`TrapCallbacks::on_timer`] and everything else to
-//! [`TrapCallbacks::on_external`], then signals EOI.
+//! PPI to the timer-tick callback and everything else to
+//! the IRQ callback, then signals EOI.
 
-use kor::TrapCallbacks;
 
 use crate::InterruptController;
 
@@ -32,7 +31,7 @@ impl InterruptController for GicController {
         }
     }
 
-    fn dispatch_external(&self, callbacks: &dyn TrapCallbacks) {
+    fn dispatch_external(&self, handle_irq: &mut dyn FnMut(u32), timer_tick: &mut dyn FnMut()) {
         let iar = super::gic::read_iar();
         let intid = iar & 0x3ff;
         // 1020+ are spurious; ignore without EOI.
@@ -42,9 +41,9 @@ impl InterruptController for GicController {
         if intid == super::time::TIMER_INTID {
             // Timer: EOI first, then run the tick/preempt path.
             super::gic::write_eoir(iar);
-            callbacks.on_timer();
+            timer_tick();
         } else {
-            callbacks.on_external(intid);
+            handle_irq(intid);
             super::gic::write_eoir(iar);
         }
     }

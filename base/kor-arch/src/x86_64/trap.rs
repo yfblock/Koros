@@ -3,44 +3,46 @@
 //! Builds an IDT with 256 entries (each pointing to an assembly stub that
 //! saves registers), loads the IDT, and prints trap info on exceptions.
 
-use core::arch::global_asm;
 use kor::println;
 
 // ---------------------------------------------------------------------------
 // TrapFrame — matches the stack layout after the assembly stub pushes regs
 // ---------------------------------------------------------------------------
 
+/// Trap frame laid out by the assembly stubs (see
+/// `trap_macros::trap_kernel_vec_asm!`); the application dispatch function
+/// receives `&mut TrapFrame`.
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct TrapFrame {
+pub struct TrapFrame {
     // Pushed by .Ltrap_common (in order: rax … r15)
-    rax: u64,
-    rcx: u64,
-    rdx: u64,
-    rbx: u64,
-    rbp: u64,
-    rsi: u64,
-    rdi: u64,
-    r8: u64,
-    r9: u64,
-    r10: u64,
-    r11: u64,
-    r12: u64,
-    r13: u64,
-    r14: u64,
-    r15: u64,
+    pub rax: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rbx: u64,
+    pub rbp: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
     // Pushed by each stub
-    vector: u64,
-    error_code: u64,
+    pub vector: u64,
+    pub error_code: u64,
     // Pushed by CPU
-    rip: u64,
-    cs: u64,
-    rflags: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
     // Pushed by the CPU — always present in 64-bit long mode, even for
     // same-privilege traps (unlike 32-bit mode, which omits SS:RSP when
     // there is no privilege-level change).
-    rsp: u64,
-    ss: u64,
+    pub rsp: u64,
+    pub ss: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -129,7 +131,9 @@ static mut TRAP_SWAPPED_GS: [bool; kor::smp::MAX_CPUS] = [false; kor::smp::MAX_C
 // Assembly stubs and handler table
 // ---------------------------------------------------------------------------
 
-global_asm!(include_str!("trap.S"));
+// The vector/stub assembly comes from `trap_macros` and is composed by the
+// application; it calls back into this module's swapgs helpers and the
+// application's `trap_dispatch` / `handle_syscall` contracts.
 
 // ---------------------------------------------------------------------------
 // Rust trap handler — called from assembly
@@ -158,157 +162,16 @@ extern "C" fn x86_trap_leave() {
     }
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn handle_syscall(tf: &mut TrapFrame) -> i32 {
-    let Some(handler) = kor::trap_callbacks::syscall_handler() else {
-        return 0;
-    };
-    unsafe {
-        kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
-    }
-    let nr = tf.rax as usize;
-    let args = [
-        tf.rdi as usize,
-        tf.rsi as usize,
-        tf.rdx as usize,
-        tf.r10 as usize,
-        tf.r8 as usize,
-        tf.r9 as usize,
-    ];
-    tf.rax = handler(nr, &args) as u64;
-    let fatal = unsafe { kor::trap_callbacks::user_trap_status(tf as *mut TrapFrame as *mut u8) };
-    unsafe {
-        kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
-    }
-    fatal.unwrap_or(0)
-}
-#[unsafe(no_mangle)]
-extern "C" fn handle_trap(tf: &mut TrapFrame) {
-    // Timer interrupts are acknowledged by hardware; korix user-mode runs
-    // without the scheduler, so avoid preemption/callback work while in ring 3.
-    if tf.vector == 0x81 {
-        kor::trap_callbacks::user_exit(tf.rax as i32);
-    }
-
-    if tf.vector == 0x20 {
-        if (tf.cs & 3) == 0 {
-            kor::on_timer();
-        }
-        return;
-    }
-
-    let from_user = (tf.cs & 3) == 3;
-
-    // System call via int 0x80 from user mode.
-    if tf.vector == 0x80 && from_user {
-        if let Some(handler) = kor::trap_callbacks::syscall_handler() {
-            unsafe {
-                kor::trap_callbacks::user_trap_enter(tf as *mut TrapFrame as *mut u8);
-            }
-            let nr = tf.rax as usize;
-            let args = [
-                tf.rdi as usize,
-                tf.rsi as usize,
-                tf.rdx as usize,
-                tf.r10 as usize,
-                tf.r8 as usize,
-                tf.r9 as usize,
-            ];
-            tf.rax = handler(nr, &args) as u64;
-            // PC-advance policy (x86_64-native number): rt_sigreturn
-            // restores its own saved RIP.
-            const NR_RT_SIGRETURN: usize = 15;
-            if nr != NR_RT_SIGRETURN {
-                tf.rip += 2;
-            }
-            unsafe {
-                kor::trap_callbacks::user_trap_leave(tf as *mut TrapFrame as *mut u8);
-            }
-            return;
-        }
-    }
-
-    // Page fault from user mode: report the fault address (CR2) and stop.
-    if tf.vector == 14 && from_user {
-        let cr2: u64;
-        unsafe {
-            core::arch::asm!("mov {}, cr2", out(reg) cr2);
-        }
-        println!("");
-        println!("=== USER PAGE FAULT ===");
-        println!("RIP:    {:#018x}", tf.rip);
-        println!("CR2:    {:#018x}", cr2);
-        println!("Error:  {:#x}", tf.error_code);
-        println!("RSP:    {:#018x}", tf.rsp);
-        panic!("user-mode page fault at rip={:#x} cr2={:#x}", tf.rip, cr2);
-    }
-
-    let description = match tf.vector {
-        0 => "Divide-by-zero",
-        1 => "Debug",
-        2 => "Non-maskable Interrupt",
-        3 => "Breakpoint",
-        4 => "Overflow",
-        5 => "Bound Range Exceeded",
-        6 => "Invalid Opcode",
-        7 => "Device Not Available",
-        8 => "Double Fault",
-        9 => "Coprocessor Segment Overrun",
-        10 => "Invalid TSS",
-        11 => "Segment Not Present",
-        12 => "Stack-Segment Fault",
-        13 => "General Protection Fault",
-        14 => "Page Fault",
-        16 => "x87 Floating-Point Exception",
-        17 => "Alignment Check",
-        18 => "Machine Check",
-        19 => "SIMD Floating-Point Exception",
-        20 => "Virtualization Exception",
-        30 => "Security Exception",
-        v if v < 256 => "User-defined Interrupt",
-        _ => "Unknown",
-    };
-
-    println!("");
-    println!("=== TRAP ===");
-    println!("Vector:     {} ({})", tf.vector, description);
-    println!("Error code: {:#x}", tf.error_code);
-    println!("RIP:        {:#018x}", tf.rip);
-    println!("RFLAGS:     {:#018x}", tf.rflags);
-    println!("");
-
-    println!("Register dump:");
-    println!(
-        "  rax={:#018x} rcx={:#018x} rdx={:#018x} rbx={:#018x}",
-        tf.rax, tf.rcx, tf.rdx, tf.rbx
-    );
-    println!(
-        "  rbp={:#018x} rsi={:#018x} rdi={:#018x} r8={:#018x}",
-        tf.rbp, tf.rsi, tf.rdi, tf.r8
-    );
-    println!(
-        "  r9={:#018x}  r10={:#018x} r11={:#018x} r12={:#018x}",
-        tf.r9, tf.r10, tf.r11, tf.r12
-    );
-    println!(
-        "  r13={:#018x} r14={:#018x} r15={:#018x}",
-        tf.r13, tf.r14, tf.r15
-    );
-    println!(
-        "  cs={:#018x}  ss={:#018x}  rsp={:#018x}",
-        tf.cs, tf.ss, tf.rsp
-    );
-
-    panic!("Unhandled trap");
-}
 
 // ---------------------------------------------------------------------------
 // Public init — build IDT, load it
 // ---------------------------------------------------------------------------
 
-/// Install the trap handler: build + load the GDT (with user segments) and
-/// TSS, reload segment registers, then build + load the IDT.
-pub fn init() {
+/// Install the trap machinery: build + load the GDT (with user segments)
+/// and TSS, build + load the IDT (whose stubs call the application's
+/// `trap_dispatch`/`handle_syscall` contracts), and enable native SYSCALL
+/// with `lstar` as the entry.  Called from the application's trap init.
+pub fn install_vectors(lstar: usize) {
     let cpu = super::smp::cpu_id();
     assert!(
         cpu < kor::smp::MAX_CPUS,
@@ -370,7 +233,7 @@ pub fn init() {
             in("edx") (star >> 32) as u32,
             options(nostack),
         );
-        let lstar = syscall_entry as *const () as u64;
+        let lstar = lstar as u64;
         core::arch::asm!(
             "wrmsr",
             in("ecx") 0xC000_0082u32,
@@ -411,7 +274,6 @@ pub fn init() {
 unsafe extern "C" {
     fn _init_idt();
     fn _load_gdt(gdtr: *const Dtr);
-    fn syscall_entry();
 }
 
 // ---------------------------------------------------------------------------

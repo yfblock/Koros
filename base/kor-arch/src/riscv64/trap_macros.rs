@@ -1,4 +1,24 @@
-# riscv64 trap entry.
+//! riscv64 trap vector fragments (see `crate::boot` for the composition
+//! model).  The vector is pure mechanism: it saves/restores the trap frame
+//! and calls the application-provided dispatch contract
+//! `#[unsafe(no_mangle)] extern "C" fn trap_dispatch(tf: &mut TrapFrame)`
+//! (resolved at link time, like `secondary_entry`).
+//!
+//! Composition:
+//! ```ignore
+//! core::arch::global_asm!(
+//!     kor_arch::trap_kernel_vec_asm!(),
+//!     tf_size = const core::mem::size_of::<kor_arch::TrapFrame>(),
+//! );
+//! ```
+
+/// The kernel/user trap vector (`kernelvec`): saves the full frame, calls
+/// `trap_dispatch`, restores, and `sret`s (handling the user-mode sscratch
+/// dance).  References the per-hart `RISCV_USER_TRAP_SCRATCH`.
+#[macro_export]
+macro_rules! trap_kernel_vec_asm {
+    () => {
+        r####"# riscv64 trap entry.
 #
 # Saves all 32 GPRs + sstatus + sepc on the stack,
 # calls handle_trap(tf), restores, and sret.
@@ -77,7 +97,7 @@ kernelvec:
     sd      t1, 33 * 8(sp)
 
     mv      a0, sp
-    call    handle_trap
+    call    trap_dispatch
 
     ld      t0, 32 * 8(sp)
     ld      t1, 33 * 8(sp)
@@ -190,7 +210,7 @@ kernelvec:
     sd      t1, 33 * 8(sp)
 
     mv      a0, sp
-    call    handle_trap
+    call    trap_dispatch
 
     ld      t0, 32 * 8(sp)
     ld      t1, 33 * 8(sp)
@@ -235,50 +255,6 @@ kernelvec:
     sret
 
 # Resume an owned UserTrapContext. Offsets follow kor_arch::UserTrapContext:
-# regs[32], pc, status, sp, tls. a0 points to the context.
-.global riscv_resume_user
-riscv_resume_user:
-    mv      t6, a0
-    ld      t0, 32 * 8(t6)
-    csrw    sepc, t0
-    ld      t0, 33 * 8(t6)
-    li      t1, ((1 << 5) | (3 << 13))
-    or      t0, t0, t1
-    li      t1, (1 << 8)
-    not     t1, t1
-    and     t0, t0, t1
-    csrw    sstatus, t0
-    # `prepare_user_entry` left sscratch pointing at this hart's trap record.
-    ld      ra,   1 * 8(t6)
-    ld      gp,   3 * 8(t6)
-    ld      tp,  35 * 8(t6)
-    ld      t0,   5 * 8(t6)
-    ld      t1,   6 * 8(t6)
-    ld      t2,   7 * 8(t6)
-    ld      s0,   8 * 8(t6)
-    ld      s1,   9 * 8(t6)
-    ld      a0,  10 * 8(t6)
-    ld      a1,  11 * 8(t6)
-    ld      a2,  12 * 8(t6)
-    ld      a3,  13 * 8(t6)
-    ld      a4,  14 * 8(t6)
-    ld      a5,  15 * 8(t6)
-    ld      a6,  16 * 8(t6)
-    ld      a7,  17 * 8(t6)
-    ld      s2,  18 * 8(t6)
-    ld      s3,  19 * 8(t6)
-    ld      s4,  20 * 8(t6)
-    ld      s5,  21 * 8(t6)
-    ld      s6,  22 * 8(t6)
-    ld      s7,  23 * 8(t6)
-    ld      s8,  24 * 8(t6)
-    ld      s9,  25 * 8(t6)
-    ld      s10, 26 * 8(t6)
-    ld      s11, 27 * 8(t6)
-    ld      t3,  28 * 8(t6)
-    ld      t4,  29 * 8(t6)
-    ld      t5,  30 * 8(t6)
-    ld      sp,  34 * 8(t6)
-    ld      t6,  31 * 8(t6)
-    fence.i
-    sret
+"####
+    };
+}

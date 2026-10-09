@@ -39,6 +39,9 @@ use kor_arch::TaskContext;
 unsafe extern "C" {
     /// Read the current CPU's active page-table root (0 = none).
     fn sched_address_space_root() -> usize;
+    /// Per-task-switch notification (e.g. x86_64 installs the native
+    /// SYSCALL kernel stack for the incoming task); may be a no-op.
+    fn sched_task_switch(user_stack_top: usize);
     /// Activate `root` on this CPU.
     ///
     /// # Safety
@@ -342,7 +345,8 @@ fn schedule(prev_action: u8, wait_ptr: usize) {
         (prev.ctx.get(), next.ctx.get() as *const TaskContext)
     };
 
-    kor::trap_callbacks::task_switch(next.user_stack_top());
+    // SAFETY: app-provided hook; see the extern declaration above.
+    unsafe { sched_task_switch(next.user_stack_top()) };
     let root = next.address_space_root();
     let active = unsafe { sched_address_space_root() };
     if active != root {
@@ -452,7 +456,8 @@ pub fn idle_loop() -> ! {
 /// First code every freshly spawned task runs.
 extern "C" fn task_bootstrap() -> ! {
     finish_switch();
-    kor::trap_callbacks::task_switch(current().user_stack_top());
+    // SAFETY: app-provided hook; see the extern declaration above.
+    unsafe { sched_task_switch(current().user_stack_top()) };
     kor_arch::irq_enable();
     let entry = current().entry;
     entry();
