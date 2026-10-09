@@ -14,15 +14,18 @@ register_bitfields!(u8, LSR [THRE 5, DR 0]);
 
 /// Write one byte to an MMIO-mapped NS16550A at `base`.
 pub fn putchar_mmio(base: usize, c: u8) {
-    while !bit_set(kor::PhysAddr::new(base + LSR).read::<u8>(), LSR::THRE) {}
-    kor::PhysAddr::new(base + THR).write::<u8>(c);
+    while !bit_set(
+        kor::PhysAddr::new(base + LSR).to_va().read::<u8>(),
+        LSR::THRE,
+    ) {}
+    kor::PhysAddr::new(base + THR).to_va().write::<u8>(c);
 }
 
 /// Read one byte from an MMIO-mapped NS16550A at `base`.
 /// Returns `None` if no data is available (non-blocking).
 pub fn getchar_mmio(base: usize) -> Option<u8> {
-    if bit_set(kor::PhysAddr::new(base + LSR).read::<u8>(), LSR::DR) {
-        Some(kor::PhysAddr::new(base + RBR).read::<u8>())
+    if bit_set(kor::PhysAddr::new(base + LSR).to_va().read::<u8>(), LSR::DR) {
+        Some(kor::PhysAddr::new(base + RBR).to_va().read::<u8>())
     } else {
         None
     }

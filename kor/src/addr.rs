@@ -68,20 +68,6 @@ impl PhysAddr {
         VirtAddr(translate_up(self.0))
     }
 
-    /// Volatile read of a `T`-wide device register at this address,
-    /// translated through the installed application pair.
-    #[inline]
-    pub fn read<T: Copy>(&self) -> T {
-        self.to_va().read::<T>()
-    }
-
-    /// Volatile write of a `T`-wide device register at this address,
-    /// translated through the installed application pair.
-    #[inline]
-    pub fn write<T: Copy>(&self, value: T) {
-        self.to_va().write::<T>(value)
-    }
-
     /// View this page through the installed translation as a mutable slice.
     ///
     /// # Safety

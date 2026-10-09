@@ -434,25 +434,45 @@ pub fn init() {
         asm!("msr vmpidr_el2, {}", in(reg) mpidr);
         asm!("msr cntv_ctl_el0, xzr"); // disable guest virtual timer
         // Enable real PL011 UART for RX so QEMU chardev can deliver stdin
-        kor::PhysAddr::new((UART_BASE + 0x02c) as usize).write::<u32>(0x70); // UARTLCR_H: 8N1, FIFO on
-        kor::PhysAddr::new((UART_BASE + 0x030) as usize).write::<u32>(0x301); // UARTCR: UARTEN|TXE|RXE
+        kor::PhysAddr::new((UART_BASE + 0x02c) as usize)
+            .to_va()
+            .write::<u32>(0x70); // UARTLCR_H: 8N1, FIFO on
+        kor::PhysAddr::new((UART_BASE + 0x030) as usize)
+            .to_va()
+            .write::<u32>(0x301); // UARTCR: UARTEN|TXE|RXE
     }
     // Real GIC for hypervisor interrupts (PPI 27 timer, PPI 30 CNTP).
     // Distributor: enable both groups, the guest-timer PPI, and all SPIs
     // (routed to CPU 0, Group 1, priority 0).
-    kor::PhysAddr::new(GICD_BASE as usize).write::<u32>(3); // GICD_CTLR
-    kor::PhysAddr::new(GICD_BASE as usize + 0x100).write::<u32>(1 << VIRQ_TIMER); // ISENABLER0
+    kor::PhysAddr::new(GICD_BASE as usize)
+        .to_va()
+        .write::<u32>(3); // GICD_CTLR
+    kor::PhysAddr::new(GICD_BASE as usize + 0x100)
+        .to_va()
+        .write::<u32>(1 << VIRQ_TIMER); // ISENABLER0
     for i in 32..64usize {
-        kor::PhysAddr::new(GICD_BASE as usize + 0x800 + i).write::<u8>(1); // ITARGETSR
+        kor::PhysAddr::new(GICD_BASE as usize + 0x800 + i)
+            .to_va()
+            .write::<u8>(1); // ITARGETSR
     }
-    kor::PhysAddr::new(GICD_BASE as usize + 0x84).write::<u32>(0xFFFF_FFFF); // IGROUPR1
-    kor::PhysAddr::new(GICD_BASE as usize + 0x104).write::<u32>(0xFFFF_FFFF); // ISENABLER1
+    kor::PhysAddr::new(GICD_BASE as usize + 0x84)
+        .to_va()
+        .write::<u32>(0xFFFF_FFFF); // IGROUPR1
+    kor::PhysAddr::new(GICD_BASE as usize + 0x104)
+        .to_va()
+        .write::<u32>(0xFFFF_FFFF); // ISENABLER1
     for i in 32..64usize {
-        kor::PhysAddr::new(GICD_BASE as usize + 0x400 + i).write::<u8>(0); // IPRIORITYR
+        kor::PhysAddr::new(GICD_BASE as usize + 0x400 + i)
+            .to_va()
+            .write::<u8>(0); // IPRIORITYR
     }
     // CPU interface: enable both groups, mask all priorities.
-    kor::PhysAddr::new(GICC_BASE as usize).write::<u32>(3); // GICC_CTLR
-    kor::PhysAddr::new(GICC_BASE as usize + 0x4).write::<u32>(0xFF); // GICC_PMR
+    kor::PhysAddr::new(GICC_BASE as usize)
+        .to_va()
+        .write::<u32>(3); // GICC_CTLR
+    kor::PhysAddr::new(GICC_BASE as usize + 0x4)
+        .to_va()
+        .write::<u32>(0xFF); // GICC_PMR
     kor::println!(
         "el2: Linux stage-2 + vGIC + UART ON (HCR={:#x})",
         HCR_EL2_BASE
@@ -604,7 +624,9 @@ fn uart_read(vu: &mut Vuart, off: usize) -> u32 {
 fn uart_write(vu: &mut Vuart, off: usize, val: u32, vgic: &mut Vgic) {
     match off {
         0x000 => {
-            kor::PhysAddr::new(UART_BASE as usize).write::<u8>(val as u8);
+            kor::PhysAddr::new(UART_BASE as usize)
+                .to_va()
+                .write::<u8>(val as u8);
         }
         0x004 => {}
         0x024 => {}
@@ -705,9 +727,12 @@ fn handle_mmio(
             if off == 0x050 {
                 // Validate and temporarily translate every descriptor before
                 // exposing it to the physical bus-mastering device.
-                let qpn = kor::PhysAddr::new((dev_base + 0x040) as usize).read::<u32>() as u64;
-                let queue_size =
-                    kor::PhysAddr::new((dev_base + 0x038) as usize).read::<u32>() as usize;
+                let qpn = kor::PhysAddr::new((dev_base + 0x040) as usize)
+                    .to_va()
+                    .read::<u32>() as u64;
+                let queue_size = kor::PhysAddr::new((dev_base + 0x038) as usize)
+                    .to_va()
+                    .read::<u32>() as usize;
                 if queue_size == 0 || queue_size > 1024 {
                     return false;
                 }
@@ -759,7 +784,9 @@ fn handle_mmio(
                 unsafe {
                     asm!("dsb sy");
                 }
-                kor::PhysAddr::new((dev_base + off as u64) as usize).write::<u32>(val_in as u32);
+                kor::PhysAddr::new((dev_base + off as u64) as usize)
+                    .to_va()
+                    .write::<u32>(val_in as u32);
                 for _ in 0..200000 {
                     let isp1 = unsafe { ((GICD_BASE + 0x204) as *const u32).read_volatile() };
                     if isp1 & spi_bit != 0 {
@@ -782,7 +809,9 @@ fn handle_mmio(
                 } else {
                     val_in
                 };
-                kor::PhysAddr::new((dev_base + off as u64) as usize).write::<u32>(value as u32);
+                kor::PhysAddr::new((dev_base + off as u64) as usize)
+                    .to_va()
+                    .write::<u32>(value as u32);
                 if off == 0x050 {
                     for _ in 0..200000 {
                         let isp1 = unsafe { ((GICD_BASE + 0x204) as *const u32).read_volatile() };
@@ -1064,7 +1093,9 @@ pub fn run() {
                 let virq = if iar == 49 && cur == 1 { 48 } else { iar };
                 gs[cur].vgic.inject(virq);
             }
-            kor::PhysAddr::new((GICC_BASE + 0x10) as usize).write::<u32>(iar); // EOI
+            kor::PhysAddr::new((GICC_BASE + 0x10) as usize)
+                .to_va()
+                .write::<u32>(iar); // EOI
             continue;
         }
         match ec {

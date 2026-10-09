@@ -19,12 +19,12 @@ const GICC_PMR: usize = 0x004;
 const GICC_IAR: usize = 0x00C;
 const GICC_EOIR: usize = 0x010;
 
-fn gicd(off: usize) -> kor::PhysAddr {
-    kor::PhysAddr::new(GICD_BASE + off)
+fn gicd(off: usize) -> kor::VirtAddr {
+    kor::PhysAddr::new(GICD_BASE + off).to_va()
 }
 
-fn gicc(off: usize) -> kor::PhysAddr {
-    kor::PhysAddr::new(GICC_BASE + off)
+fn gicc(off: usize) -> kor::VirtAddr {
+    kor::PhysAddr::new(GICC_BASE + off).to_va()
 }
 
 fn gicc_read(off: usize) -> u32 {
@@ -49,7 +49,7 @@ pub fn write_eoir(iar: u32) {
 
 /// Enable an interrupt id (sets priority to 0 = highest, sets the enable bit).
 fn enable_intid(intid: u32) {
-    kor::PhysAddr::new(GICD_BASE + GICD_IPRIORITYR + intid as usize).write::<u8>(0);
+    kor::PhysAddr::new(GICD_BASE + GICD_IPRIORITYR + intid as usize).to_va().write::<u8>(0);
     let en = gicd(GICD_ISENABLER + (intid as usize / 32) * 4);
     en.write::<u32>(en.read::<u32>() | (1 << (intid % 32)));
 }
@@ -71,5 +71,5 @@ pub fn enable_ppi(intid: u32) {
 pub fn enable_spi(intid: u32) {
     enable_intid(intid);
     // ITARGETSR is byte-per-interrupt; target CPU 0.
-    kor::PhysAddr::new(GICD_BASE + GICD_ITARGETSR + intid as usize).write::<u8>(0x01);
+    kor::PhysAddr::new(GICD_BASE + GICD_ITARGETSR + intid as usize).to_va().write::<u8>(0x01);
 }

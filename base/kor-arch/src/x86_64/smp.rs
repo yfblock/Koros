@@ -42,11 +42,11 @@ fn lapic_reg(off: usize) -> kor::PhysAddr {
 }
 
 fn lapic_read(off: usize) -> u32 {
-    lapic_reg(off).read::<u32>()
+    lapic_reg(off).to_va().read::<u32>()
 }
 
 fn lapic_write(off: usize, val: u32) {
-    lapic_reg(off).write::<u32>(val)
+    lapic_reg(off).to_va().write::<u32>(val)
 }
 
 /// Software-enable this CPU's Local APIC (spurious vector 0xFF, enable bit).
@@ -130,8 +130,8 @@ pub fn start_secondaries() -> usize {
             kor::PhysAddr::new(AP_BOOT_PADDR).to_va().raw() as *mut u8,
             len,
         );
-        kor::PhysAddr::new(SLOT_CR3).write::<u64>(cr3 as u64);
-        kor::PhysAddr::new(SLOT_ENTRY).write::<u64>(ap_rust_entry as *const () as usize as u64);
+        kor::PhysAddr::new(SLOT_CR3).to_va().write::<u64>(cr3 as u64);
+        kor::PhysAddr::new(SLOT_ENTRY).to_va().write::<u64>(ap_rust_entry as *const () as usize as u64);
     }
 
     let vector = (AP_BOOT_PADDR >> 12) as u32;
@@ -145,7 +145,7 @@ pub fn start_secondaries() -> usize {
             core::ptr::addr_of!(SECONDARY_STACKS[apic].0) as usize + SECONDARY_STACK_SIZE
         };
         // SAFETY: writing the trampoline's stack slot before the SIPI.
-        kor::PhysAddr::new(SLOT_STACK).write::<u64>(sp as u64);
+        kor::PhysAddr::new(SLOT_STACK).to_va().write::<u64>(sp as u64);
 
         let before = kor::smp::online_count();
         // INIT, then two STARTUP IPIs (per the Intel MP protocol).
