@@ -8,7 +8,6 @@ pub mod trap;
 
 pub fn platform_config() -> kor::config::PlatformConfig {
     kor::config::PlatformConfig {
-        console: kor::config::Console::Ns16550aPort { base: 0x3f8 },
         firmware_phys_start: 0,
         dtb: 0,
         pci: None,

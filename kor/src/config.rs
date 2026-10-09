@@ -15,17 +15,6 @@
 
 use spin::Once;
 
-/// The console UART device: kind + base address.
-#[derive(Clone, Copy)]
-pub enum Console {
-    /// NS16550A over MMIO at `base`.
-    Ns16550aMmio { base: usize },
-    /// NS16550A over x86 legacy port I/O at `base`.
-    Ns16550aPort { base: u16 },
-    /// ARM PL011 over MMIO at `base`.
-    Pl011Mmio { base: usize },
-}
-
 /// A memory-mapped (ECAM) PCIe host bridge, for platforms whose virtio devices
 /// live on PCIe rather than on a virtio-mmio bus (e.g. QEMU x86_64 `q35`).
 #[derive(Clone, Copy)]
@@ -41,8 +30,6 @@ pub struct PciEcam {
 /// Board configuration supplied by the binary crate.
 #[derive(Clone, Copy)]
 pub struct PlatformConfig {
-    /// Console UART.
-    pub console: Console,
     /// Lowest physical address reserved for firmware; kept out of the frame
     /// allocator (0 if nothing below the kernel image is reserved).
     pub firmware_phys_start: usize,
@@ -59,11 +46,6 @@ static CONFIG: Once<PlatformConfig> = Once::new();
 /// `kernel_main`, before any console output or memory setup.
 pub fn init(config: PlatformConfig) {
     CONFIG.call_once(|| config);
-}
-
-/// The console UART, if the platform configuration has been installed.
-pub fn console() -> Option<Console> {
-    CONFIG.get().map(|c| c.console)
 }
 
 /// Lowest firmware-reserved physical address (0 if none / not yet configured).

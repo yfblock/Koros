@@ -12,7 +12,6 @@ const GUEST_RESERVED_END: usize = 0x5000_0000;
 
 pub fn platform_config() -> kor::config::PlatformConfig {
     kor::config::PlatformConfig {
-        console: kor::config::Console::Pl011Mmio { base: 0x0900_0000 },
         firmware_phys_start: 0x4000_0000,
         dtb: 0,
         pci: None,
