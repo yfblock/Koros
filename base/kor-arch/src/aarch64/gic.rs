@@ -20,21 +20,21 @@ const GICC_IAR: usize = 0x00C;
 const GICC_EOIR: usize = 0x010;
 
 fn gicd(off: usize) -> kor::KernelAddr {
-    kor::PhysAddr::new(GICD_BASE + off).to_va()
+    kor::PhysAddr::new(GICD_BASE + off).to_ka()
 }
 
 fn gicc(off: usize) -> kor::KernelAddr {
-    kor::PhysAddr::new(GICC_BASE + off).to_va()
+    kor::PhysAddr::new(GICC_BASE + off).to_ka()
 }
 
 fn gicc_read(off: usize) -> u32 {
     // SAFETY: GIC CPU-interface MMIO is mapped in the direct map.
-    gicc(off).read::<u32>()
+    gicc(off).read_u32()
 }
 
 fn gicc_write(off: usize, val: u32) {
     // SAFETY: GIC CPU-interface MMIO is mapped in the direct map.
-    gicc(off).write::<u32>(val);
+    gicc(off).write_u32(val);
 }
 
 /// Read the interrupt acknowledge register (returns the active INTID).
@@ -49,15 +49,15 @@ pub fn write_eoir(iar: u32) {
 
 /// Enable an interrupt id (sets priority to 0 = highest, sets the enable bit).
 fn enable_intid(intid: u32) {
-    kor::PhysAddr::new(GICD_BASE + GICD_IPRIORITYR + intid as usize).to_va().write::<u8>(0);
+    kor::PhysAddr::new(GICD_BASE + GICD_IPRIORITYR + intid as usize).to_ka().write_u8(0);
     let en = gicd(GICD_ISENABLER + (intid as usize / 32) * 4);
-    en.write::<u32>(en.read::<u32>() | (1 << (intid % 32)));
+    en.write_u32(en.read_u32() | (1 << (intid % 32)));
 }
 
 /// Distributor + CPU-interface enable and priority mask.  Called per CPU.
 pub fn init() {
     // SAFETY: GIC MMIO is mapped.
-    gicd(GICD_CTLR).write::<u32>(1);
+    gicd(GICD_CTLR).write_u32(1);
     gicc_write(GICC_PMR, 0xFF);
     gicc_write(GICC_CTLR, 1);
 }
@@ -71,5 +71,5 @@ pub fn enable_ppi(intid: u32) {
 pub fn enable_spi(intid: u32) {
     enable_intid(intid);
     // ITARGETSR is byte-per-interrupt; target CPU 0.
-    kor::PhysAddr::new(GICD_BASE + GICD_ITARGETSR + intid as usize).to_va().write::<u8>(0x01);
+    kor::PhysAddr::new(GICD_BASE + GICD_ITARGETSR + intid as usize).to_ka().write_u8(0x01);
 }

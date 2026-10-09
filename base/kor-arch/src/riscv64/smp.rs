@@ -83,7 +83,7 @@ pub fn shutdown() -> ! {
         // Link-time hook — no crate dependency between kor-arch and kor-mmu.
         // SAFETY: shutdown never resumes execution on the old root.
         unsafe { boot_mmu_activate() };
-        kor::PhysAddr::new(SIFIVE_TEST_BASE).to_va().write::<u32>(SIFIVE_TEST_FINISH_PASS);
+        kor::PhysAddr::new(SIFIVE_TEST_BASE).to_ka().write_u32(SIFIVE_TEST_FINISH_PASS);
     }
     loop {
         // SAFETY: `wfi` is a hint instruction, always safe.

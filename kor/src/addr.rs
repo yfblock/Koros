@@ -61,21 +61,21 @@ impl PhysAddr {
         self.0
     }
 
-    /// Translate into the kernel's own mapping window through the installed
+    /// Translate into the kernel's own mapping window (as [`KernelAddr`]) through the installed
     /// application translation (identity until installed).  The result is a
     /// [`KernelAddr`]: by construction it lies in memory the kernel itself
     /// has mapped, so it carries the volatile access rights.
     #[inline]
-    pub fn to_va(self) -> KernelAddr {
+    pub fn to_ka(self) -> KernelAddr {
         KernelAddr::new(translate_up(self.0))
     }
 
     /// The physical address corresponding to `ka` under the installed
     /// application translation (identity until installed) — the reverse of
-    /// [`to_va`].  Owned by the physical side: neither `VirtAddr` nor
+    /// [`to_ka`].  Owned by the physical side: neither `VirtAddr` nor
     /// `KernelAddr` carries the reverse translation as a method.
     #[inline]
-    pub fn from_va(ka: KernelAddr) -> Self {
+    pub fn from_ka(ka: KernelAddr) -> Self {
         PhysAddr(translate_down(ka.0))
     }
 
@@ -86,7 +86,7 @@ impl PhysAddr {
     /// owned for the returned lifetime (no aliases while it is live).
     #[inline]
     pub unsafe fn page_slice_at_mut<T>(self, len: usize) -> &'static mut [T] {
-        let va = self.to_va().raw();
+        let va = self.to_ka().raw();
         // SAFETY: caller guarantees validity and exclusivity.
         unsafe { core::slice::from_raw_parts_mut(va as *mut T, len) }
     }
@@ -122,7 +122,7 @@ impl VirtAddr {
 
 /// An address inside the kernel's own mapping window (the direct map /
 /// high-half window of the running link model — identity for unmapped
-/// kernels).  Only constructible through typed paths ([`PhysAddr::to_va`]
+/// kernels).  Only constructible through typed paths ([`PhysAddr::to_ka`]
 /// and friends), which is what licenses the volatile cell access.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct KernelAddr(usize);
@@ -130,7 +130,7 @@ pub struct KernelAddr(usize);
 impl KernelAddr {
     /// Wrap an address already known to lie in the kernel's mapping window
     /// (e.g. a kernel-heap pointer).  Device and frame access should prefer
-    /// the typed path, `PhysAddr::to_va()`.
+    /// the typed path, `PhysAddr::to_ka()`.
     #[inline]
     pub const fn new(addr: usize) -> Self {
         Self(addr)
@@ -159,5 +159,53 @@ impl KernelAddr {
     #[inline]
     pub const fn offset(self, off: usize) -> Self {
         Self(self.0 + off)
+    }
+
+    /// Volatile `u8` read (device-register convenience).
+    #[inline]
+    pub fn read_u8(&self) -> u8 {
+        self.read::<u8>()
+    }
+
+    /// Volatile `u16` read.
+    #[inline]
+    pub fn read_u16(&self) -> u16 {
+        self.read::<u16>()
+    }
+
+    /// Volatile `u32` read.
+    #[inline]
+    pub fn read_u32(&self) -> u32 {
+        self.read::<u32>()
+    }
+
+    /// Volatile `u64` read.
+    #[inline]
+    pub fn read_u64(&self) -> u64 {
+        self.read::<u64>()
+    }
+
+    /// Volatile `u8` write.
+    #[inline]
+    pub fn write_u8(&self, value: u8) {
+        self.write::<u8>(value)
+    }
+
+    /// Volatile `u16` write.
+    #[inline]
+    pub fn write_u16(&self, value: u16) {
+        self.write::<u16>(value)
+    }
+
+    /// Volatile `u32` write.
+    #[inline]
+    pub fn write_u32(&self, value: u32) {
+        self.write::<u32>(value)
+    }
+
+    /// Volatile `u64` write.
+    #[inline]
+    pub fn write_u64(&self, value: u64) {
+        self.write::<u64>(value)
     }
 }

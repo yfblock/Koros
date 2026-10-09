@@ -20,7 +20,7 @@ use kor::frame::{PAGE_SIZE, alloc_frame, free_frames};
 /// # Safety
 /// `pa` must be a page-aligned frame available for exclusive write.
 pub(crate) unsafe fn zero_page(pa: usize) {
-    let va = kor::PhysAddr::new(pa).to_va().raw() as *mut u64;
+    let va = kor::PhysAddr::new(pa).to_ka().raw() as *mut u64;
     // SAFETY: caller guarantees exclusive access to the frame.
     unsafe { core::ptr::write_bytes(va, 0, PAGE_SIZE / core::mem::size_of::<u64>()) };
 }
@@ -60,7 +60,7 @@ fn span(level: usize) -> usize {
 /// by its descriptor lock (or the page must be otherwise exclusive).
 unsafe fn table_mut(phys: usize) -> &'static mut [usize; PT_ENTRIES] {
     // SAFETY: caller guarantees a live, exclusively-accessed table page.
-    unsafe { &mut *(kor::PhysAddr::new(phys).to_va().raw() as *mut [usize; PT_ENTRIES]) }
+    unsafe { &mut *(kor::PhysAddr::new(phys).to_ka().raw() as *mut [usize; PT_ENTRIES]) }
 }
 
 /// One address space: the physical root of its page-table tree.

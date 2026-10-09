@@ -27,7 +27,7 @@ pub struct KorHal;
 unsafe impl Hal for KorHal {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         let physical = kor::frame::alloc_frames(pages).expect("virtio dma_alloc: out of frames");
-        let virtual_address = kor::PhysAddr::new(physical).to_va().raw();
+        let virtual_address = kor::PhysAddr::new(physical).to_ka().raw();
         // SAFETY: the allocator returned `pages` contiguous, exclusively owned
         // frames and the architecture direct map covers those frames.
         unsafe {
@@ -45,13 +45,13 @@ unsafe impl Hal for KorHal {
     }
 
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(kor::PhysAddr::new(paddr as usize).to_va().raw() as *mut u8)
+        NonNull::new(kor::PhysAddr::new(paddr as usize).to_ka().raw() as *mut u8)
             .expect("direct map returned null")
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let virtual_address = buffer.as_ptr() as *mut u8 as usize;
-        kor::PhysAddr::from_va(kor::KernelAddr::new(virtual_address)).raw() as PhysAddr
+        kor::PhysAddr::from_ka(kor::KernelAddr::new(virtual_address)).raw() as PhysAddr
     }
 
     unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {}
@@ -320,7 +320,7 @@ impl kor::driver::DeviceDriver for VirtioMmioDriver {
         use virtio_drivers::transport::{DeviceType, Transport};
 
         let header =
-            NonNull::new(kor::PhysAddr::new(device.reg_base).to_va().raw() as *mut VirtIOHeader)
+            NonNull::new(kor::PhysAddr::new(device.reg_base).to_ka().raw() as *mut VirtIOHeader)
                 .ok_or(kor::driver::DriverError::NoResource)?;
         // SAFETY: the device-tree register range is mapped for the kernel
         // lifetime and points to a VirtIO MMIO register block.
@@ -414,7 +414,7 @@ pub fn discover_pci_ecam_blk(
     use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 
     const ROOT_BUS: u8 = 0;
-    let ecam_virtual = kor::PhysAddr::new(ecam_base).to_va().raw();
+    let ecam_virtual = kor::PhysAddr::new(ecam_base).to_ka().raw();
     kor::println!(
         "virtio-drivers: scanning PCIe ECAM at {:#x} for virtio-blk...",
         ecam_base

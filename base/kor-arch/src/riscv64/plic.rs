@@ -21,7 +21,7 @@ pub fn context(hart: usize) -> usize {
 use kor::KernelAddr;
 
 fn reg(off: usize) -> KernelAddr {
-    kor::PhysAddr::new(PLIC_BASE + off).to_va()
+    kor::PhysAddr::new(PLIC_BASE + off).to_ka()
 }
 
 /// Claim register for S-mode context `ctx` (read = claim, write = complete).
@@ -33,10 +33,10 @@ pub fn claim_reg(ctx: usize) -> KernelAddr {
 pub fn enable(irq: u32, hart: usize) {
     let ctx = context(hart);
     // SAFETY: PLIC MMIO is mapped in the direct map.
-        reg(irq as usize * 4).write::<u32>(1); // priority = 1 (0 disables)
+        reg(irq as usize * 4).write_u32(1); // priority = 1 (0 disables)
         let en = reg(0x2000 + ctx * 0x80 + (irq as usize / 32) * 4);
-        en.write::<u32>(en.read::<u32>() | (1 << (irq % 32)));
-        reg(0x20_0000 + ctx * 0x1000).write::<u32>(0); // threshold 0
+        en.write_u32(en.read_u32() | (1 << (irq % 32)));
+        reg(0x20_0000 + ctx * 0x1000).write_u32(0); // threshold 0
 
 }
 

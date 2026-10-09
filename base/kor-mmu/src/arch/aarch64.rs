@@ -114,8 +114,8 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
             };
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    kor::PhysAddr::new(pte_address(entry)).to_va().raw() as *const u8,
-                    kor::PhysAddr::new(page).to_va().raw() as *mut u8,
+                    kor::PhysAddr::new(pte_address(entry)).to_ka().raw() as *const u8,
+                    kor::PhysAddr::new(page).to_ka().raw() as *mut u8,
                     4096,
                 );
             }
