@@ -18,14 +18,14 @@ pub fn context(hart: usize) -> usize {
     2 * hart + 1
 }
 
-use kor::VirtAddr;
+use kor::KernelAddr;
 
-fn reg(off: usize) -> VirtAddr {
+fn reg(off: usize) -> KernelAddr {
     kor::PhysAddr::new(PLIC_BASE + off).to_va()
 }
 
 /// Claim register for S-mode context `ctx` (read = claim, write = complete).
-pub fn claim_reg(ctx: usize) -> VirtAddr {
+pub fn claim_reg(ctx: usize) -> KernelAddr {
     reg(0x20_0004 + ctx * 0x1000)
 }
 

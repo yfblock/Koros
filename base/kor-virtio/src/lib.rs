@@ -51,7 +51,7 @@ unsafe impl Hal for KorHal {
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let virtual_address = buffer.as_ptr() as *mut u8 as usize;
-        kor::PhysAddr::from_va(kor::VirtAddr::new(virtual_address)).raw() as PhysAddr
+        kor::PhysAddr::from_va(kor::KernelAddr::new(virtual_address)).raw() as PhysAddr
     }
 
     unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {}

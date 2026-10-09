@@ -11,7 +11,7 @@ extern crate alloc;
 
 pub mod addr;
 pub mod mmio;
-pub use addr::{PhysAddr, VirtAddr, install_translation};
+pub use addr::{KernelAddr, PhysAddr, VirtAddr, install_translation};
 pub mod block;
 pub mod cmdline;
 pub mod config;

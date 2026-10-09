@@ -61,20 +61,22 @@ impl PhysAddr {
         self.0
     }
 
-    /// Translate to the kernel virtual address through the installed
-    /// application translation (identity until installed).
+    /// Translate into the kernel's own mapping window through the installed
+    /// application translation (identity until installed).  The result is a
+    /// [`KernelAddr`]: by construction it lies in memory the kernel itself
+    /// has mapped, so it carries the volatile access rights.
     #[inline]
-    pub fn to_va(self) -> VirtAddr {
-        VirtAddr(translate_up(self.0))
+    pub fn to_va(self) -> KernelAddr {
+        KernelAddr::new(translate_up(self.0))
     }
 
-    /// The physical address corresponding to `va` under the installed
+    /// The physical address corresponding to `ka` under the installed
     /// application translation (identity until installed) — the reverse of
-    /// [`to_va`].  Owned by the physical side: `VirtAddr` itself carries no
-    /// translation.
+    /// [`to_va`].  Owned by the physical side: neither `VirtAddr` nor
+    /// `KernelAddr` carries the reverse translation as a method.
     #[inline]
-    pub fn from_va(va: VirtAddr) -> Self {
-        PhysAddr(translate_down(va.0))
+    pub fn from_va(ka: KernelAddr) -> Self {
+        PhysAddr(translate_down(ka.0))
     }
 
     /// View this page through the installed translation as a mutable slice.
@@ -105,25 +107,6 @@ impl VirtAddr {
         self.0
     }
 
-    /// Volatile read of a `T`-wide cell at this address.
-    ///
-    /// The address must name a valid mapped cell of width `T` (a device
-    /// register from the platform constants, or owned memory).
-    #[inline]
-    pub fn read<T: Copy>(&self) -> T {
-        // SAFETY: caller guarantees a valid, mapped, non-aliased-for-read cell.
-        unsafe { (self.0 as *const T).read_volatile() }
-    }
-
-    /// Volatile write of a `T`-wide cell at this address.
-    ///
-    /// The address must name a valid mapped cell of width `T`.
-    #[inline]
-    pub fn write<T: Copy>(&self, value: T) {
-        // SAFETY: caller guarantees a valid, mapped cell.
-        unsafe { (self.0 as *mut T).write_volatile(value) }
-    }
-
     /// Level `n` page-table index (n = 0 is the 4 KiB level).
     #[inline]
     pub const fn pn_index(self, n: usize) -> usize {
@@ -134,5 +117,47 @@ impl VirtAddr {
     #[inline]
     pub const fn page_offset(self, n: usize) -> usize {
         self.0 % (1 << (12 + 9 * n))
+    }
+}
+
+/// An address inside the kernel's own mapping window (the direct map /
+/// high-half window of the running link model — identity for unmapped
+/// kernels).  Only constructible through typed paths ([`PhysAddr::to_va`]
+/// and friends), which is what licenses the volatile cell access.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KernelAddr(usize);
+
+impl KernelAddr {
+    /// Wrap an address already known to lie in the kernel's mapping window
+    /// (e.g. a kernel-heap pointer).  Device and frame access should prefer
+    /// the typed path, `PhysAddr::to_va()`.
+    #[inline]
+    pub const fn new(addr: usize) -> Self {
+        Self(addr)
+    }
+
+    #[inline]
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+
+    /// Volatile read of a `T`-wide cell at this address.
+    #[inline]
+    pub fn read<T: Copy>(&self) -> T {
+        // SAFETY: KernelAddr is only produced for kernel-mapped memory.
+        unsafe { (self.0 as *const T).read_volatile() }
+    }
+
+    /// Volatile write of a `T`-wide cell at this address.
+    #[inline]
+    pub fn write<T: Copy>(&self, value: T) {
+        // SAFETY: KernelAddr is only produced for kernel-mapped memory.
+        unsafe { (self.0 as *mut T).write_volatile(value) }
+    }
+
+    /// Register cell at a fixed byte offset in the same window.
+    #[inline]
+    pub const fn offset(self, off: usize) -> Self {
+        Self(self.0 + off)
     }
 }

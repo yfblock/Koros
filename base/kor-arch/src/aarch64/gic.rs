@@ -19,11 +19,11 @@ const GICC_PMR: usize = 0x004;
 const GICC_IAR: usize = 0x00C;
 const GICC_EOIR: usize = 0x010;
 
-fn gicd(off: usize) -> kor::VirtAddr {
+fn gicd(off: usize) -> kor::KernelAddr {
     kor::PhysAddr::new(GICD_BASE + off).to_va()
 }
 
-fn gicc(off: usize) -> kor::VirtAddr {
+fn gicc(off: usize) -> kor::KernelAddr {
     kor::PhysAddr::new(GICC_BASE + off).to_va()
 }
 
