@@ -125,13 +125,58 @@ pub fn rx_fill() {
     }
 }
 
+/// Terminal attributes currently in effect for fd 0-2 (set via TCSETS*;
+/// starts as the cooked defaults advertised by TCGETS).  The kernel honours
+/// the input flags that user programs actually depend on (ICRNL).
+static TERMIOS: Mutex<[u8; TERMIOS_LEN]> = Mutex::new([0; TERMIOS_LEN]);
+
+fn termios() -> [u8; TERMIOS_LEN] {
+    let mut t = TERMIOS.lock();
+    if *t == [0u8; TERMIOS_LEN] {
+        *t = cooked_termios();
+    }
+    *t
+}
+
+/// `struct termios` byte length: 4 flag words + c_line + c_cc[19].
+const TERMIOS_LEN: usize = 36;
+
+/// Cooked defaults: ICRNL | OPOST | ONLCR, ECHO | ICANON | ISIG family.
+fn cooked_termios() -> [u8; TERMIOS_LEN] {
+    const IFLAG: u32 = 0o400; // ICRNL
+    const OFLAG: u32 = 0o1 | 0o4; // OPOST | ONLCR
+    const CFLAG: u32 = 0o141;
+    const LFLAG: u32 = 0o1 | 0o2 | 0o10 | 0o20 | 0o40 | 0o100000; // ISIG|ICANON|ECHO|ECHOE|ECHOK|IEXTEN
+    let mut t = [0u8; TERMIOS_LEN];
+    t[0..4].copy_from_slice(&IFLAG.to_ne_bytes());
+    t[4..8].copy_from_slice(&OFLAG.to_ne_bytes());
+    t[8..12].copy_from_slice(&CFLAG.to_ne_bytes());
+    t[12..16].copy_from_slice(&LFLAG.to_ne_bytes());
+    // c_cc: VINTR=3, VQUIT=28, VERASE=127, VKILL=21, VEOF=4, VTIME=0, VMIN=1
+    t[17..24].copy_from_slice(&[3, 28, 127, 21, 4, 0, 1]);
+    t
+}
+
+/// c_iflag bit: map CR (0x0d) to NL (0x0a) on input.
+const ICRNL_FLAG: u32 = 0o400;
+
+fn termios_icrnl() -> bool {
+    let t = termios();
+    u32::from_ne_bytes([t[0], t[1], t[2], t[3]]) & ICRNL_FLAG != 0
+}
+
 fn rx_get() -> Option<u8> {
     rx_fill();
     let mut buf = RX_BUF.lock();
     if buf.is_empty() {
         None
     } else {
-        Some(buf.remove(0))
+        let byte = buf.remove(0);
+        if byte == b'\r' && termios_icrnl() {
+            Some(b'\n')
+        } else {
+            Some(byte)
+        }
     }
 }
 
@@ -724,8 +769,8 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         }
         SYS_GETTIMEOFDAY => sys_gettimeofday(args[0]),
         SYS_TIME => sys_time(args[0]),
-        SYS_PPOLL => sys_ppoll(args[0], args[1]),
-        SYS_PSELECT6 => sys_select(args[0], args[1], args[2], args[3]),
+        SYS_PPOLL => sys_ppoll(args[0], args[1], args[2]),
+        SYS_PSELECT6 => sys_select(args[0], args[1], args[2], args[3], args[4]),
 
         167 => sys_prctl(args),
         154 | 149 => -38, // sched_getaffinity
@@ -790,7 +835,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
             }
         }
         298 => 0,
-        299 => sys_select(args[0], args[1], args[2], args[3]),
+        299 => sys_select(args[0], args[1], args[2], args[3], 0),
         261 => {
             // prlimit64 → return default limits
             if args[3] != 0 {
@@ -2026,30 +2071,14 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
     }
 }
 
-/// ioctl handler — supports TCGETS so the shell thinks stdin is a terminal.
+/// ioctl handler — terminal attributes are stored for real: TCGETS
+/// returns what TCSETS last installed (cooked defaults before that), and the
+/// input path honours ICRNL, so raw-mode programs (vi) and line programs
+/// (sh) both behave.
 fn sys_ioctl(fd: usize, request: usize, argp: usize) -> isize {
     // TCGETS = 0x5401: get terminal attributes
     if request == 0x5401 && fd <= 2 {
-        // struct termios: c_iflag, c_oflag, c_cflag, c_lflag, c_line, c_cc[19]
-        // Total size = 4*4 + 1 + 19 = 36 bytes
-        // Set ECHO | ICANON | ISIG so the shell echoes and does line editing
-        const ECHO: u32 = 0o10;
-        const ICANON: u32 = 0o2;
-        const ISIG: u32 = 0o1;
-        const ECHOE: u32 = 0o20;
-        const ECHOK: u32 = 0o40;
-        const IEXTEN: u32 = 0o100000;
-        const ICRNL: u32 = 0o400;
-        const OPOST: u32 = 0o1;
-        const ONLCR: u32 = 0o4;
-
-        let mut termios = [0u8; 36];
-        termios[0..4].copy_from_slice(&ICRNL.to_ne_bytes());
-        termios[4..8].copy_from_slice(&(OPOST | ONLCR).to_ne_bytes());
-        termios[8..12].copy_from_slice(&0o141u32.to_ne_bytes());
-        termios[12..16]
-            .copy_from_slice(&(ECHO | ICANON | ISIG | ECHOE | ECHOK | IEXTEN).to_ne_bytes());
-        termios[17..24].copy_from_slice(&[3, 28, 127, 21, 4, 0, 1]);
+        let termios = termios();
         return if copy_to_user(argp, &termios).is_some() {
             0
         } else {
@@ -2057,12 +2086,13 @@ fn sys_ioctl(fd: usize, request: usize, argp: usize) -> isize {
         };
     }
     // TCSETS = 0x5402, TCSETSW = 0x5403, TCSETSF = 0x5404: set terminal attrs
-    if request >= 0x5402 && request <= 0x5404 {
-        return if checked_user_range(argp, 36, false).is_some() {
-            0
-        } else {
-            -14
-        };
+    if request >= 0x5402 && request <= 0x5404 && fd <= 2 {
+        let mut source = [0u8; TERMIOS_LEN];
+        if user_mem::copy_from(argp, &mut source).is_none() {
+            return -14;
+        }
+        *TERMIOS.lock() = source;
+        return 0;
     }
     // TIOCGWINSZ = 0x5413: get window size
     if request == 0x5413 {
@@ -3031,10 +3061,27 @@ fn sys_nanosleep(request: usize) -> isize {
 
 /// ppoll — block until stdin or a socket has data, then return POLLIN.
 /// struct pollfd { int fd; short events; short revents; } = 8 bytes
-fn sys_ppoll(fds: usize, nfds: usize) -> isize {
+/// Convert a user `struct timespec *` (16 bytes: tv_sec, tv_nsec) into an
+/// absolute deadline in timer ticks; `None` for null/infinite.
+fn poll_deadline(timespec_ptr: usize) -> Option<u64> {
+    if timespec_ptr == 0 {
+        return None;
+    }
+    let seconds = user_mem::read::<usize>(timespec_ptr)? as u64;
+    let nanos = user_mem::read::<usize>(timespec_ptr + core::mem::size_of::<usize>())? as u64;
+    let hz = kor_arch::timer_hz().max(1);
+    let ticks = seconds.saturating_mul(hz) + nanos.saturating_mul(hz) / 1_000_000_000;
+    Some(kor_arch::now_ticks().saturating_add(ticks))
+}
+
+fn sys_ppoll(fds: usize, nfds: usize, tmo_p: usize) -> isize {
     if nfds == 0 {
         return 0;
     }
+    // tmo_p: `struct timespec { tv_sec, tv_nsec }` in kernel timebase
+    // units below; null = infinite.  Honoring the timeout is what lets
+    // programs time out an escape-sequence probe (busybox vi's ESC key).
+    let deadline_ticks = poll_deadline(tmo_p);
     let Some(byte_len) = nfds.checked_mul(8) else {
         return -22;
     };
@@ -3072,11 +3119,22 @@ fn sys_ppoll(fds: usize, nfds: usize) -> isize {
         if ready != 0 {
             return ready;
         }
+        if let Some(deadline) = deadline_ticks
+            && kor_arch::now_ticks() >= deadline
+        {
+            return 0;
+        }
         crate::net::wait();
     }
 }
 
-fn sys_select(nfds: usize, readfds: usize, writefds: usize, exceptfds: usize) -> isize {
+fn sys_select(
+    nfds: usize,
+    readfds: usize,
+    writefds: usize,
+    exceptfds: usize,
+    timeout: usize,
+) -> isize {
     const BITS_PER_WORD: usize = usize::BITS as usize;
     let word_count = nfds.div_ceil(BITS_PER_WORD);
     let mut requested_read = Vec::with_capacity(word_count);
@@ -3138,6 +3196,11 @@ fn sys_select(nfds: usize, readfds: usize, writefds: usize, exceptfds: usize) ->
                 }
             }
             return ready;
+        }
+        if let Some(deadline) = poll_deadline(timeout)
+            && kor_arch::now_ticks() >= deadline
+        {
+            return 0;
         }
         crate::net::wait();
     }
