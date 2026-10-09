@@ -1,9 +1,10 @@
-//! Boot authoring toolkit — shared, arch-neutral pieces.
+//! Shared boot-stack fragment plus the composition contract shared by every
+//! architecture's `boot` module (`riscv64::boot`, `aarch64::boot`,
+//! `x86_64::boot`).
 //!
 //! Each architecture contributes identically-named fragment macros in its
-//! own `boot_macros` module (`riscv64::boot_macros`, `aarch64::boot_macros`,
-//! `x86_64::boot_macros`); only the active architecture's module is
-//! compiled, so the crate root always exposes exactly one
+//! own `boot` module; only the active architecture's module is compiled,
+//! so the crate root always exposes exactly one
 //! `kor_arch::boot_setup_asm!` / `boot_cross_asm!` / … per build, and
 //! applications compose the same names on every target.
 //!
@@ -52,13 +53,17 @@
 macro_rules! boot_stack_asm {
     ($size:expr) => {
         concat!(
-            ".section .bss.bstack\n",
-            ".global bstack\n",
-            ".global bstack_top\n",
-            "bstack:\n",
-            concat!(".fill ", stringify!($size), "\n"),
-            ".size bstack, . - bstack\n",
-            "bstack_top:\n",
+            "
+.section .bss.bstack
+.global bstack
+.global bstack_top
+bstack:
+    .fill ",
+            stringify!($size),
+            "
+    .size bstack, . - bstack
+bstack_top:
+",
         )
     };
 }
