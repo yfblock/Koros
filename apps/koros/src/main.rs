@@ -78,13 +78,13 @@ extern "C" fn kernel_main() -> ! {
             kor::frame::add_region(s, e)
         });
     });
-    // Slab growth and large allocations may now draw from the frame buddy.
-    // riscv64/aarch64 run unmapped (identity); x86_64 keeps the high-half
-    // link on the static boot tables (which also identity-map low 4 GiB).
+    // Install this link model's translation (identity on the unmapped
+    // arches; high-half on x86_64), then allow frame-backed heap growth.
     #[cfg(target_arch = "x86_64")]
-    HEAP.enable_frame_growth(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
+    kor::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
     #[cfg(not(target_arch = "x86_64"))]
-    HEAP.enable_frame_growth(|pa| pa, |va| va);
+    kor::install_translation(|pa| pa, |va| va);
+    HEAP.enable_frame_growth();
     heap::self_test();
     // 9. Timer + interrupts on this CPU.
     kor_arch::timer_init();
@@ -93,12 +93,7 @@ extern "C" fn kernel_main() -> ! {
     kor::println!("Hello, world!");
     kor::println!("cmdline: {:?}", cmdline::raw());
 
-    // 10. Discover and bind drivers (device translation is a link-model
-    // property: identity on the unmapped arches, high-half on x86_64).
-    #[cfg(target_arch = "x86_64")]
-    kor_virtio::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
-    #[cfg(not(target_arch = "x86_64"))]
-    kor_virtio::install_translation(|pa| pa, |va| va);
+    // 10. Discover and bind drivers.
     probe_devices();
 
     // 11. Bring up the other CPUs.

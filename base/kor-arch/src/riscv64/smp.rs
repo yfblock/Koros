@@ -83,10 +83,7 @@ pub fn shutdown() -> ! {
         // Link-time hook — no crate dependency between kor-arch and kor-mmu.
         // SAFETY: shutdown never resumes execution on the old root.
         unsafe { boot_mmu_activate() };
-        // SAFETY: 32-bit MMIO write into the identity-mapped syscon device.
-        unsafe {
-            (SIFIVE_TEST_BASE as *mut u32).write_volatile(SIFIVE_TEST_FINISH_PASS);
-        }
+        kor::mmio::Reg::<u32>::at_pa(SIFIVE_TEST_BASE).write(SIFIVE_TEST_FINISH_PASS);
     }
     loop {
         // SAFETY: `wfi` is a hint instruction, always safe.

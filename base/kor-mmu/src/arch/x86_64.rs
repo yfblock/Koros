@@ -41,8 +41,8 @@ pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
     unsafe { crate::page_table::zero_page(cloned) };
-    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(source), PTE_NUM) };
-    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(cloned), PTE_NUM) };
+    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
+    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     dst[256..].copy_from_slice(&src[256..]);
     Ok(cloned)
 }
@@ -50,8 +50,8 @@ pub fn new_user() -> Result<usize, MapError> {
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
     unsafe { crate::page_table::zero_page(cloned) };
-    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(source), PTE_NUM) };
-    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(cloned), PTE_NUM) };
+    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
+    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     for index in 0..PTE_NUM {
         let entry = src[index];
         if !is_present(entry) || (level == 3 && index >= 256) {
@@ -68,8 +68,8 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
             };
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    kor_arch::phys_to_virt(pte_address(entry)) as *const u8,
-                    kor_arch::phys_to_virt(page) as *mut u8,
+                    kor::PhysAddr::new(pte_address(entry)).to_va().raw() as *const u8,
+                    kor::PhysAddr::new(page).to_va().raw() as *mut u8,
                     4096,
                 );
             }
@@ -99,7 +99,7 @@ pub unsafe fn destroy(root: usize) {
 }
 
 unsafe fn destroy_table(table: usize, level: usize) {
-    let entries = unsafe { PhysAddr::new(table).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(table), PTE_NUM) };
+    let entries = unsafe { PhysAddr::new(table).page_slice_at_mut::<usize>(PTE_NUM) };
     for &entry in &entries[..256] {
         if !is_present(entry) {
             continue;
@@ -121,7 +121,7 @@ unsafe fn destroy_table(table: usize, level: usize) {
 pub fn split_identity() {
     unsafe {
         let root = PhysAddr::new(root());
-        let pml4 = root.page_slice_at_mut::<usize>(kor_arch::phys_to_virt(root.raw()), PTE_NUM);
+        let pml4 = root.page_slice_at_mut::<usize>(PTE_NUM);
         let low = pml4[0];
         if !is_present(low) || is_huge(low) {
             return;
@@ -130,8 +130,8 @@ pub fn split_identity() {
         let old_pdpt = PhysAddr::new(pte_address(low));
         let new_pdpt_addr = alloc_frame().expect("x86: OOM cloning low PDPT");
         crate::page_table::zero_page(new_pdpt_addr);
-        let old_entries = old_pdpt.page_slice_at_mut::<usize>(kor_arch::phys_to_virt(old_pdpt.raw()), PTE_NUM);
-        let new_entries = PhysAddr::new(new_pdpt_addr).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(new_pdpt_addr), PTE_NUM);
+        let old_entries = old_pdpt.page_slice_at_mut::<usize>(PTE_NUM);
+        let new_entries = PhysAddr::new(new_pdpt_addr).page_slice_at_mut::<usize>(PTE_NUM);
 
         for (index, old_entry) in old_entries.iter().copied().enumerate() {
             if !is_present(old_entry) || is_huge(old_entry) {
@@ -142,8 +142,8 @@ pub fn split_identity() {
             let old_pd = PhysAddr::new(pte_address(old_entry));
             let new_pd_addr = alloc_frame().expect("x86: OOM cloning low PD");
             crate::page_table::zero_page(new_pd_addr);
-            let old_pd_entries = old_pd.page_slice_at_mut::<usize>(kor_arch::phys_to_virt(0), PTE_NUM);
-            let new_pd_entries = PhysAddr::new(new_pd_addr).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(new_pd_addr), PTE_NUM);
+            let old_pd_entries = old_pd.page_slice_at_mut::<usize>(PTE_NUM);
+            let new_pd_entries = PhysAddr::new(new_pd_addr).page_slice_at_mut::<usize>(PTE_NUM);
             new_pd_entries.copy_from_slice(old_pd_entries);
             new_entries[index] = new_pd_addr | (old_entry & 0xFFF);
         }

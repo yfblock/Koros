@@ -20,14 +20,10 @@ pub const MIN_HEAP_BYTES: usize = NUM_SLABS * MIN_SLAB_BYTES;
 
 /// Pages added to one size class when it runs dry.
 const GROW_PAGES: usize = 8;
-/// Frame-backed allocation: enabled by installing the phys↔virt translation
-/// (an arch/privilege-level property of the owning application — e.g. the
-/// EL1 high-half window for koros/korix, identity for korhv at EL2).
-struct FrameTranslation {
-    phys_to_virt: fn(usize) -> usize,
-    virt_to_phys: fn(usize) -> usize,
-}
-static FRAME_TRANSLATION: spin::Mutex<Option<FrameTranslation>> = spin::Mutex::new(None);
+/// Whether frame-backed allocation is enabled (set after the physical
+/// memory map is registered; translation comes from `kor::addr`).
+static FRAME_GROWTH_ENABLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SlabClass {
@@ -213,13 +209,12 @@ impl SlabHeap {
     }
 
     fn alloc_large(layout: Layout) -> Option<NonNull<u8>> {
-        let translation = FRAME_TRANSLATION.lock();
-        let Some(translation) = translation.as_ref() else {
+        if !FRAME_GROWTH_ENABLED.load(core::sync::atomic::Ordering::Acquire) {
             return None;
-        };
+        }
         let frames = large_extent_frames(layout)?;
         let phys = kor::frame::alloc_frames(frames)?;
-        let va = (translation.phys_to_virt)(phys);
+        let va = kor::PhysAddr::new(phys).to_va().raw();
         debug_assert_eq!(va & (layout.align() - 1), 0);
         Some(unsafe { NonNull::new_unchecked(va as *mut u8) })
     }
@@ -239,10 +234,8 @@ impl SlabHeap {
 
     fn dealloc_large(ptr: NonNull<u8>, layout: Layout) {
         let frames = large_extent_frames(layout).expect("valid allocation layout");
-        if let Some(translation) = FRAME_TRANSLATION.lock().as_ref() {
-            let phys = (translation.virt_to_phys)(ptr.as_ptr() as usize);
-            kor::frame::free_frames(phys, frames);
-        }
+        let phys = kor::VirtAddr::new(ptr.as_ptr() as usize).to_pa().raw();
+        kor::frame::free_frames(phys, frames);
     }
 }
 
@@ -271,29 +264,21 @@ impl LockedSlabHeap {
     /// supplied pair (an application property: koros/korix pass the
     /// high-half `kor_arch` pair, korhv at EL2 passes the identity).
     /// Call once after all RAM regions are registered.
-    pub fn enable_frame_growth(
-        &self,
-        phys_to_virt: fn(usize) -> usize,
-        virt_to_phys: fn(usize) -> usize,
-    ) {
-        *FRAME_TRANSLATION.lock() = Some(FrameTranslation {
-            phys_to_virt,
-            virt_to_phys,
-        });
+    pub fn enable_frame_growth(&self) {
+        FRAME_GROWTH_ENABLED.store(true, core::sync::atomic::Ordering::Release);
     }
 
     fn grow_from_frames(&self, class: SlabClass) -> bool {
-        let translation = FRAME_TRANSLATION.lock();
-        let Some(translation) = translation.as_ref() else {
+        if !FRAME_GROWTH_ENABLED.load(core::sync::atomic::Ordering::Acquire) {
             return false;
-        };
+        }
         if class == SlabClass::Large {
             return false;
         }
         let Some(phys) = kor::frame::alloc_frames(GROW_PAGES) else {
             return false;
         };
-        let start = (translation.phys_to_virt)(phys);
+        let start = kor::PhysAddr::new(phys).to_va().raw();
         let bytes = GROW_PAGES * PAGE_SIZE;
         let mut guard = self.0.lock();
         if let Some(heap) = guard.as_mut() {
@@ -345,10 +330,8 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
                 // Use the identical extent calculation as allocation so the
                 // frame allocator releases the full aligned reservation.
                 let frames = large_extent_frames(layout).expect("valid allocation layout");
-                if let Some(translation) = FRAME_TRANSLATION.lock().as_ref() {
-                    let phys = (translation.virt_to_phys)(ptr as usize);
-                    kor::frame::free_frames(phys, frames);
-                }
+                let phys = kor::VirtAddr::new(ptr as usize).to_pa().raw();
+                kor::frame::free_frames(phys, frames);
             } else {
                 let mut guard = self.0.lock();
                 if let Some(heap) = guard.as_mut() {

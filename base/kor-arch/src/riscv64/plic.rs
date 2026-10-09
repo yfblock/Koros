@@ -18,12 +18,12 @@ pub fn context(hart: usize) -> usize {
     2 * hart + 1
 }
 
-fn reg(off: usize) -> *mut u32 {
-    (crate::dev_va(PLIC_BASE) + off) as *mut u32
+fn reg(off: usize) -> kor::mmio::Reg<u32> {
+    kor::mmio::Reg::at_pa(PLIC_BASE + off)
 }
 
 /// Claim register for S-mode context `ctx` (read = claim, write = complete).
-pub fn claim_reg(ctx: usize) -> *mut u32 {
+pub fn claim_reg(ctx: usize) -> kor::mmio::Reg<u32> {
     reg(0x20_0004 + ctx * 0x1000)
 }
 
@@ -31,12 +31,11 @@ pub fn claim_reg(ctx: usize) -> *mut u32 {
 pub fn enable(irq: u32, hart: usize) {
     let ctx = context(hart);
     // SAFETY: PLIC MMIO is mapped in the direct map.
-    unsafe {
-        reg(irq as usize * 4).write_volatile(1); // priority = 1 (0 disables)
+        reg(irq as usize * 4).write(1); // priority = 1 (0 disables)
         let en = reg(0x2000 + ctx * 0x80 + (irq as usize / 32) * 4);
-        en.write_volatile(en.read_volatile() | (1 << (irq % 32)));
-        reg(0x20_0000 + ctx * 0x1000).write_volatile(0); // threshold 0
-    }
+        en.write(en.read() | (1 << (irq % 32)));
+        reg(0x20_0000 + ctx * 0x1000).write(0); // threshold 0
+
 }
 
 /// Enable the supervisor external-interrupt line on the current hart.

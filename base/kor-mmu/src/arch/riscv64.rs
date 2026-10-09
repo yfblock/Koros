@@ -116,8 +116,8 @@ pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
     unsafe { crate::page_table::zero_page(cloned) };
-    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(source), PTE_NUM) };
-    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(cloned), PTE_NUM) };
+    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
+    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     dst[256..].copy_from_slice(&src[256..]);
     Ok(cloned)
 }
@@ -125,8 +125,8 @@ pub fn new_user() -> Result<usize, MapError> {
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
     unsafe { crate::page_table::zero_page(cloned) };
-    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(source), PTE_NUM) };
-    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(cloned), PTE_NUM) };
+    let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
+    let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     for index in 0..PTE_NUM {
         let entry = src[index];
         if !is_valid(entry) || (level == 2 && index >= 256) {
@@ -144,8 +144,8 @@ unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
                 };
                 unsafe {
                     core::ptr::copy_nonoverlapping(
-                        kor_arch::phys_to_virt(pte_address(entry)) as *const u8,
-                        kor_arch::phys_to_virt(page) as *mut u8,
+                        kor::PhysAddr::new(pte_address(entry)).to_va().raw() as *const u8,
+                        kor::PhysAddr::new(page).to_va().raw() as *mut u8,
                         4096,
                     );
                 }
@@ -190,7 +190,7 @@ pub unsafe fn destroy(root: usize) {
 }
 
 unsafe fn destroy_table(table: usize, level: usize) {
-    let entries = unsafe { PhysAddr::new(table).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(table), PTE_NUM) };
+    let entries = unsafe { PhysAddr::new(table).page_slice_at_mut::<usize>(PTE_NUM) };
     for &entry in &entries[..256] {
         if !is_valid(entry) {
             continue;
@@ -222,7 +222,7 @@ pub fn split_identity() {
     // Sv39 boot maps the low half with 1 GiB L2 leaves; split entry 0.
     unsafe {
         let root = PhysAddr::new(root());
-        let l2_table = root.page_slice_at_mut::<usize>(kor_arch::phys_to_virt(root.raw()), PTE_NUM);
+        let l2_table = root.page_slice_at_mut::<usize>(PTE_NUM);
         // Check if entry 0 is already split (non-leaf)
         if l2_table[0] != 0 && !is_leaf(l2_table[0]) {
             return; // Already split
@@ -231,7 +231,7 @@ pub fn split_identity() {
         // Allocate L1 table
         let l1_paddr = alloc_frame().expect("OOM: L1 table");
         crate::page_table::zero_page(l1_paddr);
-        let l1_table = PhysAddr::new(l1_paddr).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(l1_paddr), PTE_NUM);
+        let l1_table = PhysAddr::new(l1_paddr).page_slice_at_mut::<usize>(PTE_NUM);
 
         // Fill L1 entries 1-511 with 2 MiB identity-mapped leaves
         let leaf_flags = PTE_V | PTE_R | PTE_W | PTE_X | PTE_A | PTE_D;
@@ -243,7 +243,7 @@ pub fn split_identity() {
         // Allocate L0 table for the first 2 MiB (L1 entry 0)
         let l0_paddr = alloc_frame().expect("OOM: L0 table");
         crate::page_table::zero_page(l0_paddr);
-        let l0_table = PhysAddr::new(l0_paddr).page_slice_at_mut::<usize>(kor_arch::phys_to_virt(l0_paddr), PTE_NUM);
+        let l0_table = PhysAddr::new(l0_paddr).page_slice_at_mut::<usize>(PTE_NUM);
 
         // Fill L0 entries with 4 KiB identity-mapped leaves
         for i in 0..512 {

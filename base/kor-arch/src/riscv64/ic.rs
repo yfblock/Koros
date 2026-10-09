@@ -38,13 +38,13 @@ impl InterruptController for PlicController {
         let claim = super::plic::claim_reg(ctx);
         loop {
             // SAFETY: claim register read returns the highest-priority pending IRQ.
-            let irq = unsafe { claim.read_volatile() };
+            let irq = claim.read();
             if irq == 0 {
                 break;
             }
             callbacks.on_external(irq);
             // SAFETY: writing the IRQ back signals completion.
-            unsafe { claim.write_volatile(irq) };
+            claim.write(irq);
         }
     }
 }

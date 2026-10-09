@@ -25,7 +25,11 @@ pub fn initialize() {
     crate::arch::hyp::trap_init();
     kor::cmdline::init_from(crate::arch::mm::boot_cmdline().unwrap_or_default());
     initialize_frames();
-    crate::HEAP.enable_frame_growth(crate::arch::mm::phys_to_virt, crate::arch::mm::virt_to_phys);
+    #[cfg(target_arch = "x86_64")]
+    kor::install_translation(crate::arch::mm::phys_to_virt, crate::arch::mm::virt_to_phys);
+    #[cfg(not(target_arch = "x86_64"))]
+    kor::install_translation(crate::arch::mm::phys_to_virt, crate::arch::mm::virt_to_phys);
+    crate::HEAP.enable_frame_growth();
     crate::heap::self_test();
 }
 

@@ -19,22 +19,22 @@ const GICC_PMR: usize = 0x004;
 const GICC_IAR: usize = 0x00C;
 const GICC_EOIR: usize = 0x010;
 
-fn gicd(off: usize) -> *mut u32 {
-    (crate::dev_va(GICD_BASE) + off) as *mut u32
+fn gicd(off: usize) -> kor::mmio::Reg<u32> {
+    kor::mmio::Reg::at_pa(GICD_BASE + off)
 }
 
-fn gicc(off: usize) -> *mut u32 {
-    (crate::dev_va(GICC_BASE) + off) as *mut u32
+fn gicc(off: usize) -> kor::mmio::Reg<u32> {
+    kor::mmio::Reg::at_pa(GICC_BASE + off)
 }
 
 fn gicc_read(off: usize) -> u32 {
     // SAFETY: GIC CPU-interface MMIO is mapped in the direct map.
-    unsafe { gicc(off).read_volatile() }
+    (gicc(off)).read()
 }
 
 fn gicc_write(off: usize, val: u32) {
     // SAFETY: GIC CPU-interface MMIO is mapped in the direct map.
-    unsafe { gicc(off).write_volatile(val) };
+    (gicc(off)).write(val);
 }
 
 /// Read the interrupt acknowledge register (returns the active INTID).
@@ -49,20 +49,15 @@ pub fn write_eoir(iar: u32) {
 
 /// Enable an interrupt id (sets priority to 0 = highest, sets the enable bit).
 fn enable_intid(intid: u32) {
-    // SAFETY: GIC distributor MMIO is mapped in the direct map.
-    unsafe {
-        (gicd(GICD_IPRIORITYR) as *mut u8)
-            .add(intid as usize)
-            .write_volatile(0);
-        let en = gicd(GICD_ISENABLER + (intid as usize / 32) * 4);
-        en.write_volatile(en.read_volatile() | (1 << (intid % 32)));
-    }
+    kor::mmio::Reg::<u8>::at_pa(GICD_BASE + GICD_IPRIORITYR + intid as usize).write(0);
+    let en = gicd(GICD_ISENABLER + (intid as usize / 32) * 4);
+    en.write(en.read() | (1 << (intid % 32)));
 }
 
 /// Distributor + CPU-interface enable and priority mask.  Called per CPU.
 pub fn init() {
     // SAFETY: GIC MMIO is mapped.
-    unsafe { gicd(GICD_CTLR).write_volatile(1) };
+    (gicd(GICD_CTLR)).write(1);
     gicc_write(GICC_PMR, 0xFF);
     gicc_write(GICC_CTLR, 1);
 }
@@ -75,10 +70,6 @@ pub fn enable_ppi(intid: u32) {
 /// Enable a shared peripheral interrupt (SPI) and route it to CPU 0.
 pub fn enable_spi(intid: u32) {
     enable_intid(intid);
-    // SAFETY: ITARGETSR is byte-per-interrupt; target CPU 0.
-    unsafe {
-        (gicd(GICD_ITARGETSR) as *mut u8)
-            .add(intid as usize)
-            .write_volatile(0x01);
-    }
+    // ITARGETSR is byte-per-interrupt; target CPU 0.
+    kor::mmio::Reg::<u8>::at_pa(GICD_BASE + GICD_ITARGETSR + intid as usize).write(0x01);
 }

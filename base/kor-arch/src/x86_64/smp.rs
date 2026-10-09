@@ -37,18 +37,16 @@ unsafe extern "C" {
     fn ap_end();
 }
 
-fn lapic_reg(off: usize) -> *mut u32 {
-    (crate::dev_va(APIC_BASE_PHYS) + off) as *mut u32
+fn lapic_reg(off: usize) -> kor::mmio::Reg<u32> {
+    kor::mmio::Reg::at_pa(APIC_BASE_PHYS + off)
 }
 
 fn lapic_read(off: usize) -> u32 {
-    // SAFETY: the LAPIC MMIO region is identity/high-half mapped.
-    unsafe { lapic_reg(off).read_volatile() }
+    lapic_reg(off).read()
 }
 
 fn lapic_write(off: usize, val: u32) {
-    // SAFETY: the LAPIC MMIO region is identity/high-half mapped.
-    unsafe { lapic_reg(off).write_volatile(val) }
+    lapic_reg(off).write(val)
 }
 
 /// Software-enable this CPU's Local APIC (spurious vector 0xFF, enable bit).
@@ -129,12 +127,11 @@ pub fn start_secondaries() -> usize {
     unsafe {
         core::ptr::copy_nonoverlapping(
             ap_start as *const u8,
-            crate::dev_va(AP_BOOT_PADDR) as *mut u8,
+            kor::PhysAddr::new(AP_BOOT_PADDR).to_va().raw() as *mut u8,
             len,
         );
-        (crate::dev_va(SLOT_CR3) as *mut usize).write_volatile(cr3);
-        (crate::dev_va(SLOT_ENTRY) as *mut usize)
-            .write_volatile(ap_rust_entry as *const () as usize);
+        kor::mmio::Reg::<usize>::at_pa(SLOT_CR3).write(cr3);
+        kor::mmio::Reg::<usize>::at_pa(SLOT_ENTRY).write(ap_rust_entry as *const () as usize);
     }
 
     let vector = (AP_BOOT_PADDR >> 12) as u32;
@@ -148,7 +145,7 @@ pub fn start_secondaries() -> usize {
             core::ptr::addr_of!(SECONDARY_STACKS[apic].0) as usize + SECONDARY_STACK_SIZE
         };
         // SAFETY: writing the trampoline's stack slot before the SIPI.
-        unsafe { (crate::dev_va(SLOT_STACK) as *mut usize).write_volatile(sp) };
+        kor::mmio::Reg::<usize>::at_pa(SLOT_STACK).write(sp);
 
         let before = kor::smp::online_count();
         // INIT, then two STARTUP IPIs (per the Intel MP protocol).

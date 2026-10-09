@@ -9,22 +9,17 @@ const FR_RXFE: u8 = 1 << 4; // Receive FIFO empty
 
 /// Write one byte to an MMIO-mapped PL011 at `base`.
 pub fn putchar(base: usize, c: u8) {
-    let p = crate::dev_va(base) as *mut u8;
-    unsafe {
-        while p.add(UART_FR).read_volatile() & FR_TXFF != 0 {}
-        p.add(UART_DR).write_volatile(c);
-    }
+    let fr = kor::mmio::Reg::<u8>::at_pa(base + UART_FR);
+    while fr.read() & FR_TXFF != 0 {}
+    kor::mmio::Reg::<u8>::at_pa(base + UART_DR).write(c);
 }
 
 /// Read one byte from an MMIO-mapped PL011 at `base`.
 /// Returns `None` if no data is available (non-blocking).
 pub fn getchar(base: usize) -> Option<u8> {
-    let p = crate::dev_va(base) as *mut u8;
-    unsafe {
-        if p.add(UART_FR).read_volatile() & FR_RXFE == 0 {
-            Some(p.add(UART_DR).read_volatile())
-        } else {
-            None
-        }
+    if kor::mmio::Reg::<u8>::at_pa(base + UART_FR).read() & FR_RXFE == 0 {
+        Some(kor::mmio::Reg::<u8>::at_pa(base + UART_DR).read())
+    } else {
+        None
     }
 }

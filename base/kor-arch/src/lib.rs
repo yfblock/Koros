@@ -23,29 +23,6 @@ cfg_select! {
 
 pub mod interrupt;
 
-// --- Device-MMIO translation (app-injected) --------------------------------
-//
-// Device registers live at low physical addresses.  Under an unmapped or
-// identity-mapped kernel (koros, korhv at EL2) raw PA == VA; a kernel that
-// drops the low identity map when activating user roots (korix) must access
-// devices through its high-half window instead, so the translation is
-// installed by the application.  Default: identity.
-
-static DEVICE_P2V: spin::Mutex<Option<fn(usize) -> usize>> = spin::Mutex::new(None);
-
-/// Install the device-MMIO translation. Call before entering user mode.
-pub fn install_device_translation(phys_to_virt: fn(usize) -> usize) {
-    *DEVICE_P2V.lock() = Some(phys_to_virt);
-}
-
-/// Translate a device physical address for the current link model.
-pub(crate) fn dev_va(pa: usize) -> usize {
-    match DEVICE_P2V.lock().as_ref() {
-        Some(f) => f(pa),
-        None => pa,
-    }
-}
-
 pub use interrupt::{InterruptController, controller, enable_device_irq, install_controller};
 
 /// Dispatch pending external IRQs through the installed controller.

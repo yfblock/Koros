@@ -46,9 +46,8 @@ pub static MOUNTS: Mutex<kor_fs::mount::MountTable> = Mutex::new(kor_fs::mount::
 
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
-    // korix drops the low identity map in user roots: devices are reached
-    // through the high-half window from then on.
-    kor_arch::install_device_translation(kor_arch::phys_to_virt);
+    // korix runs high-half: one translation for heap, devices, and DMA.
+    kor::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
 
     kor::install_console(kor_arch::console());
     config::init(arch::platform_config());
@@ -84,7 +83,7 @@ extern "C" fn kernel_main() -> ! {
             kor::frame::add_region(s, e)
         });
     });
-    HEAP.enable_frame_growth(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
+    HEAP.enable_frame_growth();
     heap::self_test();
     kor_mmu::page_table_init();
     kor_arch::timer_init();
@@ -97,7 +96,6 @@ extern "C" fn kernel_main() -> ! {
     );
     kor::println!("cmdline: {:?}", kor::cmdline::raw());
 
-    kor_virtio::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
     probe_devices();
     kor_arch::boot_secondaries();
     crate::fs::init_rootfs();
