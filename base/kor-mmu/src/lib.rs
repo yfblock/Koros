@@ -113,3 +113,22 @@ pub unsafe fn destroy_address_space(root: usize) {
 pub fn split_identity() {
     arch::current::split_identity();
 }
+
+// Link-time hooks consumed by kor-sched (per-task address-space roots).
+// koros (no MMU) provides its own identity stubs instead of linking kor-mmu.
+
+/// Read the current CPU's active page-table root.
+#[unsafe(no_mangle)]
+pub extern "C" fn sched_address_space_root() -> usize {
+    address_space_root()
+}
+
+/// Activate `root` on this CPU.
+///
+/// # Safety
+/// `root` must be a valid, exclusively-owned page-table root.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sched_activate_address_space(root: usize) {
+    // SAFETY: forwarded under the same contract.
+    unsafe { activate_address_space(root) };
+}

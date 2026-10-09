@@ -13,7 +13,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on three architectures (riscv
   - `base/kor-sched/` (`kor_sched`) — preemptive multi-core kernel-thread scheduler + blocking sync primitives.
   - `base/kor-arch/` (`kor_arch`) — architecture-specific code **except page tables**; per-arch modules (`riscv64/`, `x86_64/`, `aarch64/`, each with `boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`) plus the crate-root static facade: `cfg_select!` re-exports and thin `pub fn` wrappers (`kor_arch::phys_to_virt`, `kor_arch::cpu_id`, `kor_arch::trap_init`, …) that all downstream crates call directly. `interrupt_controller()`/`console()` selectors remain for the `kor` registries.
   - `base/kor-virtio/` (`kor_virtio`) — virtio adapter for apps/koros/korix (block + net, MMIO / PCI / PCI-ECAM).
-  - `apps/koros/` (`[[bin]] koros`) — kernel composition root: `kernel_main` init, `#[global_allocator]`, `#[panic_handler]`, virtio adapter, registries, ext2 self-check, bench, scheduler demo.
+  - `apps/koros/` (`[[bin]] koros`) — kernel composition root: `kernel_main` init, `#[global_allocator]`, `#[panic_handler]`, virtio adapter, registries, ext2 self-check, bench, scheduler demo. **Runs without an MMU**: riscv64/aarch64 link identity at the QEMU load address and never enable paging; x86_64 long mode mandates paging, so it keeps the high-half link on kor-arch's static boot tables. No kor-mmu dependency — page tables are korix's business.
   - `apps/korix/` (`[[bin]] korix`) — Linux-compatible composition root: thin syscall layer (`syscall/arch/` ABI adapters + portable dispatch), processes/signals, user address spaces, ext2 rootfs, smoltcp networking.
   - `apps/korhv/` (`[[bin]] korhv`) — Type-1 hypervisor, parallel composition root: reuses `kor`/`kor-alloc`/`kor-arch` and enables hardware virtualization instead of fs/sched/timer. x86_64 = AMD SVM (VMRUN/#VMEXIT, NPT stage-2, VMMCALL); aarch64 = EL2 (ERET to EL1 guest, HVC). Run with `make ARCH=x86_64 BIN=korhv run` or `make ARCH=aarch64 BIN=korhv run`.
 - **Boot → entry:** each app composes its trampoline in `src/arch/<arch>/boot.rs` from kor-arch's identically-named fragment macros (`kor_arch::boot_stack_asm!` + per-arch `boot_pt_buffer_asm!`/`boot_setup_asm!`/`boot_cross_asm!`/`boot_call_asm!`/`boot_secondary_asm!`/`boot_entry!` — defined in each arch's `boot.rs`, so only the active arch's set is exported) with the app's mapping policy as a raw asm string between setup and cross (x86_64: policy = swap the default-tables fragment). `boot_call_asm!(kernel_main)` loads the app entry's address into the third argument register (`a2`/`x2`/`rdx`) and calls kor-arch's `rust_entry`, which stashes the firmware args and tail-calls that pointer. Secondary CPUs enter via `secondary_entry` (declared extern in `kor-arch`, defined in the app).
@@ -50,9 +50,11 @@ Kernel virtual base addresses (high-half kernel):
 
 | Arch | Link/load VA (`KERNEL_BASE`) | Physical Load | `kernel_offset()` |
 |------|------------------------------|---------------|-------------------------------------|
-| riscv64 | `0xffffffc080200000` | `0x80200000` | `0xffffffc000000000` |
-| x86_64 | `0xffff800000200000` | `0x200000` | `0xffff800000000000` |
-| aarch64 | `0xffff000040080000` | `0x40080000` | `0xffff000000000000` |
+| riscv64 (korix) | `0xffffffc080200000` | `0x80200000` | `0xffffffc000000000` |
+| riscv64 (koros) | `0x80200000` | `0x80200000` | `0` (MMU never enabled) |
+| x86_64 (both) | `0xffff800000200000` | `0x200000` | `0xffff800000000000` (static tables also identity-map low 4 GiB) |
+| aarch64 (korix) | `0xffff000040080000` | `0x40080000` | `0xffff000000000000` |
+| aarch64 (koros) | `0x40080000` | `0x40080000` | `0` (MMU never enabled) |
 
 ## Architecture Abstraction Model
 
@@ -60,7 +62,7 @@ This is the central design decision. **Shared crates contain no `#[cfg(target_ar
 
 - `kor` defines only *arch-neutral* registries that need runtime polymorphism: `Console` and `TrapCallbacks` (`spin::Once`-backed `install_console`/`install_callbacks` + the syscall-handler slot). There is **no `ArchProvider` trait and no provider registry** — it was removed.
 - `kor-arch` is the single arch seam. It also owns the `InterruptController` trait and its `spin::Once` registry (`kor_arch::install_controller`/`controller`/`enable_device_irq`/`dispatch_external`, in `src/interrupt.rs`), implemented per arch by `src/<arch>/ic.rs` (PLIC/GIC/polling stub). Each architecture lives in `base/kor-arch/src/<arch>/` with an identical module surface (`boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`). The crate root (`base/kor-arch/src/lib.rs`) uses `cfg_select!` to re-export the active arch's functions as crate-root free functions: `kor_arch::phys_to_virt/virt_to_phys/kernel_offset/kernel_phys_range`, `kor_arch::cpu_id/wait_for_interrupt/start_secondaries/shutdown`, `kor_arch::trap_init/timer_init/handle_tick`, `kor_arch::irq_enable/irq_disable/irq_is_enabled/irq_without`, `kor_arch::now_ticks/timer_hz`, the tick counter `kor_arch::TICK_HZ/increment_tick/ticks`, and the task-context trio `task_context_zero/task_context_init/unsafe context_switch`.
-- All downstream code (kor-mmu, kor-sched, kor-virtio, koros, korix, korhv) calls these static functions directly and lists `kor-arch` as a dependency — `kor-arch` itself depends only on `kor`. The two kor-arch↔kor-mmu touch points are link-time `extern "C"` hooks resolved in the final binary (`boot_mmu_build`, called by the boot trampoline, and `boot_mmu_activate`, called by the riscv64 shutdown fallback), so neither crate imports the other. kor-alloc stays arch-neutral: frame-growth translation is injected per app via `HEAP.enable_frame_growth(phys_to_virt, virt_to_phys)` (koros/korix pass the `kor_arch` pair, korhv at EL2 passes its identity pair).
+- All downstream code (kor-mmu, kor-sched, kor-virtio, koros, korix, korhv) calls these static functions directly and lists `kor-arch` as a dependency — `kor-arch` itself depends only on `kor`. The two kor-arch↔kor-mmu touch points are link-time `extern "C"` hooks resolved in the final binary (`boot_mmu_build`, called by the boot trampoline, and `boot_mmu_activate`, called by the riscv64 shutdown fallback), so neither crate imports the other. Address translation is an *application* property, injected at boot: `HEAP.enable_frame_growth(p2v, v2p)` (kor-alloc), `kor_virtio::install_translation(p2v, v2p)` (kor-virtio), and `kor_arch::install_device_translation(p2v)` (kor-arch's UART/PLIC/GIC/APIC MMIO — korix needs the high-half pair once user roots drop the low identity map; everything else uses the identity default). kor-sched tracks per-task address-space roots through the link-time hooks `sched_address_space_root`/`sched_activate_address_space` (kor-mmu provides them for korix; koros provides identity stubs — no kor-mmu dependency).
 - If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same function names), then re-export through the crate-root `cfg_select!` — never as `#[cfg]` branches in shared code.
 
 Each arch's `context.rs` defines its own typed `TaskContext` (`#[repr(C, align(16))]`, exact callee-saved layout, no opaque buffer); `kor-arch/src/lib.rs` re-exports the active arch's type as `kor_arch::TaskContext`, which kor-sched embeds directly. The facade trio `kor_arch::task_context_zero/task_context_init/context_switch` forwards to its inherent `zero`/`init` and the arch `context_switch`.
@@ -146,13 +148,13 @@ Per arch (assembly in `base/kor-arch/src/<arch>/`): `_start` → **clear BSS at 
 4. Trap callbacks — `install_callbacks(&TRAP_CB)`; `on_timer` does `increment_tick` + `arch.handle_tick` + `kor_sched::timer_tick` + `kor_sched::preempt`; `on_external(irq)` dispatches `registries::IRQS`.
 5. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region), then register filesystem drivers (`kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)` + `&kor_ramfs::RAMFS_DRIVER`) — the registry `Vec` allocates, so this must follow heap init.
 6. Trap vectors — `arch.trap_init()`.
-7. Memory init — capture cmdline, `RegionCollector`, `detect_memory_regions`, clip `kernel_phys_range()` + firmware hole, feed `kor::frame::add_region`, `heap::self_test()`, `kor_mmu::page_table_init()`, `page_table_self_test()` (4K + 2M map/translate round-trip).
+7. Memory init — capture cmdline, `RegionCollector`, `detect_memory_regions`, clip the kernel image + firmware hole, feed `kor::frame::add_region`, `heap::self_test()`. (koros has no MMU init; korix additionally brings up `kor_mmu::page_table_init()` for user address spaces.)
 8. Timer + IRQ on this CPU; print `Hello, world!` and cmdline.
-9. `probe_devices()` (FDT virtio-mmio + optional PCI-ECAM on non-x86; PCI port-I/O on x86_64).
+9. `probe_devices()` (FDT virtio-mmio + optional PCI-ECAM on non-x86; PCI port-I/O on x86_64), after installing the per-link-model device translation (identity on the unmapped arches, high-half on x86_64).
 10. `kor_arch::boot_secondaries()`.
-11. (riscv64/x86_64) if `cmdline::has_flag("bench")` → `bench::run()` then spin.
-12. `ext2_test::ext2_test()`.
-13. `kor_sched::init()`; spawn demo tasks (A/B/C/D, producer/consumer via `Channel`, blkio); `kor_sched::idle_loop()`.
+10. (riscv64/x86_64) if `cmdline::has_flag("bench")` → `bench::run()` then spin.
+11. `ext2_test::ext2_test()`.
+12. `kor_sched::init()`; spawn demo tasks (A/B/C/D, producer/consumer via `Channel`, blkio); `kor_sched::idle_loop()`.
 
 Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` → per-CPU `ic.init()` → `timer_init` + `irq_enable` → `wait_for_interrupt` until `kor_sched::is_ready()` → `init_this_cpu()` → `idle_loop()`.
 

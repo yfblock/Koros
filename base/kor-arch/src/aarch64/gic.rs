@@ -5,7 +5,6 @@
 //! the timer to the tick path and everything else to the external-interrupt
 //! registry, then signals end-of-interrupt.
 
-use super::mm;
 
 const GICD_BASE: usize = 0x0800_0000;
 const GICC_BASE: usize = 0x0801_0000;
@@ -21,11 +20,11 @@ const GICC_IAR: usize = 0x00C;
 const GICC_EOIR: usize = 0x010;
 
 fn gicd(off: usize) -> *mut u32 {
-    (mm::phys_to_virt(GICD_BASE) + off) as *mut u32
+    (crate::dev_va(GICD_BASE) + off) as *mut u32
 }
 
 fn gicc(off: usize) -> *mut u32 {
-    (mm::phys_to_virt(GICC_BASE) + off) as *mut u32
+    (crate::dev_va(GICC_BASE) + off) as *mut u32
 }
 
 fn gicc_read(off: usize) -> u32 {

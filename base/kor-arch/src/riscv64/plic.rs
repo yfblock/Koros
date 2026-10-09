@@ -19,7 +19,7 @@ pub fn context(hart: usize) -> usize {
 }
 
 fn reg(off: usize) -> *mut u32 {
-    (super::mm::phys_to_virt(PLIC_BASE) + off) as *mut u32
+    (crate::dev_va(PLIC_BASE) + off) as *mut u32
 }
 
 /// Claim register for S-mode context `ctx` (read = claim, write = complete).

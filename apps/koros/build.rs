@@ -8,14 +8,16 @@ fn gen_linker_script() -> Result<()> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").expect("can't find target");
     let package = env::var("CARGO_PKG_NAME").expect("can't find package name");
     let fname = format!("linker_{}_{}.lds", package, arch);
-    // Kernel load addresses — must match QEMU's physical load address
-    // for each architecture so that PC-relative code works correctly.
+    // Kernel load addresses.  koros runs without an MMU: riscv64/aarch64
+    // link identity at QEMU's physical load address (no paging at all);
+    // x86_64 long mode mandates paging, so it keeps the high-half link on
+    // kor-arch's static boot tables (identity low 4 GiB + high window).
     let (output_arch, kernel_base) = if arch == "x86_64" {
         ("i386:x86-64", "0xffff800000200000")
     } else if arch.contains("riscv64") {
-        ("riscv", "0xffffffc080200000")
+        ("riscv", "0x80200000")
     } else if arch.contains("aarch64") {
-        ("aarch64", "0xffff000040080000")
+        ("aarch64", "0x40080000")
     } else {
         (arch.as_str(), "0")
     };

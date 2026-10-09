@@ -5,7 +5,6 @@
 //! to long mode on the kernel page table and jumps to [`ap_rust_entry`].  APs
 //! are brought up one at a time so they can share the single trampoline page.
 
-use super::mm;
 use kor::smp::MAX_CPUS;
 
 core::arch::global_asm!(include_str!("ap_boot.S"));
@@ -39,7 +38,7 @@ unsafe extern "C" {
 }
 
 fn lapic_reg(off: usize) -> *mut u32 {
-    (mm::phys_to_virt(APIC_BASE_PHYS) + off) as *mut u32
+    (crate::dev_va(APIC_BASE_PHYS) + off) as *mut u32
 }
 
 fn lapic_read(off: usize) -> u32 {
@@ -130,11 +129,11 @@ pub fn start_secondaries() -> usize {
     unsafe {
         core::ptr::copy_nonoverlapping(
             ap_start as *const u8,
-            mm::phys_to_virt(AP_BOOT_PADDR) as *mut u8,
+            crate::dev_va(AP_BOOT_PADDR) as *mut u8,
             len,
         );
-        (mm::phys_to_virt(SLOT_CR3) as *mut usize).write_volatile(cr3);
-        (mm::phys_to_virt(SLOT_ENTRY) as *mut usize)
+        (crate::dev_va(SLOT_CR3) as *mut usize).write_volatile(cr3);
+        (crate::dev_va(SLOT_ENTRY) as *mut usize)
             .write_volatile(ap_rust_entry as *const () as usize);
     }
 
@@ -149,7 +148,7 @@ pub fn start_secondaries() -> usize {
             core::ptr::addr_of!(SECONDARY_STACKS[apic].0) as usize + SECONDARY_STACK_SIZE
         };
         // SAFETY: writing the trampoline's stack slot before the SIPI.
-        unsafe { (mm::phys_to_virt(SLOT_STACK) as *mut usize).write_volatile(sp) };
+        unsafe { (crate::dev_va(SLOT_STACK) as *mut usize).write_volatile(sp) };
 
         let before = kor::smp::online_count();
         // INIT, then two STARTUP IPIs (per the Intel MP protocol).

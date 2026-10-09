@@ -33,6 +33,21 @@ use kor::smp::MAX_CPUS;
 
 use kor_arch::TaskContext;
 
+// Address-space root tracking, provided by the application binary at link
+// time: korix forwards to kor-mmu (per-task user roots), koros (no MMU)
+// provides identity stubs.
+unsafe extern "C" {
+    /// Read the current CPU's active page-table root (0 = none).
+    fn sched_address_space_root() -> usize;
+    /// Activate `root` on this CPU.
+    ///
+    /// # Safety
+    /// `root` must be a valid, exclusively-owned page-table root (or the
+    /// constant returned by [`sched_address_space_root`] for the no-MMU
+    /// configuration).
+    fn sched_activate_address_space(root: usize);
+}
+
 /// Per-task kernel stack size.
 const STACK_SIZE: usize = 0x1_0000; // 64 KiB
 
@@ -104,7 +119,7 @@ impl Task {
             state: AtomicU8::new(READY),
             wake_tick: AtomicU64::new(0),
             user_context: AtomicPtr::new(core::ptr::null_mut()),
-            address_space_root: AtomicUsize::new(kor_mmu::address_space_root()),
+            address_space_root: AtomicUsize::new(unsafe { sched_address_space_root() }),
         })
     }
 
@@ -120,7 +135,7 @@ impl Task {
             state: AtomicU8::new(RUNNING),
             wake_tick: AtomicU64::new(0),
             user_context: AtomicPtr::new(core::ptr::null_mut()),
-            address_space_root: AtomicUsize::new(kor_mmu::address_space_root()),
+            address_space_root: AtomicUsize::new(unsafe { sched_address_space_root() }),
         })
     }
 
@@ -244,7 +259,7 @@ pub fn init_this_cpu() {
 
 /// Create a new ready kernel task running `entry`.
 pub fn spawn(entry: fn()) -> usize {
-    spawn_configured(entry, kor_mmu::address_space_root(), |_| {})
+    spawn_configured(entry, unsafe { sched_address_space_root() }, |_| {})
 }
 
 /// Create a task whose address space and external metadata are fully
@@ -329,10 +344,12 @@ fn schedule(prev_action: u8, wait_ptr: usize) {
 
     kor::trap_callbacks::task_switch(next.user_stack_top());
     let root = next.address_space_root();
-    if kor_mmu::address_space_root() != root {
+    let active = unsafe { sched_address_space_root() };
+    if active != root {
         // SAFETY: each configured task retains ownership of this root for its
         // lifetime, and all kernel stacks are mapped in every address space.
-        unsafe { kor_mmu::activate_address_space(root) };
+        // SAFETY: `root` is a task-owned root (or the no-MMU constant).
+        unsafe { sched_activate_address_space(root) };
     }
     // SAFETY: prev is kept alive via `cpu.prev`, next via `cpu.current`.
     unsafe { kor_arch::context_switch(prev_ctx, next_ctx) };

@@ -46,6 +46,10 @@ pub static MOUNTS: Mutex<kor_fs::mount::MountTable> = Mutex::new(kor_fs::mount::
 
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
+    // korix drops the low identity map in user roots: devices are reached
+    // through the high-half window from then on.
+    kor_arch::install_device_translation(kor_arch::phys_to_virt);
+
     kor::install_console(kor_arch::console());
     config::init(arch::platform_config());
     let ic = kor_arch::interrupt_controller();
@@ -93,6 +97,7 @@ extern "C" fn kernel_main() -> ! {
     );
     kor::println!("cmdline: {:?}", kor::cmdline::raw());
 
+    kor_virtio::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
     probe_devices();
     kor_arch::boot_secondaries();
     crate::fs::init_rootfs();

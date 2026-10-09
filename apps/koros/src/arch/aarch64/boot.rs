@@ -8,16 +8,9 @@ core::arch::global_asm!(
     kor_arch::boot_stack_asm!(0x80000),
     kor_arch::boot_pt_buffer_asm!(),
     kor_arch::boot_setup_asm!(),
-    // --- App policy: build the boot mapping via kor-mmu's hook ---
-    // x23 = phys->virt offset on return (0 = unmapped).
+    // --- App policy: no MMU — stay physical (x23 = 0 = unmapped). ---
     "
-    ldr     x0, =_boot_pt_buffer
-    sub     x0, x0, x24
-    mov     x1, #8192
-    ldr     x8, =boot_mmu_build
-    sub     x8, x8, x24
-    blr     x8
-    mov     x23, x0
+    mov     x23, xzr
     ",
     kor_arch::boot_cross_asm!(),
     kor_arch::boot_call_asm!(kernel_main),

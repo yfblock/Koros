@@ -190,7 +190,6 @@ dependencies = [
  "kor",
  "kor-alloc",
  "kor-arch",
- "kor-mmu",
  "spin",
 ]
 
@@ -245,7 +244,6 @@ dependencies = [
  "kor-arch",
  "kor-ext2",
  "kor-fs",
- "kor-mmu",
  "kor-ramfs",
  "kor-sched",
  "kor-virtio",

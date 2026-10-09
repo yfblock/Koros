@@ -16,7 +16,6 @@ kor-ramfs = { path = "../../filesystems/kor-ramfs" }
 kor-sched = { path = "../../base/kor-sched" }
 kor-arch = { path = "../../base/kor-arch" }
 kor-virtio = { path = "../../base/kor-virtio" }
-kor-mmu = { path = "../../base/kor-mmu" }
 spin = "0.9"
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

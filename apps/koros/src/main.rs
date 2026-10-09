@@ -17,7 +17,6 @@ mod arch;
 mod bench;
 mod ext2_test;
 mod heap;
-mod mmu_test;
 mod panic;
 mod registries;
 mod virtio;
@@ -67,7 +66,7 @@ extern "C" fn kernel_main() -> ! {
     kor::cmdline::init_from(kor_arch::boot_cmdline().unwrap_or_default());
     let mut collected = kor::regions::RegionCollector::new();
     kor_arch::detect_memory_regions(&mut |start, end| collected.add(start, end));
-    let (ks, ke) = kor_arch::kernel_phys_range();
+    let (ks, ke) = kernel_phys_range();
     let ks = kor::frame::PAGE_SIZE * (ks / kor::frame::PAGE_SIZE); // align-down
     let ke = ke.next_multiple_of(kor::frame::PAGE_SIZE); // align-up
     let hole_start = match config::firmware_phys_start() {
@@ -80,13 +79,13 @@ extern "C" fn kernel_main() -> ! {
         });
     });
     // Slab growth and large allocations may now draw from the frame buddy.
+    // riscv64/aarch64 run unmapped (identity); x86_64 keeps the high-half
+    // link on the static boot tables (which also identity-map low 4 GiB).
+    #[cfg(target_arch = "x86_64")]
     HEAP.enable_frame_growth(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
+    #[cfg(not(target_arch = "x86_64"))]
+    HEAP.enable_frame_growth(|pa| pa, |va| va);
     heap::self_test();
-    kor_mmu::page_table_init();
-    page_table_self_test();
-    if cmdline::has_flag("mmutest") {
-        mmu_test::run();
-    }
     // 9. Timer + interrupts on this CPU.
     kor_arch::timer_init();
     kor_arch::irq_enable();
@@ -94,7 +93,12 @@ extern "C" fn kernel_main() -> ! {
     kor::println!("Hello, world!");
     kor::println!("cmdline: {:?}", cmdline::raw());
 
-    // 10. Discover and bind drivers.
+    // 10. Discover and bind drivers (device translation is a link-model
+    // property: identity on the unmapped arches, high-half on x86_64).
+    #[cfg(target_arch = "x86_64")]
+    kor_virtio::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
+    #[cfg(not(target_arch = "x86_64"))]
+    kor_virtio::install_translation(|pa| pa, |va| va);
     probe_devices();
 
     // 11. Bring up the other CPUs.
@@ -135,38 +139,41 @@ extern "C" fn kernel_main() -> ! {
     kor_sched::idle_loop();
 }
 
-/// Exercise frame allocation + dynamic page mapping on the active root.
-fn page_table_self_test() {
-    use kor::{MapSize, MappingFlags};
-    if !kor_mmu::dynamic_maps_supported() {
-        kor::println!("mm: page-table self-test skipped (no dynamic maps)");
-        return;
-    }
-    // Self-test fixtures: canonical low-half scratch slots, free in the boot
-    // tables of every paging arch (Sv39 low half tops out at 256 GiB).
-    const TEST_VA_4K: usize = 0x0000_0030_0000_0000;
-    const TEST_VA_2M: usize = 0x0000_0030_0020_0000;
-    const MARK: u64 = 0xDEAD_BEEF_CAFE_BABE;
-    let phys = kor::frame::alloc_frame().expect("alloc_frame");
-    let va = TEST_VA_4K;
-    kor_mmu::map(va, phys, MappingFlags::KERNEL_RWX, MapSize::Page4K).expect("map 4K");
-    unsafe {
-        (va as *mut u64).write_volatile(MARK);
-        assert!((va as *const u64).read_volatile() == MARK);
-    }
-    assert_eq!(kor_mmu::translate(va), Some(phys));
+/// No-op boot-root reactivation for the riscv64 shutdown fallback: koros
+/// runs unmapped, so the syscon is always reachable at its physical address.
+#[cfg(target_arch = "riscv64")]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn boot_mmu_activate() {}
 
-    let phys2m = kor::frame::alloc_huge_2m().expect("alloc_huge_2m");
-    // Sv39 L1 megapages take PA[20:12] from VA[20:12]; match those bits.
-    let va2m = (TEST_VA_2M & !0x1FF_000) | (phys2m & 0x1FF_000);
-    kor_mmu::map(va2m, phys2m, MappingFlags::KERNEL_RWX, MapSize::Page2M).expect("map 2M");
-    assert_eq!(kor_mmu::translate(va2m), Some(phys2m));
-    unsafe {
-        (va2m as *mut u64).write_volatile(MARK);
-        assert!((va2m as *const u64).read_volatile() == MARK);
+/// koros runs without page tables: every task shares the one (absent)
+/// address space, so the scheduler's root hooks are identity stubs.
+#[unsafe(no_mangle)]
+extern "C" fn sched_address_space_root() -> usize {
+    0
+}
+
+/// No-op activation (no MMU).
+///
+/// # Safety
+/// Trivially safe: never touches translation state.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn sched_activate_address_space(_root: usize) {}
+
+/// Physical extent of the kernel image (linker symbols).  koros links
+/// identity on riscv64/aarch64 (no MMU); x86_64 keeps the high-half link on
+/// the static boot tables, so its VA→PA offset is subtracted.
+fn kernel_phys_range() -> (usize, usize) {
+    unsafe extern "C" {
+        static _skernel: u8;
+        static _end: u8;
     }
-    assert_eq!(kor_mmu::translate(va2m), Some(phys2m));
-    kor::println!("mm: page-table OK (4K {:#x}, 2M {:#x})", va, va2m);
+    // SAFETY: linker symbols are static addresses; only their values are read.
+    let (start, end) = unsafe { (&_skernel as *const u8 as usize, &_end as *const u8 as usize) };
+    #[cfg(target_arch = "x86_64")]
+    let offset = 0xffff_8000_0000_0000usize;
+    #[cfg(not(target_arch = "x86_64"))]
+    let offset = 0;
+    (start - offset, end - offset)
 }
 
 /// Secondary-CPU entry, called from the `kor-arch` secondary boot stub.

@@ -18,6 +18,39 @@ use virtio_drivers::device::net::VirtIONet;
 use virtio_drivers::transport::Transport;
 use virtio_drivers::{BufferDirection, Hal, PhysAddr};
 
+/// Device-MMIO/DMA address translation, injected by the owning application
+/// (a privilege-level property): korix passes the kor-arch high-half pair,
+/// koros (no MMU, identity) passes the identity pair.  Uninstalled, the
+/// identity is used.
+static TRANSLATE: spin::Mutex<Option<DeviceTranslation>> = spin::Mutex::new(None);
+
+struct DeviceTranslation {
+    phys_to_virt: fn(usize) -> usize,
+    virt_to_phys: fn(usize) -> usize,
+}
+
+/// Install the device address translation. Call before probing devices.
+pub fn install_translation(phys_to_virt: fn(usize) -> usize, virt_to_phys: fn(usize) -> usize) {
+    *TRANSLATE.lock() = Some(DeviceTranslation {
+        phys_to_virt,
+        virt_to_phys,
+    });
+}
+
+fn dev_va(pa: usize) -> usize {
+    match TRANSLATE.lock().as_ref() {
+        Some(t) => (t.phys_to_virt)(pa),
+        None => pa,
+    }
+}
+
+fn dev_pa(va: usize) -> usize {
+    match TRANSLATE.lock().as_ref() {
+        Some(t) => (t.virt_to_phys)(va),
+        None => va,
+    }
+}
+
 /// Koros workspace implementation of the `virtio-drivers` HAL.
 pub struct KorHal;
 
@@ -27,7 +60,7 @@ pub struct KorHal;
 unsafe impl Hal for KorHal {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         let physical = kor::frame::alloc_frames(pages).expect("virtio dma_alloc: out of frames");
-        let virtual_address = kor_arch::phys_to_virt(physical);
+        let virtual_address = dev_va(physical);
         // SAFETY: the allocator returned `pages` contiguous, exclusively owned
         // frames and the architecture direct map covers those frames.
         unsafe {
@@ -45,13 +78,12 @@ unsafe impl Hal for KorHal {
     }
 
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(kor_arch::phys_to_virt(paddr as usize) as *mut u8)
-            .expect("direct map returned null")
+        NonNull::new(dev_va(paddr as usize) as *mut u8).expect("direct map returned null")
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let virtual_address = buffer.as_ptr() as *mut u8 as usize;
-        kor_arch::virt_to_phys(virtual_address) as PhysAddr
+        dev_pa(virtual_address) as PhysAddr
     }
 
     unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {}
@@ -319,7 +351,7 @@ impl kor::driver::DeviceDriver for VirtioMmioDriver {
         use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
         use virtio_drivers::transport::{DeviceType, Transport};
 
-        let header = NonNull::new(kor_arch::phys_to_virt(device.reg_base) as *mut VirtIOHeader)
+        let header = NonNull::new(dev_va(device.reg_base) as *mut VirtIOHeader)
             .ok_or(kor::driver::DriverError::NoResource)?;
         // SAFETY: the device-tree register range is mapped for the kernel
         // lifetime and points to a VirtIO MMIO register block.
@@ -413,7 +445,7 @@ pub fn discover_pci_ecam_blk(
     use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 
     const ROOT_BUS: u8 = 0;
-    let ecam_virtual = kor_arch::phys_to_virt(ecam_base);
+    let ecam_virtual = dev_va(ecam_base);
     kor::println!(
         "virtio-drivers: scanning PCIe ECAM at {:#x} for virtio-blk...",
         ecam_base
