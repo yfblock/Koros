@@ -12,9 +12,18 @@
 //! RCU-based advanced protocol and TLB-shootdown optimizations are out of
 //! scope at this scale.
 
-use crate::arch::current;
 use crate::descriptor::{PT_ENTRIES, PageStatus, descriptor_of};
 use kor::frame::{PAGE_SIZE, alloc_frame, free_frames};
+
+/// Zero one page at `pa` through the kernel direct map (kor-arch translation).
+///
+/// # Safety
+/// `pa` must be a page-aligned frame available for exclusive write.
+pub(crate) unsafe fn zero_page(pa: usize) {
+    let va = kor_arch::phys_to_virt(pa) as *mut u64;
+    // SAFETY: caller guarantees exclusive access to the frame.
+    unsafe { core::ptr::write_bytes(va, 0, PAGE_SIZE / core::mem::size_of::<u64>()) };
+}
 use kor::mapping::{MapError, MapSize, MappingFlags};
 
 /// Bits of virtual address consumed per level (512-entry tables).
@@ -51,7 +60,7 @@ fn span(level: usize) -> usize {
 /// by its descriptor lock (or the page must be otherwise exclusive).
 unsafe fn table_mut(phys: usize) -> &'static mut [usize; PT_ENTRIES] {
     // SAFETY: caller guarantees a live, exclusively-accessed table page.
-    unsafe { &mut *(current::phys_to_virt(phys) as *mut [usize; PT_ENTRIES]) }
+    unsafe { &mut *(kor_arch::phys_to_virt(phys) as *mut [usize; PT_ENTRIES]) }
 }
 
 /// One address space: the physical root of its page-table tree.
@@ -65,7 +74,7 @@ impl AddrSpace {
         let root = alloc_frame().ok_or(MapError::OutOfMemory)?;
         // SAFETY: the fresh frame is a zeroed table page we own.
         // SAFETY: fresh frame owned by this call.
-        unsafe { current::zero_page(root) };
+        unsafe { zero_page(root) };
         Ok(Self { root_phys: root })
     }
 
@@ -322,7 +331,7 @@ impl RCursor<'_> {
                 let child = alloc_frame().ok_or(MapError::OutOfMemory)?;
                 // SAFETY: fresh frame owned by this transaction.
                 // SAFETY: fresh frame owned by this transaction.
-                unsafe { current::zero_page(child) };
+                unsafe { zero_page(child) };
                 table[index] = AddrSpace::table_entry(child);
                 self.lock_page(child);
                 page = child;
@@ -349,7 +358,7 @@ impl RCursor<'_> {
         let child = alloc_frame().ok_or(MapError::OutOfMemory)?;
         // SAFETY: fresh frame owned by this transaction.
         // SAFETY: fresh frame owned by this transaction.
-        unsafe { current::zero_page(child) };
+        unsafe { zero_page(child) };
         let child_table = unsafe { table_mut(child) };
         let child_span = span(level - 1);
         for i in 0..PT_ENTRIES {

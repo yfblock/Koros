@@ -33,6 +33,9 @@ const SIFIVE_TEST_FINISH_PASS: u32 = 0x5555;
 
 unsafe extern "C" {
     fn _secondary_start();
+    /// Reactivate the boot page-table root; provided by kor-mmu at link
+    /// time (its `boot_mmu_activate`, mirroring `boot_mmu_build`).
+    fn boot_mmu_activate();
 }
 
 /// Hart id of the current CPU (kept in `tp`).
@@ -77,8 +80,9 @@ pub fn shutdown() -> ! {
     if err != 0 {
         // User address spaces drop the low identity map, so switch back to
         // the boot root before the MMIO store (this path never returns).
+        // Link-time hook — no crate dependency between kor-arch and kor-mmu.
         // SAFETY: shutdown never resumes execution on the old root.
-        unsafe { kor_mmu::arch::riscv64::activate_boot_root() };
+        unsafe { boot_mmu_activate() };
         // SAFETY: 32-bit MMIO write into the identity-mapped syscon device.
         unsafe {
             (SIFIVE_TEST_BASE as *mut u32).write_volatile(SIFIVE_TEST_FINISH_PASS);

@@ -136,7 +136,6 @@ name = "kor-alloc"
 version = "0.1.0"
 dependencies = [
  "kor",
- "kor-arch",
  "spin",
 ]
 
@@ -145,7 +144,6 @@ name = "kor-arch"
 version = "0.1.0"
 dependencies = [
  "kor",
- "kor-mmu",
  "spin",
  "x86_64",
 ]
@@ -172,6 +170,7 @@ name = "kor-mmu"
 version = "0.1.0"
 dependencies = [
  "kor",
+ "kor-arch",
  "spin",
  "x86_64",
 ]
@@ -213,6 +212,7 @@ version = "0.1.0"
 dependencies = [
  "kor",
  "kor-alloc",
+ "kor-arch",
  "spin",
  "x86_64",
 ]
