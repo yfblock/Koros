@@ -68,6 +68,15 @@ impl PhysAddr {
         VirtAddr(translate_up(self.0))
     }
 
+    /// The physical address corresponding to `va` under the installed
+    /// application translation (identity until installed) — the reverse of
+    /// [`to_va`].  Owned by the physical side: `VirtAddr` itself carries no
+    /// translation.
+    #[inline]
+    pub fn from_va(va: VirtAddr) -> Self {
+        PhysAddr(translate_down(va.0))
+    }
+
     /// View this page through the installed translation as a mutable slice.
     ///
     /// # Safety
@@ -94,13 +103,6 @@ impl VirtAddr {
     #[inline]
     pub const fn raw(self) -> usize {
         self.0
-    }
-
-    /// Translate back to the physical address through the installed
-    /// application translation (identity until installed).
-    #[inline]
-    pub fn to_pa(self) -> PhysAddr {
-        PhysAddr(translate_down(self.0))
     }
 
     /// Volatile read of a `T`-wide cell at this address.

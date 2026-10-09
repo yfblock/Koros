@@ -234,7 +234,7 @@ impl SlabHeap {
 
     fn dealloc_large(ptr: NonNull<u8>, layout: Layout) {
         let frames = large_extent_frames(layout).expect("valid allocation layout");
-        let phys = kor::VirtAddr::new(ptr.as_ptr() as usize).to_pa().raw();
+        let phys = kor::PhysAddr::from_va(kor::VirtAddr::new(ptr.as_ptr() as usize)).raw();
         kor::frame::free_frames(phys, frames);
     }
 }
@@ -330,7 +330,7 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
                 // Use the identical extent calculation as allocation so the
                 // frame allocator releases the full aligned reservation.
                 let frames = large_extent_frames(layout).expect("valid allocation layout");
-                let phys = kor::VirtAddr::new(ptr as usize).to_pa().raw();
+                let phys = kor::PhysAddr::from_va(kor::VirtAddr::new(ptr as usize)).raw();
                 kor::frame::free_frames(phys, frames);
             } else {
                 let mut guard = self.0.lock();
