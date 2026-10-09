@@ -47,7 +47,7 @@ pub static mut RISCV_USER_TRAP_SCRATCH: [UserTrapScratch; kor::smp::MAX_CPUS] = 
 pub fn prepare_user_entry(kernel_sp: usize) {
     // `sscratch` changes from the kernel marker to a user-entry record here.
     // No kernel interrupt may observe that intermediate state before `sret`.
-    super::ic::disable();
+    super::interrupt::disable();
     let hart = super::smp::cpu_id();
     let scratch = unsafe { &raw mut RISCV_USER_TRAP_SCRATCH[hart] };
     unsafe {

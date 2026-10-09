@@ -36,7 +36,7 @@ fn sbi_set_timer(deadline: u64) {
 }
 
 /// Program the first deadline and enable the timer interrupt *source*.
-/// Global interrupts are enabled separately via [`crate::ic::enable`].
+/// Global interrupts are enabled separately via [`crate::interrupt::enable`].
 pub fn init() {
     sbi_set_timer(read_time() + INTERVAL);
     // SAFETY: enable the supervisor timer interrupt source.

@@ -164,9 +164,9 @@ pub fn enter_user(pc: usize, sp: usize) -> ! {
 /// The `InterruptController` for the current target (polling stub on x86_64).
 pub fn interrupt_controller() -> &'static dyn InterruptController {
     cfg_select! {
-        target_arch = "riscv64"      => { &riscv64::ic::PLIC }
-        target_arch = "x86_64"       => { &x86_64::ic::IC }
-        target_arch = "aarch64"      => { &aarch64::ic::GIC }
+        target_arch = "riscv64"      => { &riscv64::interrupt::PLIC }
+        target_arch = "x86_64"       => { &x86_64::interrupt::IC }
+        target_arch = "aarch64"      => { &aarch64::interrupt::GIC }
     }
 }
 
@@ -273,27 +273,27 @@ pub fn handle_tick() {
 /// Enable interrupts on the current CPU.
 pub fn irq_enable() {
     cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::ic::enable() }
-        target_arch = "x86_64"       => { self::x86_64::ic::enable() }
-        target_arch = "aarch64"      => { self::aarch64::ic::enable() }
+        target_arch = "riscv64"      => { self::riscv64::interrupt::enable() }
+        target_arch = "x86_64"       => { self::x86_64::interrupt::enable() }
+        target_arch = "aarch64"      => { self::aarch64::interrupt::enable() }
     }
 }
 
 /// Disable interrupts on the current CPU.
 pub fn irq_disable() {
     cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::ic::disable() }
-        target_arch = "x86_64"       => { self::x86_64::ic::disable() }
-        target_arch = "aarch64"      => { self::aarch64::ic::disable() }
+        target_arch = "riscv64"      => { self::riscv64::interrupt::disable() }
+        target_arch = "x86_64"       => { self::x86_64::interrupt::disable() }
+        target_arch = "aarch64"      => { self::aarch64::interrupt::disable() }
     }
 }
 
 /// Whether interrupts are currently enabled on this CPU.
 pub fn irq_is_enabled() -> bool {
     cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::ic::is_enabled() }
-        target_arch = "x86_64"       => { self::x86_64::ic::is_enabled() }
-        target_arch = "aarch64"      => { self::aarch64::ic::is_enabled() }
+        target_arch = "riscv64"      => { self::riscv64::interrupt::is_enabled() }
+        target_arch = "x86_64"       => { self::x86_64::interrupt::is_enabled() }
+        target_arch = "aarch64"      => { self::aarch64::interrupt::is_enabled() }
     }
 }
 
