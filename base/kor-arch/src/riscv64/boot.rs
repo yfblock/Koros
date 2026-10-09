@@ -3,7 +3,6 @@
 //! Composition order: `boot_stack_asm!` → `boot_pt_buffer_asm!` →
 //! `boot_setup_asm!` → *mapping policy* (result in `a0`) →
 //! `boot_cross_asm!` → `boot_call_asm!(entry)` → `boot_secondary_asm!`.
-use crate::kernel_main;
 
 
 /// BSS symbols for the kor-mmu `boot_mmu_build` hook ABI: a two-page
@@ -83,16 +82,19 @@ macro_rules! boot_cross_asm {
     };
 }
 
-/// Call the application entry (`PC`-relative, valid in both the mapped and
-/// unmapped configurations) and park if it ever returns.
+/// Load `$entry`'s address into `a2` and call `rust_entry`, which stashes
+/// the firmware args and tail-calls the entry (`PC`-relative addressing is
+/// valid in both the mapped and unmapped configurations).  Parks if it
+/// ever returns.
 #[macro_export]
 macro_rules! boot_call_asm {
     ($entry:ident) => {
         concat!(
             "
-    call    ",
+    la      a2, ",
             stringify!($entry),
             "
+    call    rust_entry
     j       .
 ",
         )
@@ -138,12 +140,11 @@ _secondary_start:
 
 /// First Rust function of the boot flow (`call rust_entry` from the app's
 /// composed trampoline): stash the firmware args into kor-arch state, then
-/// enter the application's `kernel_main` (link-time extern).
+/// tail-call `$entry` — the application entry whose address the trampoline
+/// passed in `a2` (`boot_call_asm!`).
 #[unsafe(no_mangle)]
-extern "C" fn rust_entry(hart_id: usize, dtb: usize) {
+extern "C" fn rust_entry(hart_id: usize, dtb: usize, entry: extern "C" fn() -> !) {
     super::smp::set_cpu_id(hart_id);
     super::mm::set_dtb_ptr(dtb);
-    // SAFETY: the app binary provides kernel_main at link time; it never
-    // returns.
-    unsafe { kernel_main() }
+    entry()
 }

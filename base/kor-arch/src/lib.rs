@@ -254,9 +254,6 @@ pub fn boot_secondaries() -> usize {
 
 // Provided by the application binary; resolved at link time.
 unsafe extern "C" {
-    /// Primary-CPU C entry, never returns.  Called by each arch's
-    /// `rust_entry` after the firmware args are stashed.
-    pub(crate) fn kernel_main() -> !;
     /// Secondary-CPU entry, called from the arch secondary bring-up stub.
     pub fn secondary_entry(cpu_id: usize) -> !;
 }

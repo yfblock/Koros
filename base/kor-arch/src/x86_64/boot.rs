@@ -13,7 +13,6 @@
 //! `boot_pt_buffer_asm!` (the policy) → `boot_cross_asm!` →
 //! `boot_call_asm!(entry)`; `boot_secondary_asm!` is a no-op (AP bring-up
 //! lives in `ap_boot.S`).
-use crate::kernel_main;
 
 
 /// Kernel virtual-base offset used by the physical-address stage and the
@@ -172,8 +171,9 @@ macro_rules! boot_cross_asm {
     };
 }
 
-/// Restore the Multiboot registers and call the application entry
-/// (receives `(magic, mbi)`); parks if it ever returns.
+/// Restore the Multiboot registers, load `$entry`'s address into `rdx`,
+/// and call `rust_entry`, which stashes the info pointer and tail-calls
+/// the entry; parks if it ever returns.
 #[macro_export]
 macro_rules! boot_call_asm {
     ($entry:ident) => {
@@ -181,9 +181,10 @@ macro_rules! boot_call_asm {
             "
     mov     rdi, [.Lkor_x86_magic - KOR_X86_KERNEL_OFFSET]
     mov     rsi, [.Lkor_x86_mbi - KOR_X86_KERNEL_OFFSET]
-    movabs  rax, offset ",
+    movabs  rdx, offset ",
             stringify!($entry),
             "
+    movabs  rax, offset rust_entry
     call    rax
 
 .Lkor_x86_hlt:
@@ -203,11 +204,10 @@ macro_rules! boot_secondary_asm {
 
 /// First Rust function of the boot flow (`call rust_entry` from the app's
 /// composed trampoline): stash the Multiboot info pointer into kor-arch
-/// state, then enter the application's `kernel_main` (link-time extern).
+/// state, then tail-call `$entry` — the application entry whose address the
+/// trampoline passed in `rdx` (`boot_call_asm!`).
 #[unsafe(no_mangle)]
-extern "C" fn rust_entry(_magic: usize, mbi: usize) {
+extern "C" fn rust_entry(_magic: usize, mbi: usize, entry: extern "C" fn() -> !) {
     super::mm::set_multiboot_info(mbi);
-    // SAFETY: the app binary provides kernel_main at link time; it never
-    // returns.
-    unsafe { kernel_main() }
+    entry()
 }

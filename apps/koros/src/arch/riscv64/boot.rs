@@ -16,6 +16,6 @@ core::arch::global_asm!(
     call    boot_mmu_build
     ",
     kor_arch::boot_cross_asm!(),
-    kor_arch::boot_call_asm!(rust_entry),
+    kor_arch::boot_call_asm!(kernel_main),
     kor_arch::boot_secondary_asm!(),
 );

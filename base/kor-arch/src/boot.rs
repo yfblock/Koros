@@ -24,7 +24,7 @@
 //!     kor_arch::boot_setup_asm!(),              // _start: BSS clear, sp
 //!     "… app mapping policy (raw asm) …",       // slot contract: see below
 //!     kor_arch::boot_cross_asm!(),              // MMU enable + crossing
-//!     kor_arch::boot_call_asm!(rust_entry),     // enter Rust
+//!     kor_arch::boot_call_asm!(kernel_main),    // enter the app
 //!     kor_arch::boot_secondary_asm!(),          // secondary-CPU stub
 //! );
 //! ```

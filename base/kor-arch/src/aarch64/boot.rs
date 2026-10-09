@@ -6,7 +6,6 @@
 //!
 //! Note: the load-delta labels use numeric locals (`9f`/`8f`) — LLVM's
 //! integrated assembler rejects `.L` temporaries inside literal pools.
-use crate::kernel_main;
 
 
 /// BSS symbols for the kor-mmu `boot_mmu_build` hook ABI: an 8 KiB
@@ -111,21 +110,24 @@ macro_rules! boot_cross_asm {
     };
 }
 
-/// Call the application entry.  The offset (`x23`) and load delta (`x24`)
-/// left live by [`boot_cross_asm!`] select the entry's virtual or physical
-/// address; parks if the entry ever returns.
+/// Load `$entry`'s address into `x2` and call `rust_entry`, which stashes
+/// the DTB pointer and tail-calls the entry.  The offset (`x23`) and load
+/// delta (`x24`) left live by [`boot_cross_asm!`] select the virtual or
+/// physical addresses of both symbols; parks if the entry ever returns.
 #[macro_export]
 macro_rules! boot_call_asm {
     ($entry:ident) => {
         concat!(
             "
-    ldr     x8, =",
+    ldr     x2, =",
             stringify!($entry),
             "
+    ldr     x8, =rust_entry
     cbz     x23, .Lkor_call_phys
     blr     x8
     b       .
 .Lkor_call_phys:
+    sub     x2, x2, x24
     sub     x8, x8, x24
     blr     x8
     b       .
@@ -197,11 +199,10 @@ _secondary_start:
 
 /// First Rust function of the boot flow (`call rust_entry` from the app's
 /// composed trampoline): stash the DTB pointer into kor-arch state, then
-/// enter the application's `kernel_main` (link-time extern).
+/// tail-call `$entry` — the application entry whose address the trampoline
+/// passed in `x2` (`boot_call_asm!`).
 #[unsafe(no_mangle)]
-extern "C" fn rust_entry(_hart_id: usize, dtb: usize) {
+extern "C" fn rust_entry(_hart_id: usize, dtb: usize, entry: extern "C" fn() -> !) {
     super::mm::set_dtb_ptr(dtb);
-    // SAFETY: the app binary provides kernel_main at link time; it never
-    // returns.
-    unsafe { kernel_main() }
+    entry()
 }
