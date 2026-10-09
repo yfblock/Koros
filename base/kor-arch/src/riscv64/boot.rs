@@ -144,7 +144,24 @@ _secondary_start:
 /// passed in `a2` (`boot_call_asm!`).
 #[unsafe(no_mangle)]
 extern "C" fn rust_entry(hart_id: usize, dtb: usize, entry: extern "C" fn() -> !) {
-    super::smp::set_cpu_id(hart_id);
+    super::smp::set_cpu_id(resolve_hart_id(hart_id));
     super::mm::set_dtb_ptr(dtb);
     entry()
+}
+
+/// Resolve the real hart id when `raw` may be argc from U-Boot's `go`
+/// command (always 1 for `go <addr>`).  The boot script can stash the
+/// firmware hart id at a well-known mailbox address (0x801F_F020).
+fn resolve_hart_id(raw: usize) -> usize {
+    const HARTID_MAILBOX: usize = 0x801F_F020;
+    const ARGC_FROM_GO: usize = 1;
+    if raw != ARGC_FROM_GO {
+        return raw;
+    }
+    // SAFETY: one aligned read from the mailbox (in DRAM).
+    let candidate = unsafe { (HARTID_MAILBOX as *const usize).read_volatile() };
+    if candidate < kor::smp::MAX_CPUS {
+        return candidate;
+    }
+    raw
 }
