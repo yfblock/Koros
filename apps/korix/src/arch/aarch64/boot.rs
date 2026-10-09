@@ -4,8 +4,6 @@
 //! arch-specific text is the mapping policy below — this app asks
 //! kor-mmu's `boot_mmu_build` hook for the default boot mapping.
 
-kor_arch::boot_entry!();
-
 core::arch::global_asm!(
     kor_arch::boot_stack_asm!(0x80000),
     kor_arch::boot_pt_buffer_asm!(),

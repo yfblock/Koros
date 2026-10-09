@@ -6,6 +6,8 @@
 //!
 //! Note: the load-delta labels use numeric locals (`9f`/`8f`) — LLVM's
 //! integrated assembler rejects `.L` temporaries inside literal pools.
+use crate::kernel_main;
+
 
 /// BSS symbols for the kor-mmu `boot_mmu_build` hook ABI: an 8 KiB
 /// page-table buffer plus the offset cell the secondary stub reads.
@@ -193,18 +195,13 @@ _secondary_start:
     };
 }
 
-/// Emit the `rust_entry` wrapper: records the DTB pointer through kor-arch,
-/// then tail-calls the app's `kernel_main`.
-///
-/// # Safety
-/// `kernel_main` must exist in the invoking crate and never return.
-#[macro_export]
-macro_rules! boot_entry {
-    () => {
-        #[unsafe(no_mangle)]
-        extern "C" fn rust_entry(_hart_id: usize, dtb: usize) {
-            kor_arch::aarch64::mm::set_dtb_ptr(dtb);
-            crate::kernel_main()
-        }
-    };
+/// First Rust function of the boot flow (`call rust_entry` from the app's
+/// composed trampoline): stash the DTB pointer into kor-arch state, then
+/// enter the application's `kernel_main` (link-time extern).
+#[unsafe(no_mangle)]
+extern "C" fn rust_entry(_hart_id: usize, dtb: usize) {
+    super::mm::set_dtb_ptr(dtb);
+    // SAFETY: the app binary provides kernel_main at link time; it never
+    // returns.
+    unsafe { kernel_main() }
 }

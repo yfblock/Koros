@@ -13,6 +13,8 @@
 //! `boot_pt_buffer_asm!` (the policy) → `boot_cross_asm!` →
 //! `boot_call_asm!(entry)`; `boot_secondary_asm!` is a no-op (AP bring-up
 //! lives in `ap_boot.S`).
+use crate::kernel_main;
+
 
 /// Kernel virtual-base offset used by the physical-address stage and the
 /// Multiboot header.  Shared by every koros-family link script (x86_64
@@ -199,18 +201,13 @@ macro_rules! boot_secondary_asm {
     () => { "" };
 }
 
-/// Emit the `rust_entry` wrapper: records the Multiboot info pointer
-/// through kor-arch, then tail-calls the app's `kernel_main`.
-///
-/// # Safety
-/// `kernel_main` must exist in the invoking crate and never return.
-#[macro_export]
-macro_rules! boot_entry {
-    () => {
-        #[unsafe(no_mangle)]
-        extern "C" fn rust_entry(_magic: usize, mbi: usize) {
-            kor_arch::x86_64::mm::set_multiboot_info(mbi);
-            crate::kernel_main()
-        }
-    };
+/// First Rust function of the boot flow (`call rust_entry` from the app's
+/// composed trampoline): stash the Multiboot info pointer into kor-arch
+/// state, then enter the application's `kernel_main` (link-time extern).
+#[unsafe(no_mangle)]
+extern "C" fn rust_entry(_magic: usize, mbi: usize) {
+    super::mm::set_multiboot_info(mbi);
+    // SAFETY: the app binary provides kernel_main at link time; it never
+    // returns.
+    unsafe { kernel_main() }
 }

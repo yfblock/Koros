@@ -18,8 +18,6 @@
 //! policy is table *data* carried by [`boot_pt_buffer_asm!`]):
 //!
 //! ```ignore
-//! kor_arch::boot_entry!();
-//!
 //! core::arch::global_asm!(
 //!     kor_arch::boot_stack_asm!(0x80000),       // stack, app policy
 //!     kor_arch::boot_pt_buffer_asm!(),          // default-mapping artifacts

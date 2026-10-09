@@ -7,8 +7,6 @@
 //! change the policy).  The tables use the `Page2MTable` macro defined by
 //! `boot_setup_asm!`, so they compose after it.
 
-kor_arch::boot_entry!();
-
 core::arch::global_asm!(
     kor_arch::boot_stack_asm!(0x80000),
     kor_arch::boot_setup_asm!(),

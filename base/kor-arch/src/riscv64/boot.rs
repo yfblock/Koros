@@ -3,6 +3,8 @@
 //! Composition order: `boot_stack_asm!` → `boot_pt_buffer_asm!` →
 //! `boot_setup_asm!` → *mapping policy* (result in `a0`) →
 //! `boot_cross_asm!` → `boot_call_asm!(entry)` → `boot_secondary_asm!`.
+use crate::kernel_main;
+
 
 /// BSS symbols for the kor-mmu `boot_mmu_build` hook ABI: a two-page
 /// page-table buffer plus the offset cell the secondary stub reads.
@@ -134,19 +136,14 @@ _secondary_start:
     };
 }
 
-/// Emit the `rust_entry` wrapper: records hart id and DTB pointer through
-/// kor-arch, then tail-calls the app's `kernel_main`.
-///
-/// # Safety
-/// `kernel_main` must exist in the invoking crate and never return.
-#[macro_export]
-macro_rules! boot_entry {
-    () => {
-        #[unsafe(no_mangle)]
-        extern "C" fn rust_entry(hart_id: usize, dtb: usize) {
-            kor_arch::riscv64::smp::set_cpu_id(hart_id);
-            kor_arch::riscv64::mm::set_dtb_ptr(dtb);
-            crate::kernel_main()
-        }
-    };
+/// First Rust function of the boot flow (`call rust_entry` from the app's
+/// composed trampoline): stash the firmware args into kor-arch state, then
+/// enter the application's `kernel_main` (link-time extern).
+#[unsafe(no_mangle)]
+extern "C" fn rust_entry(hart_id: usize, dtb: usize) {
+    super::smp::set_cpu_id(hart_id);
+    super::mm::set_dtb_ptr(dtb);
+    // SAFETY: the app binary provides kernel_main at link time; it never
+    // returns.
+    unsafe { kernel_main() }
 }
