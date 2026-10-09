@@ -446,16 +446,20 @@ const SIGNAL_RESTORER_CODE: [u32; 3] = [0xd280_1168, 0xd400_0001, 0x1400_0000];
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 fn ensure_signal_restorer() -> Option<usize> {
-    if kor_mmu::translate(SIGNAL_RESTORER_ADDRESS).is_none() {
+    if kor_mmu::active()
+        .translate(SIGNAL_RESTORER_ADDRESS)
+        .is_none()
+    {
         let physical = kor::frame::alloc_frame()?;
         let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::X;
-        if kor_mmu::map(
-            SIGNAL_RESTORER_ADDRESS,
-            physical,
-            flags,
-            kor::MapSize::Page4K,
-        )
-        .is_err()
+        if kor_mmu::active()
+            .map(
+                SIGNAL_RESTORER_ADDRESS,
+                physical,
+                flags,
+                kor::MapSize::Page4K,
+            )
+            .is_err()
         {
             kor::frame::free_frames(physical, 1);
             return None;

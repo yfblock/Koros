@@ -156,7 +156,7 @@ impl AddressSpace {
         }
         self.with_active(|| {
             let paddr = kor::frame::alloc_frame().ok_or(MapError::OutOfMemory)?;
-            match kor_mmu::map(vaddr, paddr, flags, MapSize::Page4K) {
+            match kor_mmu::active().map(vaddr, paddr, flags, MapSize::Page4K) {
                 Ok(()) => {
                     unsafe {
                         core::ptr::write_bytes(
@@ -218,17 +218,19 @@ impl AddressSpace {
                 .collect();
             for &(vaddr, mapping) in &old {
                 if mapping.is_some() {
-                    kor_mmu::unmap(vaddr, MapSize::Page4K)?;
+                    kor_mmu::active().unmap(vaddr, MapSize::Page4K)?;
                 }
             }
             for (index, vaddr) in (start..end).step_by(PAGE_SIZE).enumerate() {
-                if let Err(error) = kor_mmu::map(vaddr, fresh[index], flags, MapSize::Page4K) {
+                if let Err(error) =
+                    kor_mmu::active().map(vaddr, fresh[index], flags, MapSize::Page4K)
+                {
                     for rollback in (start..vaddr).step_by(PAGE_SIZE) {
-                        let _ = kor_mmu::unmap(rollback, MapSize::Page4K);
+                        let _ = kor_mmu::active().unmap(rollback, MapSize::Page4K);
                     }
                     for &(old_vaddr, mapping) in &old {
                         if let Some(mapping) = mapping {
-                            let _ = kor_mmu::map(
+                            let _ = kor_mmu::active().map(
                                 old_vaddr,
                                 mapping.phys,
                                 mapping.flags,
@@ -294,16 +296,21 @@ impl AddressSpace {
             .collect::<Result<_, _>>()?;
         self.with_active(|| {
             for &(vaddr, _) in &old {
-                kor_mmu::unmap(vaddr, MapSize::Page4K)?;
+                kor_mmu::active().unmap(vaddr, MapSize::Page4K)?;
             }
             for (index, &(vaddr, page)) in old.iter().enumerate() {
-                if let Err(error) = kor_mmu::map(vaddr, page.phys, flags, MapSize::Page4K) {
+                if let Err(error) = kor_mmu::active().map(vaddr, page.phys, flags, MapSize::Page4K)
+                {
                     for &(mapped, _) in &old[..index] {
-                        let _ = kor_mmu::unmap(mapped, MapSize::Page4K);
+                        let _ = kor_mmu::active().unmap(mapped, MapSize::Page4K);
                     }
                     for &(rollback, old_page) in &old {
-                        let _ =
-                            kor_mmu::map(rollback, old_page.phys, old_page.flags, MapSize::Page4K);
+                        let _ = kor_mmu::active().map(
+                            rollback,
+                            old_page.phys,
+                            old_page.flags,
+                            MapSize::Page4K,
+                        );
                     }
                     return Err(error);
                 }
@@ -329,7 +336,7 @@ impl AddressSpace {
             .collect();
         self.with_active(|| {
             for &(vaddr, _) in &pages {
-                kor_mmu::unmap(vaddr, MapSize::Page4K)?;
+                kor_mmu::active().unmap(vaddr, MapSize::Page4K)?;
             }
             Ok(())
         })?;

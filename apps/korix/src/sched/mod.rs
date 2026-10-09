@@ -222,7 +222,7 @@ pub fn exit_current(code: i32) -> ! {
             if old != root {
                 unsafe { kor_mmu::activate_address_space(root) };
             }
-            if let Some(paddr) = kor_mmu::translate(clear_child_tid) {
+            if let Some(paddr) = kor_mmu::active().translate(clear_child_tid) {
                 unsafe {
                     *(kor_arch::phys_to_virt(paddr) as *mut u32) = 0;
                 }

@@ -1,20 +1,15 @@
-//! `kor-mmu` — MMU ownership for the Koros kernels.
-//!
-//! Following CortenMM (SOSP '25): a single-level abstraction with
-//! per-table-page descriptors ([`descriptor`]), a transactional cursor
-//! ([`page_table::RCursor`]) with per-arch PTE encoding supplied as inherent
-//! associated items of [`AddrSpace`] (compile-time dispatch, no vtables).
+//! `kor-mmu` — the managed page-table wrapper over kor-arch (CortenMM,
+//! SOSP '25).
 //!
 //! Layout:
-//! - [`arch`]: per-architecture back-ends — PTE encoders as inherent
-//!   associated items of `AddrSpace` (statically dispatched), active-space
-//!   switching, fork cloning, boot identity surgery.  Selected by `cfg` in
-//!   one place ([`arch::current`]).
-//! - [`descriptor`]/[`page_table`]: the arch-neutral engine.
+//! - `kor_arch::pagetable`: the basic per-arch mapping logic (raw walks,
+//!   PTE construction, boot tables, root switching, table cloning).
+//! - [`descriptor`]: per-table-page descriptors (lock + per-PTE metadata).
+//! - [`page_table`]: the transactional engine (`AddrSpace` + `RCursor`)
+//!   wrapping kor-arch primitives.
 //!
-//! The free functions below are the page-table
-//! methods one-to-one, so composition crates call `kor_mmu::map(...)` etc.
-//! directly.
+//! The active address space is obtained via [`active()`] and operated on
+//! through its methods — no per-operation free-function wrappers.
 //!
 //! Reference: Zhang et al., "CortenMM: Efficient Memory Management with
 //! Strong Correctness Guarantees", SOSP 2025.  Differences at this scale:
@@ -31,7 +26,7 @@ pub mod page_table;
 pub use descriptor::PageStatus;
 pub use page_table::{AddrSpace, RCursor};
 
-use kor::mapping::{MapError, MapSize, MappingFlags};
+use kor::mapping::MapError;
 
 /// Install runtime page-table services (e.g. capture the boot root).
 pub fn page_table_init() {
@@ -43,37 +38,20 @@ pub fn dynamic_maps_supported() -> bool {
     kor_arch::pagetable::PAGING_SUPPORTED
 }
 
-/// Map through the generic engine on the active root.
-pub fn map(vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError> {
-    if !kor_arch::pagetable::PAGING_SUPPORTED {
-        return Err(MapError::Unsupported);
-    }
-    // SAFETY: the active root is live for the whole call.
-    let space = unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) };
-    space.map(vaddr, paddr, flags, size)
+/// The currently active address space.
+///
+/// # Panics
+/// Panics if paging is not supported on this architecture.
+pub fn active() -> AddrSpace {
+    assert!(
+        kor_arch::pagetable::PAGING_SUPPORTED,
+        "no page tables on this architecture"
+    );
+    // SAFETY: the active root is live for the duration of the borrow.
+    unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) }
 }
 
-/// Translate through the generic engine on the active root.
-pub fn translate(vaddr: usize) -> Option<usize> {
-    if !kor_arch::pagetable::PAGING_SUPPORTED {
-        return None;
-    }
-    // SAFETY: read-only walk of the live root inside a transaction.
-    let space = unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) };
-    space.translate(vaddr)
-}
-
-/// Unmap through the generic engine; returns the mapped physical address.
-pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
-    if !kor_arch::pagetable::PAGING_SUPPORTED {
-        return Err(MapError::Unsupported);
-    }
-    // SAFETY: same contract as `map`.
-    let space = unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) };
-    space.unmap(vaddr, size)
-}
-
-/// Physical root of the active address space.
+/// Physical root of the active address space (0 if paging is off).
 pub fn address_space_root() -> usize {
     kor_arch::pagetable::root()
 }
@@ -84,7 +62,7 @@ pub fn address_space_root() -> usize {
 /// `root` must be a valid, page-aligned root containing the kernel mappings
 /// required by the current execution context.
 pub unsafe fn activate_address_space(root: usize) {
-    // SAFETY: forwarded to the arch backend under the same contract.
+    // SAFETY: forwarded under the same contract.
     unsafe { kor_arch::pagetable::activate(root) }
 }
 
@@ -103,7 +81,7 @@ pub fn new_address_space() -> Result<usize, MapError> {
 /// # Safety
 /// `root` must not be active on any CPU.
 pub unsafe fn destroy_address_space(root: usize) {
-    // SAFETY: forwarded to the arch backend under the same contract.
+    // SAFETY: forwarded under the same contract.
     unsafe { kor_arch::pagetable::destroy(root) }
 }
 
