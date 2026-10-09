@@ -5,7 +5,7 @@
 //! the timer to the tick path and everything else to the external-interrupt
 //! registry, then signals end-of-interrupt.
 
-use kor::arch as mm;
+use super::mm;
 
 const GICD_BASE: usize = 0x0800_0000;
 const GICC_BASE: usize = 0x0801_0000;

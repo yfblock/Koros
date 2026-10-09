@@ -4,7 +4,6 @@ pub mod boot;
 pub mod console;
 pub mod hyp;
 pub mod mm;
-pub mod provider;
 pub mod trap;
 
 pub fn platform_config() -> kor::config::PlatformConfig {

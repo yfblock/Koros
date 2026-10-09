@@ -22,16 +22,3 @@ pub fn online_count() -> usize {
 pub fn register_online() {
     ONLINE.fetch_add(1, Ordering::AcqRel);
 }
-
-/// Bring up the secondary CPUs and wait (bounded) for them to register.
-/// Returns the total number of CPUs online (including the boot CPU).
-pub fn boot_secondaries() -> usize {
-    let started = crate::arch::current().start_secondaries();
-    let target = 1 + started;
-    let mut spins: u64 = 0;
-    while online_count() < target && spins < 2_000_000_000 {
-        core::hint::spin_loop();
-        spins += 1;
-    }
-    online_count()
-}

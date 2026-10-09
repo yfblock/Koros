@@ -7,4 +7,5 @@ edition = "2024"
 kor = { path = "../../kor" }
 kor-alloc = { path = "../kor-alloc" }
 kor-mmu = { path = "../kor-mmu" }
+kor-arch = { path = "../kor-arch" }
 spin = "0.9"

@@ -14,7 +14,7 @@
 //!
 //! The free functions below mirror the (removed) `ArchProvider` page-table
 //! methods one-to-one, so composition crates call `kor_mmu::map(...)` etc.
-//! instead of going through `kor::arch::current()`.
+//! directly.
 //!
 //! Reference: Zhang et al., "CortenMM: Efficient Memory Management with
 //! Strong Correctness Guarantees", SOSP 2025.  Differences at this scale:

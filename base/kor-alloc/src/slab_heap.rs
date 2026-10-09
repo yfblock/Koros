@@ -213,7 +213,7 @@ impl SlabHeap {
         }
         let frames = large_extent_frames(layout)?;
         let phys = kor::frame::alloc_frames(frames)?;
-        let va = kor::arch::phys_to_virt(phys);
+        let va = kor_arch::phys_to_virt(phys);
         debug_assert_eq!(va & (layout.align() - 1), 0);
         Some(unsafe { NonNull::new_unchecked(va as *mut u8) })
     }
@@ -233,7 +233,7 @@ impl SlabHeap {
 
     fn dealloc_large(ptr: NonNull<u8>, layout: Layout) {
         let frames = large_extent_frames(layout).expect("valid allocation layout");
-        let phys = kor::arch::virt_to_phys(ptr.as_ptr() as usize);
+        let phys = kor_arch::virt_to_phys(ptr.as_ptr() as usize);
         kor::frame::free_frames(phys, frames);
     }
 }
@@ -274,7 +274,7 @@ impl LockedSlabHeap {
         let Some(phys) = kor::frame::alloc_frames(GROW_PAGES) else {
             return false;
         };
-        let start = kor::arch::phys_to_virt(phys);
+        let start = kor_arch::phys_to_virt(phys);
         let bytes = GROW_PAGES * PAGE_SIZE;
         let mut guard = self.0.lock();
         if let Some(heap) = guard.as_mut() {
@@ -326,7 +326,7 @@ unsafe impl GlobalAlloc for LockedSlabHeap {
                 // Use the identical extent calculation as allocation so the
                 // frame allocator releases the full aligned reservation.
                 let frames = large_extent_frames(layout).expect("valid allocation layout");
-                let phys = kor::arch::virt_to_phys(ptr as usize);
+                let phys = kor_arch::virt_to_phys(ptr as usize);
                 kor::frame::free_frames(phys, frames);
             } else {
                 let mut guard = self.0.lock();

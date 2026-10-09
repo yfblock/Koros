@@ -233,13 +233,13 @@ fn load_active(
             // map. A translation inherited from the kernel root is never a
             // valid ELF page.
             let kvaddr = if let Some(paddr) = address_space.translate(vaddr) {
-                kor::arch::current().phys_to_virt(paddr)
+                kor_arch::phys_to_virt(paddr)
             } else {
                 let combined_flags = page_flags.get(&vaddr).copied().unwrap_or(flags);
                 let paddr = address_space
                     .map_zeroed(vaddr, combined_flags)
                     .map_err(|_| "map failed")?;
-                kor::arch::current().phys_to_virt(paddr)
+                kor_arch::phys_to_virt(paddr)
             };
 
             // The segment may start in the middle of this page (shared page).

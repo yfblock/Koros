@@ -100,7 +100,7 @@ pub fn start_secondaries() -> usize {
     let dtb = kor::config::config_dtb();
     let ncpu = if dtb != 0 {
         // SAFETY: `dtb` is the platform DTB address (direct-mapped).
-        unsafe { kor::fdt::cpu_count(kor::arch::phys_to_virt(dtb)) }
+        unsafe { kor::fdt::cpu_count(super::mm::phys_to_virt(dtb)) }
     } else {
         1
     }

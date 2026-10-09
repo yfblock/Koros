@@ -93,12 +93,8 @@ impl Task {
         let stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
         let user_stack = alloc::vec![0u8; STACK_SIZE].into_boxed_slice();
         let stack_top = (stack.as_ptr() as usize + STACK_SIZE) & !0xF;
-        let mut ctx = kor::arch::current().task_context_zero();
-        kor::arch::current().task_context_init(
-            &mut ctx,
-            task_bootstrap as *const () as usize,
-            stack_top,
-        );
+        let mut ctx = kor_arch::task_context_zero();
+        kor_arch::task_context_init(&mut ctx, task_bootstrap as *const () as usize, stack_top);
         Arc::new(Self {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             ctx: UnsafeCell::new(ctx),
@@ -117,7 +113,7 @@ impl Task {
     fn idle() -> Arc<Self> {
         Arc::new(Self {
             id: 0,
-            ctx: UnsafeCell::new(kor::arch::current().task_context_zero()),
+            ctx: UnsafeCell::new(kor_arch::task_context_zero()),
             _stack: Box::new([]),
             user_stack: Box::new([]),
             entry: || {},
@@ -201,7 +197,7 @@ impl PerCpu {
 static CPUS: [PerCpu; MAX_CPUS] = [const { PerCpu::new() }; MAX_CPUS];
 
 fn this_cpu() -> &'static PerCpu {
-    &CPUS[kor::arch::current().cpu_id()]
+    &CPUS[kor_arch::cpu_id()]
 }
 
 // Shared queues.
@@ -215,7 +211,7 @@ static SCHED_READY: AtomicBool = AtomicBool::new(false);
 
 /// The task currently running on this CPU.
 pub fn current() -> Arc<Task> {
-    kor::irq::without(|| {
+    kor_arch::irq_without(|| {
         this_cpu()
             .current
             .lock()
@@ -240,7 +236,7 @@ pub fn init() {
 pub fn init_this_cpu() {
     let idle = Task::idle();
     let cpu = this_cpu();
-    kor::irq::without(|| {
+    kor_arch::irq_without(|| {
         *cpu.idle.lock() = Some(idle.clone());
         *cpu.current.lock() = Some(idle);
     });
@@ -262,7 +258,7 @@ pub fn spawn_configured(
     task.set_address_space_root(address_space_root);
     let id = task.id;
     configure(id);
-    kor::irq::without(|| READY_QUEUE.lock().push_back(task));
+    kor_arch::irq_without(|| READY_QUEUE.lock().push_back(task));
     id
 }
 
@@ -339,47 +335,47 @@ fn schedule(prev_action: u8, wait_ptr: usize) {
         unsafe { kor_mmu::activate_address_space(root) };
     }
     // SAFETY: prev is kept alive via `cpu.prev`, next via `cpu.current`.
-    unsafe { kor::arch::current().context_switch(prev_ctx, next_ctx) };
+    unsafe { kor_arch::context_switch(prev_ctx, next_ctx) };
     finish_switch();
 }
 
 /// Voluntarily yield to the next ready task, if any.
 pub fn yield_now() {
-    let enabled = kor::irq::is_enabled();
-    kor::irq::disable();
+    let enabled = kor_arch::irq_is_enabled();
+    kor_arch::irq_disable();
     schedule(TO_READY, 0);
     if enabled {
-        kor::irq::enable();
+        kor_arch::irq_enable();
     }
 }
 
 /// Sleep the current task for at least `ms` milliseconds.
 pub fn sleep_ms(ms: u64) {
     let wake = kor::time::ticks() + (ms * kor::time::TICK_HZ / 1000).max(1);
-    kor::irq::disable();
+    kor_arch::irq_disable();
     current().wake_tick.store(wake, Ordering::Relaxed);
     schedule(TO_SLEEP, 0);
-    kor::irq::enable();
+    kor_arch::irq_enable();
 }
 
 /// Terminate the current task and switch away permanently.
 pub fn exit() -> ! {
-    kor::irq::disable();
+    kor_arch::irq_disable();
     loop {
         schedule(TO_ZOMBIE, 0);
-        kor::arch::current().wait_for_interrupt();
+        kor_arch::wait_for_interrupt();
     }
 }
 
 /// Move a blocked/parked task back to the ready queue.
 fn make_ready(task: Arc<Task>) {
     task.state.store(READY, Ordering::Relaxed);
-    kor::irq::without(|| READY_QUEUE.lock().push_back(task));
+    kor_arch::irq_without(|| READY_QUEUE.lock().push_back(task));
 }
 
 /// Free the stacks of exited tasks (called from a live task).
 fn reap() {
-    kor::irq::without(|| {
+    kor_arch::irq_without(|| {
         let mut zombies = ZOMBIES.lock();
         if !zombies.is_empty() {
             zombies.clear();
@@ -429,10 +425,10 @@ pub fn preempt() {
 /// task; never returns.
 pub fn idle_loop() -> ! {
     loop {
-        kor::irq::enable();
+        kor_arch::irq_enable();
         reap();
         yield_now();
-        kor::arch::current().wait_for_interrupt();
+        kor_arch::wait_for_interrupt();
     }
 }
 
@@ -440,7 +436,7 @@ pub fn idle_loop() -> ! {
 extern "C" fn task_bootstrap() -> ! {
     finish_switch();
     kor::trap_callbacks::task_switch(current().user_stack_top());
-    kor::irq::enable();
+    kor_arch::irq_enable();
     let entry = current().entry;
     entry();
     exit();
@@ -498,12 +494,12 @@ impl WaitQueue {
     }
     /// Block the current task until another context wakes this queue.
     pub fn wait(&self) {
-        let enabled = kor::irq::is_enabled();
-        kor::irq::disable();
+        let enabled = kor_arch::irq_is_enabled();
+        kor_arch::irq_disable();
         self.raw_lock();
         self.block_locked();
         if enabled {
-            kor::irq::enable();
+            kor_arch::irq_enable();
         }
     }
 
@@ -511,26 +507,26 @@ impl WaitQueue {
     /// Returns `true` after blocking and `false` when the predicate rejected
     /// the wait. This closes the check-to-sleep lost-wakeup window.
     pub fn wait_if(&self, should_wait: impl FnOnce() -> bool) -> bool {
-        let enabled = kor::irq::is_enabled();
-        kor::irq::disable();
+        let enabled = kor_arch::irq_is_enabled();
+        kor_arch::irq_disable();
         self.raw_lock();
         if !should_wait() {
             self.raw_unlock();
             if enabled {
-                kor::irq::enable();
+                kor_arch::irq_enable();
             }
             return false;
         }
         self.block_locked();
         if enabled {
-            kor::irq::enable();
+            kor_arch::irq_enable();
         }
         true
     }
 
     /// Wake one blocked task, returning whether a waiter was actually woken.
     pub fn wake_one(&self) -> bool {
-        kor::irq::without(|| {
+        kor_arch::irq_without(|| {
             self.raw_lock();
             let task = unsafe { (*self.list.get()).pop_front() };
             self.raw_unlock();
@@ -545,7 +541,7 @@ impl WaitQueue {
 
     /// Wake all blocked tasks, returning the number actually woken.
     pub fn wake_all(&self) -> usize {
-        kor::irq::without(|| {
+        kor_arch::irq_without(|| {
             self.raw_lock();
             let mut drained = VecDeque::new();
             core::mem::swap(unsafe { &mut *self.list.get() }, &mut drained);
@@ -579,8 +575,8 @@ impl Semaphore {
 
     /// Decrement the count, blocking while it is zero.
     pub fn wait(&self) {
-        let enabled = kor::irq::is_enabled();
-        kor::irq::disable();
+        let enabled = kor_arch::irq_is_enabled();
+        kor_arch::irq_disable();
         loop {
             self.wq.raw_lock();
             let count = unsafe { &mut *self.count.get() };
@@ -596,13 +592,13 @@ impl Semaphore {
             // Resumed after a wake; re-check the count.
         }
         if enabled {
-            kor::irq::enable();
+            kor_arch::irq_enable();
         }
     }
 
     /// Increment the count, waking one waiter.
     pub fn post(&self) {
-        kor::irq::without(|| {
+        kor_arch::irq_without(|| {
             self.wq.raw_lock();
             let count = unsafe { &mut *self.count.get() };
             *count += 1;

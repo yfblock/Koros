@@ -52,63 +52,23 @@ impl UserTrapContext {
 ///
 /// # Safety
 /// `frame` must point to the active architecture trap frame.
-pub unsafe fn capture_user_context(frame: *mut u8) -> Option<UserTrapContext> {
-    cfg_select! {
-        target_arch = "riscv64" => { unsafe { riscv64::trap::capture_user_context(frame) } }
-        target_arch = "aarch64" => { unsafe { aarch64::trap::capture_user_context(frame) } }
-        target_arch = "x86_64" => { unsafe { x86_64::trap::capture_user_context(frame) } }
-        _ => { let _ = frame; None }
-    }
-}
 
 /// Restore a captured user context into the active trap frame.
 ///
 /// # Safety
 /// `frame` must point to the active architecture trap frame.
-pub unsafe fn restore_user_context(frame: *mut u8, context: &UserTrapContext) -> bool {
-    cfg_select! {
-        target_arch = "riscv64" => { unsafe { riscv64::trap::restore_user_context(frame, context) } }
-        target_arch = "aarch64" => { unsafe { aarch64::trap::restore_user_context(frame, context) } }
-        target_arch = "x86_64" => { unsafe { x86_64::trap::restore_user_context(frame, context) } }
-        _ => { let _ = (frame, context); false }
-    }
-}
 
 /// Redirect an active user context to a Linux signal handler.
 ///
 /// # Safety
 /// `frame` must point to the active architecture trap frame and all supplied
 /// addresses must already have been validated as user addresses.
-pub unsafe fn setup_user_signal(
-    frame: *mut u8,
-    handler: usize,
-    restorer: usize,
-    signal_frame: usize,
-    signal: usize,
-    siginfo: usize,
-    ucontext: usize,
-) -> bool {
-    cfg_select! {
-        target_arch = "riscv64" => { unsafe { riscv64::trap::setup_user_signal(frame, handler, restorer, signal_frame, signal, siginfo, ucontext) } }
-        target_arch = "aarch64" => { unsafe { aarch64::trap::setup_user_signal(frame, handler, restorer, signal_frame, signal, siginfo, ucontext) } }
-        target_arch = "x86_64" => { unsafe { x86_64::trap::setup_user_signal(frame, handler, restorer, signal_frame, signal, siginfo, ucontext) } }
-        _ => { let _ = (frame, handler, restorer, signal_frame, signal, siginfo, ucontext); false }
-    }
-}
 
 /// Resume a captured user context without returning to its original trap stack.
 ///
 /// # Safety
 /// The caller must have activated the context's address space and the context
 /// must contain validated user PC, SP, and status values.
-pub unsafe fn resume_user_context(context: &UserTrapContext) -> ! {
-    cfg_select! {
-        target_arch = "riscv64" => { unsafe { riscv64::trap::resume_user_context(context) } }
-        target_arch = "aarch64" => { unsafe { aarch64::trap::resume_user_context(context) } }
-        target_arch = "x86_64" => { unsafe { x86_64::trap::resume_user_context(context) } }
-        _ => { let _ = context; loop { core::hint::spin_loop(); } }
-    }
-}
 
 /// Enter a freshly loaded user image through the selected architecture.
 ///
@@ -124,16 +84,6 @@ pub fn enter_user(pc: usize, sp: usize) -> ! {
 // ---------------------------------------------------------------------------
 // Composition helpers: cfg-selected singletons for the binary crate to install.
 // ---------------------------------------------------------------------------
-
-/// The `ArchProvider` for the current target.
-pub fn provider() -> &'static dyn kor::ArchProvider {
-    cfg_select! {
-        target_arch = "riscv64"      => { &riscv64::provider::PROVIDER }
-        target_arch = "x86_64"       => { &x86_64::provider::PROVIDER }
-        target_arch = "aarch64"      => { &aarch64::provider::PROVIDER }
-        target_arch = "loongarch64" => { &loongarch64::provider::PROVIDER }
-    }
-}
 
 /// The `InterruptController` for the current target (stub on x86_64/loongarch64).
 pub fn interrupt_controller() -> &'static dyn kor::InterruptController {
@@ -155,8 +105,237 @@ pub fn console() -> &'static dyn kor::Console {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Static dispatch facade: one cfg-selected call per former ArchProvider method.
+// Consumers call these directly — no trait objects, no runtime registry.
+// ---------------------------------------------------------------------------
+
+cfg_select! {
+    target_arch = "riscv64"      => { pub use self::riscv64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
+    target_arch = "x86_64"       => { pub use self::x86_64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
+    target_arch = "aarch64"      => { pub use self::aarch64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
+    target_arch = "loongarch64" => { pub use self::loongarch64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
+}
+
+cfg_select! {
+    target_arch = "riscv64"      => { pub use self::riscv64::{trap, irq};
+pub use self::riscv64::time::{now_ticks, timer_hz};
+pub use self::riscv64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
+    target_arch = "x86_64"       => { pub use self::x86_64::{trap, irq};
+pub use self::x86_64::time::{now_ticks, timer_hz};
+pub use self::x86_64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
+    target_arch = "aarch64"      => { pub use self::aarch64::{trap, irq};
+pub use self::aarch64::time::{now_ticks, timer_hz};
+pub use self::aarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
+    target_arch = "loongarch64" => { pub use self::loongarch64::{trap, irq};
+pub use self::loongarch64::time::{now_ticks, timer_hz};
+pub use self::loongarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
+}
+
+/// Detect free memory regions through the current architecture's firmware
+/// interface (FDT / Multiboot).
+pub fn detect_memory_regions(add_region: &mut dyn FnMut(usize, usize)) {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::mm::init(add_region) }
+        target_arch = "x86_64"       => { self::x86_64::mm::init(add_region) }
+        target_arch = "aarch64"      => { self::aarch64::mm::init(add_region) }
+        target_arch = "loongarch64" => { self::loongarch64::mm::init(add_region) }
+    }
+}
+
+/// Install trap vectors on the current CPU.
+pub fn trap_init() {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::trap::init() }
+        target_arch = "x86_64"       => { self::x86_64::trap::init() }
+        target_arch = "aarch64"      => { self::aarch64::trap::init() }
+        target_arch = "loongarch64" => { self::loongarch64::trap::init() }
+    }
+}
+
+/// Program the timer on the current CPU.
+pub fn timer_init() {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::time::init() }
+        target_arch = "x86_64"       => { self::x86_64::time::init() }
+        target_arch = "aarch64"      => { self::aarch64::time::init() }
+        target_arch = "loongarch64" => { self::loongarch64::time::init() }
+    }
+}
+
+/// Acknowledge the timer interrupt (per-arch EOI / reprogram).
+pub fn handle_tick() {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::time::handle_tick() }
+        target_arch = "x86_64"       => { self::x86_64::time::handle_tick() }
+        target_arch = "aarch64"      => { self::aarch64::time::handle_tick() }
+        target_arch = "loongarch64" => { self::loongarch64::time::handle_tick() }
+    }
+}
+
+/// Enable interrupts on the current CPU.
+pub fn irq_enable() {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::irq::enable() }
+        target_arch = "x86_64"       => { self::x86_64::irq::enable() }
+        target_arch = "aarch64"      => { self::aarch64::irq::enable() }
+        target_arch = "loongarch64" => { self::loongarch64::irq::enable() }
+    }
+}
+
+/// Disable interrupts on the current CPU.
+pub fn irq_disable() {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::irq::disable() }
+        target_arch = "x86_64"       => { self::x86_64::irq::disable() }
+        target_arch = "aarch64"      => { self::aarch64::irq::disable() }
+        target_arch = "loongarch64" => { self::loongarch64::irq::disable() }
+    }
+}
+
+/// Whether interrupts are currently enabled on this CPU.
+pub fn irq_is_enabled() -> bool {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::irq::is_enabled() }
+        target_arch = "x86_64"       => { self::x86_64::irq::is_enabled() }
+        target_arch = "aarch64"      => { self::aarch64::irq::is_enabled() }
+        target_arch = "loongarch64" => { self::loongarch64::irq::is_enabled() }
+    }
+}
+
+/// Kernel image physical range from linker symbols (clips the frame allocator).
+pub fn kernel_phys_range() -> (usize, usize) {
+    unsafe extern "C" {
+        static _skernel: u8;
+        static _end: u8;
+    }
+    let ko = kernel_offset();
+    // SAFETY: linker symbols are static; reading their addresses is sound.
+    unsafe {
+        (
+            &_skernel as *const _ as usize - ko,
+            &_end as *const _ as usize - ko,
+        )
+    }
+}
+
+/// Bring up every secondary CPU through the arch bring-up stub.
+pub fn boot_secondaries() -> usize {
+    let started = start_secondaries();
+    if started > 0 {
+        kor::smp::register_online();
+    }
+    started
+}
+
 // Provided by the application binary; resolved at link time.
 unsafe extern "C" {
     /// Secondary-CPU entry, called from the arch secondary bring-up stub.
     pub fn secondary_entry(cpu_id: usize) -> !;
+}
+
+/// Zeroed task context for a new kernel task.
+pub fn task_context_zero() -> kor::TaskContext {
+    kor::TaskContext { _storage: [0; 32] }
+}
+
+/// Initialize a task context to enter `entry` with `stack_top`.
+pub fn task_context_init(ctx: &mut kor::TaskContext, entry: usize, stack_top: usize) {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
+        target_arch = "x86_64"       => { self::x86_64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
+        target_arch = "aarch64"      => { self::aarch64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
+        target_arch = "loongarch64" => { self::loongarch64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
+    }
+}
+
+/// Switch from `prev` to `next`.
+///
+/// # Safety
+/// `prev`/`next` must point to valid, properly-aligned contexts owned by
+/// tasks that are not concurrently being switched.
+pub unsafe fn context_switch(prev: *mut kor::TaskContext, next: *const kor::TaskContext) {
+    // SAFETY: the arch layout fits the opaque buffer (const-checked per
+    // arch); pointer casts preserve the caller's exclusivity contract.
+    unsafe {
+        cfg_select! {
+            target_arch = "riscv64"      => { self::riscv64::context::context_switch(prev as *mut _, next as *const _) }
+            target_arch = "x86_64"       => { self::x86_64::context::context_switch(prev as *mut _, next as *const _) }
+            target_arch = "aarch64"      => { self::aarch64::context::context_switch(prev as *mut _, next as *const _) }
+            target_arch = "loongarch64" => { self::loongarch64::context::context_switch(prev as *mut _, next as *const _) }
+        }
+    }
+}
+
+/// Run `f` with interrupts disabled, restoring the previous state afterwards.
+pub fn irq_without<R>(f: impl FnOnce() -> R) -> R {
+    let was_enabled = irq_is_enabled();
+    irq_disable();
+    let result = f();
+    if was_enabled {
+        irq_enable();
+    }
+    result
+}
+
+// --- User-context dispatch (compile-time per-arch) ------------------------
+
+/// Capture a user-mode trap frame through the selected architecture.
+///
+/// # Safety
+/// `frame` must point to the active architecture trap frame.
+pub unsafe fn capture_user_context(frame: *mut u8) -> Option<UserTrapContext> {
+    cfg_select! {
+        target_arch = "riscv64" => { unsafe { self::riscv64::trap::capture_user_context(frame) } }
+        target_arch = "aarch64" => { unsafe { self::aarch64::trap::capture_user_context(frame) } }
+        target_arch = "x86_64" => { unsafe { self::x86_64::trap::capture_user_context(frame) } }
+        _ => { let _ = frame; None }
+    }
+}
+
+/// Restore a captured user context into the active trap frame.
+///
+/// # Safety
+/// `frame` must point to the active architecture trap frame.
+pub unsafe fn restore_user_context(frame: *mut u8, context: &UserTrapContext) -> bool {
+    cfg_select! {
+        target_arch = "riscv64" => { unsafe { self::riscv64::trap::restore_user_context(frame, context) } }
+        target_arch = "aarch64" => { unsafe { self::aarch64::trap::restore_user_context(frame, context) } }
+        target_arch = "x86_64" => { unsafe { self::x86_64::trap::restore_user_context(frame, context) } }
+        _ => { let _ = (frame, context); false }
+    }
+}
+
+/// Redirect an active user context to a signal handler.
+///
+/// # Safety
+/// `frame` must point to the active architecture trap frame.
+pub unsafe fn setup_user_signal(
+    frame: *mut u8,
+    handler: usize,
+    restorer: usize,
+    signal_frame: usize,
+    signal: usize,
+    siginfo: usize,
+    ucontext: usize,
+) -> bool {
+    cfg_select! {
+        target_arch = "riscv64" => { unsafe { self::riscv64::trap::setup_user_signal(frame, handler, restorer, signal_frame, signal, siginfo, ucontext) } }
+        target_arch = "aarch64" => { unsafe { self::aarch64::trap::setup_user_signal(frame, handler, restorer, signal_frame, signal, siginfo, ucontext) } }
+        target_arch = "x86_64" => { unsafe { self::x86_64::trap::setup_user_signal(frame, handler, restorer, signal_frame, signal, siginfo, ucontext) } }
+        _ => { let _ = (frame, handler, restorer, signal_frame, signal, siginfo, ucontext); false }
+    }
+}
+
+/// Resume a captured user context without returning to the original trap stack.
+///
+/// # Safety
+/// The caller must have activated the context's address space.
+pub unsafe fn resume_user_context(context: &UserTrapContext) -> ! {
+    cfg_select! {
+        target_arch = "riscv64" => { unsafe { self::riscv64::trap::resume_user_context(context) } }
+        target_arch = "aarch64" => { unsafe { self::aarch64::trap::resume_user_context(context) } }
+        target_arch = "x86_64" => { unsafe { self::x86_64::trap::resume_user_context(context) } }
+        _ => { let _ = context; loop { core::hint::spin_loop(); } }
+    }
 }

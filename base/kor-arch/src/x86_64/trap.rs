@@ -78,7 +78,7 @@ struct IntStack([u8; TRAP_STACK_SIZE]);
 
 /// Configure this CPU's native SYSCALL state for the task being resumed.
 pub fn set_syscall_stack(stack_top: usize) {
-    let cpu = kor::arch::current().cpu_id();
+    let cpu = super::smp::cpu_id();
     unsafe {
         X86_SYSCALL_CPU_STATES[cpu].stack_top = stack_top as u64;
     }
@@ -138,7 +138,7 @@ global_asm!(include_str!("trap.S"));
 #[unsafe(no_mangle)]
 extern "C" fn x86_trap_enter(cs: u64) {
     let from_user = cs & 3 == 3;
-    let cpu = kor::arch::current().cpu_id();
+    let cpu = super::smp::cpu_id();
     unsafe {
         TRAP_SWAPPED_GS[cpu] = from_user;
         if from_user {
@@ -149,7 +149,7 @@ extern "C" fn x86_trap_enter(cs: u64) {
 
 #[unsafe(no_mangle)]
 extern "C" fn x86_trap_leave() {
-    let cpu = kor::arch::current().cpu_id();
+    let cpu = super::smp::cpu_id();
     unsafe {
         if TRAP_SWAPPED_GS[cpu] {
             TRAP_SWAPPED_GS[cpu] = false;
@@ -309,7 +309,7 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
 /// Install the trap handler: build + load the GDT (with user segments) and
 /// TSS, reload segment registers, then build + load the IDT.
 pub fn init() {
-    let cpu = kor::arch::current().cpu_id();
+    let cpu = super::smp::cpu_id();
     assert!(
         cpu < kor::smp::MAX_CPUS,
         "x86 CPU id exceeds per-CPU trap storage"
@@ -609,7 +609,7 @@ pub unsafe fn setup_user_signal(
 
 /// Prepare this CPU's GS MSRs for a detached kernel-to-user transition.
 pub fn prepare_user_entry() {
-    let cpu = kor::arch::current().cpu_id();
+    let cpu = super::smp::cpu_id();
     let syscall_state = unsafe { core::ptr::addr_of!(X86_SYSCALL_CPU_STATES[cpu]) as u64 };
     unsafe {
         core::arch::asm!(

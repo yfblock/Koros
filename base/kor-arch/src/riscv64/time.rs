@@ -47,3 +47,16 @@ pub fn init() {
 pub fn handle_tick() {
     sbi_set_timer(read_time() + INTERVAL);
 }
+
+/// Read the QEMU `virt` 10 MHz wall-clock counter (matches [`timer_hz`]).
+pub fn now_ticks() -> u64 {
+    let t: u64;
+    // SAFETY: `rdtime` is an unprivileged counter read.
+    unsafe { core::arch::asm!("rdtime {}", out(reg) t) };
+    t
+}
+
+/// Tick frequency of the QEMU `virt` time counter.
+pub fn timer_hz() -> u64 {
+    10_000_000
+}

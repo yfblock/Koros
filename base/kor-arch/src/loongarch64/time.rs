@@ -61,3 +61,26 @@ pub fn init() {
 pub fn handle_tick() {
     csr_write(CSR_TICLR, 1);
 }
+
+/// Read the 64-bit stable counter (wall clock).
+pub fn now_ticks() -> u64 {
+    let t: u64;
+    // SAFETY: `rdtime.d` is an unprivileged read of the stable counter.
+    unsafe { core::arch::asm!("rdtime.d {}, $zero", out(reg) t) };
+    t
+}
+
+/// Constant-timer frequency from CPUCFG words 4 (base) and 5 (mul/div).
+pub fn timer_hz() -> u64 {
+    let base: usize;
+    let muldiv: usize;
+    // SAFETY: CPUCFG is a read-only configuration instruction.
+    unsafe {
+        core::arch::asm!("cpucfg {}, {}", out(reg) base, in(reg) 4usize);
+        core::arch::asm!("cpucfg {}, {}", out(reg) muldiv, in(reg) 5usize);
+    }
+    let cc_freq = (base & 0xffff_ffff) as u64;
+    let mul = ((muldiv >> 16) & 0xffff) as u64;
+    let div = (muldiv & 0xffff) as u64;
+    if div != 0 { cc_freq * mul / div } else { cc_freq }
+}

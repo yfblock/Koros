@@ -28,7 +28,7 @@ struct KernelTrapCallbacks;
 impl kor::TrapCallbacks for KernelTrapCallbacks {
     fn on_timer(&self) {
         kor::time::increment_tick();
-        kor::arch::current().handle_tick();
+        kor_arch::handle_tick();
         if kor_sched::is_ready() {
             kor_sched::timer_tick();
             kor_sched::preempt();
@@ -48,7 +48,6 @@ pub static MOUNTS: Mutex<kor_fs::mount::MountTable> = Mutex::new(kor_fs::mount::
 extern "C" fn kernel_main() -> ! {
     kor::install_console(kor_arch::console());
     config::init(arch::platform_config());
-    kor::install(kor_arch::provider());
     let ic = kor_arch::interrupt_controller();
     kor::install_controller(ic);
     ic.init();
@@ -64,12 +63,12 @@ extern "C" fn kernel_main() -> ! {
     heap::init_bootstrap();
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
-    kor::arch::current().trap_init();
+    kor_arch::trap_init();
 
-    kor::cmdline::init_from(kor::arch::current().boot_cmdline().unwrap_or_default());
+    kor::cmdline::init_from(kor_arch::boot_cmdline().unwrap_or_default());
     let mut collected = kor::regions::RegionCollector::new();
-    kor::arch::current().detect_memory_regions(&mut |start, end| collected.add(start, end));
-    let (ks, ke) = kor::kernel_phys_range();
+    kor_arch::detect_memory_regions(&mut |start, end| collected.add(start, end));
+    let (ks, ke) = kor_arch::kernel_phys_range();
     let ks = kor::frame::PAGE_SIZE * (ks / kor::frame::PAGE_SIZE); // align-down
     let ke = ke.next_multiple_of(kor::frame::PAGE_SIZE); // align-up
     let hole_start = match config::firmware_phys_start() {
@@ -84,8 +83,8 @@ extern "C" fn kernel_main() -> ! {
     HEAP.enable_frame_growth();
     heap::self_test();
     kor_mmu::page_table_init();
-    kor::arch::current().timer_init();
-    kor::arch::current().irq_enable();
+    kor_arch::timer_init();
+    kor_arch::irq_enable();
 
     kor::println!("");
     kor::println!(
@@ -95,7 +94,7 @@ extern "C" fn kernel_main() -> ! {
     kor::println!("cmdline: {:?}", kor::cmdline::raw());
 
     probe_devices();
-    kor::smp::boot_secondaries();
+    kor_arch::boot_secondaries();
     crate::fs::init_rootfs();
 
     // Install syscall handler so ecall from U-mode dispatches to our syscall layer.
@@ -133,7 +132,7 @@ extern "C" fn kernel_main() -> ! {
 fn probe_devices() {
     use kor::driver::{DeviceDriver, probe_fdt};
     let drivers: &[&dyn DeviceDriver] = &[&virtio::VIRTIO_MMIO_DRIVER];
-    let dtb = kor::arch::current().dtb_ptr();
+    let dtb = kor_arch::dtb_ptr();
     if dtb != 0 {
         kor::println!("[korix] probing FDT at {:#x}", dtb);
         probe_fdt(dtb, drivers);
@@ -147,11 +146,11 @@ fn probe_devices() {
 
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(_cpu_id: usize) -> ! {
-    kor::arch::current().trap_init();
+    kor_arch::trap_init();
     let ic = kor_arch::interrupt_controller();
     ic.init();
-    kor::arch::current().timer_init();
-    kor::arch::current().irq_enable();
+    kor_arch::timer_init();
+    kor_arch::irq_enable();
     kor::smp::register_online();
     while !kor_sched::is_ready() {
         core::hint::spin_loop();

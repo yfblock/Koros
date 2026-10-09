@@ -2,14 +2,28 @@
 
 use kor::config;
 
+/// Physical extent of the korhv image (linker symbols).
+fn kernel_phys_range() -> (usize, usize) {
+    unsafe extern "C" {
+        static _skernel: u8;
+        static _end: u8;
+    }
+    // SAFETY: linker symbols are static addresses; only their values are read.
+    let (start, end) = unsafe { (&_skernel as *const u8 as usize, &_end as *const u8 as usize) };
+    let offset = crate::arch::mm::phys_to_virt(0);
+    (start - offset, end - offset)
+}
+
 /// Install shared services, initialize physical memory, and enable heap growth.
 pub fn initialize() {
     kor::install_console(&crate::arch::console::CONSOLE);
     config::init(crate::arch::platform_config());
-    kor::install(&crate::arch::provider::PROVIDER);
     crate::heap::init_bootstrap();
-    kor::arch::current().trap_init();
-    kor::cmdline::init_from(kor::arch::current().boot_cmdline().unwrap_or_default());
+    #[cfg(target_arch = "x86_64")]
+    crate::arch::trap::init();
+    #[cfg(target_arch = "aarch64")]
+    crate::arch::hyp::trap_init();
+    kor::cmdline::init_from(crate::arch::mm::boot_cmdline().unwrap_or_default());
     initialize_frames();
     crate::HEAP.enable_frame_growth();
     crate::heap::self_test();
@@ -17,9 +31,9 @@ pub fn initialize() {
 
 fn initialize_frames() {
     let mut regions = kor::regions::RegionCollector::new();
-    kor::arch::current().detect_memory_regions(&mut |start, end| regions.add(start, end));
+    crate::arch::mm::detect_memory_regions(&mut |start, end| regions.add(start, end));
 
-    let (kernel_start, kernel_end) = kor::kernel_phys_range();
+    let (kernel_start, kernel_end) = kernel_phys_range();
     let kernel_start = align_down(kernel_start);
     let kernel_end = align_up(kernel_end);
     let reserved_start = match config::firmware_phys_start() {

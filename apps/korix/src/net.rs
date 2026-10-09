@@ -126,8 +126,7 @@ impl Device for DeviceAdapter {
 }
 
 fn timestamp() -> Instant {
-    let arch = kor::arch::current();
-    let milliseconds = arch.now_ticks().saturating_mul(1000) / arch.timer_hz().max(1);
+    let milliseconds = kor_arch::now_ticks().saturating_mul(1000) / kor_arch::timer_hz().max(1);
     Instant::from_millis(milliseconds as i64)
 }
 

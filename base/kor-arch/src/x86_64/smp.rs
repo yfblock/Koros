@@ -5,7 +5,7 @@
 //! to long mode on the kernel page table and jumps to [`ap_rust_entry`].  APs
 //! are brought up one at a time so they can share the single trampoline page.
 
-use kor::arch as mm;
+use super::mm;
 use kor::smp::MAX_CPUS;
 
 core::arch::global_asm!(include_str!("ap_boot.S"));

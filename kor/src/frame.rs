@@ -234,19 +234,17 @@ static ALLOCATOR: GlobalAllocator = GlobalAllocator {
 };
 
 fn with_allocator<R>(operation: impl FnOnce(&mut FrameAllocator) -> R) -> R {
-    crate::irq::without(|| {
-        while ALLOCATOR
-            .lock
-            .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            core::hint::spin_loop();
-        }
-        // SAFETY: the global raw lock is held and local interrupts are disabled.
-        let result = operation(unsafe { &mut *ALLOCATOR.inner.get() });
-        ALLOCATOR.lock.store(false, Ordering::Release);
-        result
-    })
+    while ALLOCATOR
+        .lock
+        .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
+        .is_err()
+    {
+        core::hint::spin_loop();
+    }
+    // SAFETY: the global raw lock is held, serializing all alloc/free.
+    let result = operation(unsafe { &mut *ALLOCATOR.inner.get() });
+    ALLOCATOR.lock.store(false, Ordering::Release);
+    result
 }
 
 /// Register free physical memory `[start, end)` with the global allocator.

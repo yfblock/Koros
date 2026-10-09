@@ -3,6 +3,26 @@
 //! Boot does not enable paging yet; dynamic maps are unavailable.
 
 use kor::{MapError, MapSize, MappingFlags};
+use crate::AddrSpace;
+
+/// Kernel direct-map offset (matches the boot table built by the trampoline).
+const KERNEL_OFFSET: usize = 0;
+
+/// Zero one page at `pa` through the kernel direct map.
+///
+/// # Safety
+/// `pa` must be a page-aligned frame available for exclusive write.
+unsafe fn zero_page(pa: usize) {
+    let va = phys_to_virt(pa) as *mut u64;
+    // SAFETY: caller guarantees exclusive access to the frame.
+    unsafe { core::ptr::write_bytes(va, 0, 512) };
+}
+
+/// Physical -> kernel direct-map virtual address.
+fn phys_to_virt(pa: usize) -> usize {
+    pa + KERNEL_OFFSET
+}
+
 
 
 pub fn init() {}
@@ -73,3 +93,19 @@ pub fn new_user() -> Result<usize, MapError> {
 pub unsafe fn destroy(_root: usize) {}
 
 pub fn split_identity() {}
+
+impl AddrSpace {
+    /// Physical -> kernel direct-map virtual address (identity here).
+    pub fn phys_to_virt(pa: usize) -> usize {
+        phys_to_virt(pa)
+    }
+
+    /// Zero one page at `pa` through the direct map.
+    ///
+    /// # Safety
+    /// `pa` must be a page-aligned frame available for exclusive write.
+    pub unsafe fn zero_page(pa: usize) {
+        // SAFETY: forwarded under the same contract.
+        unsafe { zero_page(pa) }
+    }
+}

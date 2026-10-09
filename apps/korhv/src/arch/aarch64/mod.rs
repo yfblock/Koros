@@ -6,7 +6,6 @@ pub mod console_mux;
 pub mod guest_image;
 pub mod hyp;
 pub mod mm;
-pub mod provider;
 
 const GUEST_RESERVED_START: usize = 0x4020_0000;
 const GUEST_RESERVED_END: usize = 0x5000_0000;

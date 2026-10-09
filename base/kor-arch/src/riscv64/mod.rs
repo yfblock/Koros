@@ -4,7 +4,6 @@ pub mod ic;
 pub mod irq;
 pub mod mm;
 pub mod plic;
-pub mod provider;
 pub mod smp;
 pub mod time;
 pub mod trap;

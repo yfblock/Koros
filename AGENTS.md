@@ -1,24 +1,24 @@
 # AGENTS.md
 
-Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv64, x86_64, aarch64, loongarch64). The workspace is laid out in **four tiers**: `kor/` (foundation crate), `base/` (core kernel services), `filesystems/` (the storage stack), `apps/` (composition roots). It is a **twelve-crate Cargo workspace** of small, composable libraries plus two binary composition crates (`koros` kernel, `korhv` hypervisor). Architecture abstraction is **runtime trait-object dispatch** (`kor::ArchProvider`), not `#[cfg(target_arch)]` branches in shared code — see [Architecture Abstraction Model](#architecture-abstraction-model).
+Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv64, x86_64, aarch64, loongarch64). The workspace is laid out in **four tiers**: `kor/` (foundation crate), `base/` (core kernel services), `filesystems/` (the storage stack), `apps/` (composition roots). It is a **twelve-crate Cargo workspace** of small, composable libraries plus two binary composition crates (`koros` kernel, `korhv` hypervisor). Architecture abstraction is a **compile-time static facade** (`kor_arch::<fn>()` free functions selected by `cfg_select!`), not trait objects — see [Architecture Abstraction Model](#architecture-abstraction-model).
 
 ## Key Facts
 
 - **Twelve crates** (`Cargo.toml`, `resolver = "2"`):
-  - `kor/` (`kor`) — bottom abstraction layer: traits + registries, no arch code, no subsystem impls — **one exception: `kor::frame`**, the allocation-free physical frame allocator (every boot feeds it via `regions`; it has no dependencies of its own). Also defines `ArchProvider`, `InterruptController`, `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, plus boot-time helpers (FDT, regions, cmdline, config, SMP/time).
+  - `kor/` (`kor`) — bottom abstraction layer: traits + registries, no arch code, no subsystem impls — **one exception: `kor::frame`**, the allocation-free physical frame allocator (every boot feeds it via `regions`; it has no dependencies of its own). Also defines `InterruptController`, `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, the opaque `TaskContext` buffer, plus boot-time helpers (FDT, regions, cmdline, config, SMP/time).
   - `base/kor-alloc/` (`kor_alloc`) — slab kernel heap (`LockedSlabHeap`, the `#[global_allocator]`).
   - `filesystems/kor-fs/` (`kor_fs`) — VFS infrastructure: block cache, mount table, path resolver, fd, and the **filesystem-driver registry**. No concrete filesystems.
   - `filesystems/kor-ext2/` (`kor_ext2`) — ext2 (read/write, symlink, hard link, truncate, rename, indirect blocks, xattr, mknod) + `Ext2Driver` singleton.
   - `filesystems/kor-ramfs/` (`kor_ramfs`) — in-memory reference fs + `RamFsDriver` singleton.
   - `base/kor-sched/` (`kor_sched`) — preemptive multi-core kernel-thread scheduler + blocking sync primitives.
-  - `base/kor-arch/` (`kor_arch`) — architecture-specific code **except page tables**; concrete `ArchProvider` impls + `provider()`/`interrupt_controller()`/`console()` selectors.
+  - `base/kor-arch/` (`kor_arch`) — architecture-specific code **except page tables**; per-arch modules (`riscv64/`, `x86_64/`, `aarch64/`, `loongarch64/`, each with `boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`) plus the crate-root static facade: `cfg_select!` re-exports and thin `pub fn` wrappers (`kor_arch::phys_to_virt`, `kor_arch::cpu_id`, `kor_arch::trap_init`, …) that all downstream crates call directly. `interrupt_controller()`/`console()` selectors remain for the `kor` registries.
   - `base/kor-virtio/` (`kor_virtio`) — virtio adapter for apps/koros/korix (block + net, MMIO / PCI / PCI-ECAM).
   - `apps/koros/` (`[[bin]] koros`) — kernel composition root: `kernel_main` init, `#[global_allocator]`, `#[panic_handler]`, virtio adapter, registries, ext2 self-check, bench, scheduler demo.
   - `apps/korix/` (`[[bin]] korix`) — Linux-compatible composition root: thin syscall layer (`syscall/arch/` ABI adapters + portable dispatch), processes/signals, user address spaces, ext2 rootfs, smoltcp networking.
   - `apps/korhv/` (`[[bin]] korhv`) — Type-1 hypervisor, parallel composition root: reuses `kor`/`kor-alloc` and enables hardware virtualization instead of fs/sched/timer. x86_64 = AMD SVM (VMRUN/#VMEXIT, NPT stage-2, VMMCALL); aarch64 = EL2 (ERET to EL1 guest, HVC). Run with `make ARCH=x86_64 BIN=korhv run` or `make ARCH=aarch64 BIN=korhv run`.
 - **Boot → entry:** boot assembly in `base/kor-arch/src/<arch>/boot*.S` calls `rust_entry` → `kernel_main` via an `unsafe extern "C" { fn kernel_main() -> !; }` in `base/kor-arch/src/lib.rs`, linked against the `koros` `#[no_mangle]` symbol. Secondary CPUs enter via `secondary_entry` (declared extern in `kor-arch`, defined in `koros`).
 - **Nightly Rust** — pinned `nightly-2026-06-19` (`rust-toolchain.toml`). `build-std` in `.cargo/config.toml` compiles `core`/`alloc`/`compiler_builtins` from source with `compiler-builtins-mem`. No `std`. (x86_64's `-Clink-arg=-no-pie` is set by the Makefile via `RUSTFLAGS`, not here.)
-- **`base/kor-mmu/` (`kor-mmu`)** — **owns the page tables end to end** (CortenMM, SOSP '25): per-table-page descriptors (lock + per-PTE metadata), a transactional cursor (`AddrSpace::lock(range) → RCursor{query,map,mark,unmap}`), per-arch back-ends under `src/arch/` that supply PTE flags/encoders as **inherent associated items of `AddrSpace`** (compile-time dispatch, no trait objects), plus active-root switching, fork cloning, boot identity splits. `ArchProvider` no longer has page-table methods — composition crates call the `kor_mmu::map/translate/unmap/…` facade directly.
+- **`base/kor-mmu/` (`kor-mmu`)** — **owns the page tables end to end** (CortenMM, SOSP '25): per-table-page descriptors (lock + per-PTE metadata), a transactional cursor (`AddrSpace::lock(range) → RCursor{query,map,mark,unmap}`), per-arch back-ends under `src/arch/` that supply PTE flags/encoders as **inherent associated items of `AddrSpace`** (compile-time dispatch, no trait objects), plus active-root switching, fork cloning, boot identity splits. There is no `ArchProvider` trait — composition crates call the `kor_mmu::map/translate/unmap/…` facade directly.
 - **No unit tests, no CI** — verification is running in QEMU (`apps/koros/src/ext2_test.rs` is the in-kernel self-check) plus optional Verus formal verification via `./tools/scripts/verify.sh`.
 
 ## Build & Run
@@ -57,22 +57,21 @@ Kernel virtual base addresses (high-half kernel; loongarch64 is direct-map, offs
 
 ## Architecture Abstraction Model
 
-This is the central design decision. **Shared crates contain no `#[cfg(target_arch)]`** (two narrow exceptions: the `lib.rs`/`arch.rs` selectors of `kor-arch` and `kor-mmu`). Instead:
+This is the central design decision. **Shared crates contain no `#[cfg(target_arch)]`** (narrow exceptions: the `cfg_select!` selectors of `kor-arch/src/lib.rs` and `kor-mmu/src/arch.rs`, plus a few `#[cfg]` guards in korhv, which keeps its own arch layer). Instead:
 
-- `kor` defines `ArchProvider` (and `InterruptController`, `Console`, `TrapCallbacks`), registered once at boot into `spin::Once`-backed globals: `kor::arch::install`/`current()`, `install_controller`/`controller()`, `install_console`, `install_callbacks`.
-- `kor-arch` provides one concrete `impl ArchProvider` per architecture (`Riscv64Provider`, `X86_64Provider`, `Aarch64Provider`, `Loongarch64Provider`), each a zero-sized struct behind a `pub static PROVIDER`. `base/kor-arch/src/lib.rs` uses a single `cfg_if!` to pick the active module and expose `provider()`/`interrupt_controller()`/`console()`/`TEST_VA_4K`/`TEST_VA_2M`.
-- `koros::kernel_main` installs them.
-- All downstream code calls `kor::arch::current()` (`&'static dyn ArchProvider`) — never cfg-selects a module. This keeps `kor`, `kor-alloc`, `kor-fs`, `kor-sched` fully arch-neutral.
-- If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same `ArchProvider` methods), not as `#[cfg]` branches in shared code.
+- `kor` defines only *arch-neutral* registries that need runtime polymorphism: `InterruptController`, `Console`, `TrapCallbacks` (`spin::Once`-backed `install_controller`/`install_console`/`install_callbacks`). There is **no `ArchProvider` trait and no provider registry** — it was removed.
+- `kor-arch` is the single arch seam. Each architecture lives in `base/kor-arch/src/<arch>/` with an identical module surface (`boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`). The crate root (`base/kor-arch/src/lib.rs`) uses `cfg_select!` to re-export the active arch's functions as crate-root free functions: `kor_arch::phys_to_virt/virt_to_phys/kernel_offset/kernel_phys_range`, `kor_arch::cpu_id/wait_for_interrupt/start_secondaries/shutdown`, `kor_arch::trap_init/timer_init/handle_tick`, `kor_arch::irq_enable/irq_disable/irq_is_enabled/irq_without`, `kor_arch::now_ticks/timer_hz`, and the task-context trio `task_context_zero/task_context_init/unsafe context_switch`.
+- All downstream code (kor-alloc, kor-sched, kor-virtio, koros, korix) calls these static functions directly and lists `kor-arch` as a dependency. `kor-mmu` avoids a kor-mmu→kor-arch cycle by keeping its own per-arch `phys_to_virt`/`virt_to_phys`/`zero_page` in each `src/arch/<arch>.rs` back-end (kor-arch depends on kor-mmu, not the reverse). korhv does not depend on kor-arch at all; it has its own `apps/korhv/src/arch/{x86_64,aarch64}/` modules with the same shape.
+- If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same function names), then re-export through the crate-root `cfg_select!` — never as `#[cfg]` branches in shared code.
 
-`kor::TaskContext` is an opaque `#[repr(C, align(16))]` buffer of 16 `usize` (sized for the largest arch — riscv64 14 callee-saved slots, aarch64 13, loongarch64 12, x86_64 1). Each arch's `context.rs` casts it to its internal layout (size-checked with `const _: () = assert!(...)`).
+`kor::TaskContext` is an opaque `#[repr(C, align(16))]` buffer of 32 `usize` (sized for the largest arch — riscv64 with FPU state). Each arch's `context.rs` casts it to its internal layout via `TaskContext::from_opaque`.
 
 ## Crate Layout
 
 ```
 kor/
   src/lib.rs              — module decls, re-exports, kernel_phys_range()
-  src/arch.rs             — ArchProvider trait, TaskContext, PROVIDER registry
+  src/arch.rs             — opaque TaskContext buffer (no trait, no registry)
   src/addr.rs             — PhysAddr/VirtAddr newtypes
   src/interrupt.rs        — InterruptController trait + registry
   src/trap_callbacks.rs   — TrapCallbacks trait + registry; on_timer/dispatch_external
@@ -106,7 +105,7 @@ base/kor-sched/src/
   lib.rs                  — Task/PerCpu, scheduler core, WaitQueue/Semaphore/Mutex2
   sync.rs                 — guard-based Mutex<T>, unbounded Channel<T>
 base/kor-arch/src/
-  lib.rs                  — cfg_if arch selector; provider()/interrupt_controller()/console()
+  lib.rs                  — cfg_select! static facade (phys_to_virt, cpu_id, trap_init, ...) + interrupt_controller()/console()
   uart/{mod,ns16550a,pl011}.rs
   <arch>/{mod,boot,trap,mm,smp,time,irq,context,ic,console,provider}.rs   (page_table/mmu_format moved to base/kor-mmu/src/arch/)
     + riscv64: boot.S, trap.S, plic.rs
@@ -142,18 +141,17 @@ Per arch (assembly in `base/kor-arch/src/<arch>/`): `_start` → **clear BSS at 
 `kernel_main` init sequence (`apps/koros/src/main.rs`):
 1. Console — `kor::install_console(kor_arch::console())`.
 2. Platform config — `config::init(platform_config())` (per-arch console type, `firmware_phys_start`, dtb, optional `PciEcam`).
-3. Arch provider — `kor::install(kor_arch::provider())`.
-4. Interrupt controller — `install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stubs on x86_64/loongarch64).
-5. Trap callbacks — `install_callbacks(&TRAP_CB)`; `on_timer` does `increment_tick` + `arch.handle_tick` + `kor_sched::timer_tick` + `kor_sched::preempt`; `on_external(irq)` dispatches `registries::IRQS`.
-6. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region), then register filesystem drivers (`kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)` + `&kor_ramfs::RAMFS_DRIVER`) — the registry `Vec` allocates, so this must follow heap init.
-7. Trap vectors — `arch.trap_init()`.
-8. Memory init — capture cmdline, `RegionCollector`, `detect_memory_regions`, clip `kernel_phys_range()` + firmware hole, feed `kor::frame::add_region`, `heap::self_test()`, `kor_mmu::page_table_init()`, `page_table_self_test()` (4K + 2M map/translate round-trip).
-9. Timer + IRQ on this CPU; print `Hello, world!` and cmdline.
-10. `probe_devices()` (FDT virtio-mmio + optional PCI-ECAM on non-x86; PCI port-I/O on x86_64).
-11. `kor::smp::boot_secondaries()`.
-12. (riscv64/x86_64) if `cmdline::has_flag("bench")` → `bench::run()` then spin.
-13. `ext2_test::ext2_test()`.
-14. `kor_sched::init()`; spawn demo tasks (A/B/C/D, producer/consumer via `Channel`, blkio); `kor_sched::idle_loop()`.
+3. Interrupt controller — `install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stubs on x86_64/loongarch64).
+4. Trap callbacks — `install_callbacks(&TRAP_CB)`; `on_timer` does `increment_tick` + `arch.handle_tick` + `kor_sched::timer_tick` + `kor_sched::preempt`; `on_external(irq)` dispatches `registries::IRQS`.
+5. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region), then register filesystem drivers (`kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)` + `&kor_ramfs::RAMFS_DRIVER`) — the registry `Vec` allocates, so this must follow heap init.
+6. Trap vectors — `arch.trap_init()`.
+7. Memory init — capture cmdline, `RegionCollector`, `detect_memory_regions`, clip `kernel_phys_range()` + firmware hole, feed `kor::frame::add_region`, `heap::self_test()`, `kor_mmu::page_table_init()`, `page_table_self_test()` (4K + 2M map/translate round-trip).
+8. Timer + IRQ on this CPU; print `Hello, world!` and cmdline.
+9. `probe_devices()` (FDT virtio-mmio + optional PCI-ECAM on non-x86; PCI port-I/O on x86_64).
+10. `kor_arch::boot_secondaries()`.
+11. (riscv64/x86_64) if `cmdline::has_flag("bench")` → `bench::run()` then spin.
+12. `ext2_test::ext2_test()`.
+13. `kor_sched::init()`; spawn demo tasks (A/B/C/D, producer/consumer via `Channel`, blkio); `kor_sched::idle_loop()`.
 
 Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` → per-CPU `ic.init()` → `timer_init` + `irq_enable` → `wait_for_interrupt` until `kor_sched::is_ready()` → `init_this_cpu()` → `idle_loop()`.
 

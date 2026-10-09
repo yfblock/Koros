@@ -12,7 +12,7 @@ const LSR_DR: u8 = 1 << 0; // Data Ready
 
 /// Write one byte to an MMIO-mapped NS16550A at `base`.
 pub fn putchar_mmio(base: usize, c: u8) {
-    let p = kor::arch::phys_to_virt(base) as *mut u8;
+    let p = crate::phys_to_virt(base) as *mut u8;
     // SAFETY: `base` is the console UART MMIO region from the platform config.
     unsafe {
         while p.add(LSR).read_volatile() & LSR_THRE == 0 {}
@@ -23,7 +23,7 @@ pub fn putchar_mmio(base: usize, c: u8) {
 /// Read one byte from an MMIO-mapped NS16550A at `base`.
 /// Returns `None` if no data is available (non-blocking).
 pub fn getchar_mmio(base: usize) -> Option<u8> {
-    let p = kor::arch::phys_to_virt(base) as *mut u8;
+    let p = crate::phys_to_virt(base) as *mut u8;
     // SAFETY: `base` is the console UART MMIO region from the platform config.
     unsafe {
         if p.add(LSR).read_volatile() & LSR_DR != 0 {

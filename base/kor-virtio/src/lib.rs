@@ -27,7 +27,7 @@ pub struct KorHal;
 unsafe impl Hal for KorHal {
     fn dma_alloc(pages: usize, _direction: BufferDirection) -> (PhysAddr, NonNull<u8>) {
         let physical = kor::frame::alloc_frames(pages).expect("virtio dma_alloc: out of frames");
-        let virtual_address = kor::arch::phys_to_virt(physical);
+        let virtual_address = kor_arch::phys_to_virt(physical);
         // SAFETY: the allocator returned `pages` contiguous, exclusively owned
         // frames and the architecture direct map covers those frames.
         unsafe {
@@ -45,13 +45,13 @@ unsafe impl Hal for KorHal {
     }
 
     unsafe fn mmio_phys_to_virt(paddr: PhysAddr, _size: usize) -> NonNull<u8> {
-        NonNull::new(kor::arch::phys_to_virt(paddr as usize) as *mut u8)
+        NonNull::new(kor_arch::phys_to_virt(paddr as usize) as *mut u8)
             .expect("direct map returned null")
     }
 
     unsafe fn share(buffer: NonNull<[u8]>, _direction: BufferDirection) -> PhysAddr {
         let virtual_address = buffer.as_ptr() as *mut u8 as usize;
-        kor::arch::virt_to_phys(virtual_address) as PhysAddr
+        kor_arch::virt_to_phys(virtual_address) as PhysAddr
     }
 
     unsafe fn unshare(_paddr: PhysAddr, _buffer: NonNull<[u8]>, _direction: BufferDirection) {}
@@ -83,11 +83,11 @@ impl<T: Transport + 'static> BlockDevice for VirtioBlock<T> {
     fn flush(&self) -> Result<(), BlockError> {
         if self.use_irq() {
             let _operation = self.op_lock.lock();
-            return kor::irq::without(|| {
+            return kor_arch::irq_without(|| {
                 self.inner.lock().flush().map_err(|_| BlockError::IoError)
             });
         }
-        kor::irq::without(|| self.inner.lock().flush().map_err(|_| BlockError::IoError))
+        kor_arch::irq_without(|| self.inner.lock().flush().map_err(|_| BlockError::IoError))
     }
 
     fn block_size(&self) -> usize {
@@ -102,7 +102,7 @@ impl<T: Transport + 'static> BlockDevice for VirtioBlock<T> {
         if self.use_irq() {
             return self.read_irq(start_block, buffer);
         }
-        kor::irq::without(|| {
+        kor_arch::irq_without(|| {
             self.inner
                 .lock()
                 .read_blocks(start_block, buffer)
@@ -114,7 +114,7 @@ impl<T: Transport + 'static> BlockDevice for VirtioBlock<T> {
         if self.use_irq() {
             return self.write_irq(start_block, buffer);
         }
-        kor::irq::without(|| {
+        kor_arch::irq_without(|| {
             self.inner
                 .lock()
                 .write_blocks(start_block, buffer)
@@ -143,7 +143,7 @@ impl<T: Transport> VirtioBlock<T> {
         let _operation = self.op_lock.lock();
         let mut request = BlkReq::default();
         let mut response = BlkResp::default();
-        let token = kor::irq::without(|| {
+        let token = kor_arch::irq_without(|| {
             // SAFETY: request, buffer, and response remain live and untouched
             // until the matching completion call below.
             unsafe {
@@ -155,7 +155,7 @@ impl<T: Transport> VirtioBlock<T> {
         .map_err(|_| BlockError::IoError)?;
         loop {
             self.completion.wait();
-            let completed = kor::irq::without(|| {
+            let completed = kor_arch::irq_without(|| {
                 let mut block = self.inner.lock();
                 if block.peek_used() == Some(token) {
                     // SAFETY: these are the buffers supplied to the matching
@@ -177,7 +177,7 @@ impl<T: Transport> VirtioBlock<T> {
         let _operation = self.op_lock.lock();
         let mut request = BlkReq::default();
         let mut response = BlkResp::default();
-        let token = kor::irq::without(|| {
+        let token = kor_arch::irq_without(|| {
             // SAFETY: request, buffer, and response remain live and untouched
             // until the matching completion call below.
             unsafe {
@@ -189,7 +189,7 @@ impl<T: Transport> VirtioBlock<T> {
         .map_err(|_| BlockError::IoError)?;
         loop {
             self.completion.wait();
-            let completed = kor::irq::without(|| {
+            let completed = kor_arch::irq_without(|| {
                 let mut block = self.inner.lock();
                 if block.peek_used() == Some(token) {
                     // SAFETY: these are the buffers supplied to the matching
@@ -266,7 +266,7 @@ pub trait InterruptBlockDevice: BlockDevice {
 
 impl<T: Transport + 'static> InterruptBlockDevice for VirtioBlock<T> {
     fn handle_interrupt(&self) {
-        kor::irq::without(|| {
+        kor_arch::irq_without(|| {
             self.inner.lock().ack_interrupt();
         });
         self.completion.post();
@@ -319,7 +319,7 @@ impl kor::driver::DeviceDriver for VirtioMmioDriver {
         use virtio_drivers::transport::mmio::{MmioTransport, VirtIOHeader};
         use virtio_drivers::transport::{DeviceType, Transport};
 
-        let header = NonNull::new(kor::arch::phys_to_virt(device.reg_base) as *mut VirtIOHeader)
+        let header = NonNull::new(kor_arch::phys_to_virt(device.reg_base) as *mut VirtIOHeader)
             .ok_or(kor::driver::DriverError::NoResource)?;
         // SAFETY: the device-tree register range is mapped for the kernel
         // lifetime and points to a VirtIO MMIO register block.
@@ -413,7 +413,7 @@ pub fn discover_pci_ecam_blk(
     use virtio_drivers::transport::pci::{PciTransport, virtio_device_type};
 
     const ROOT_BUS: u8 = 0;
-    let ecam_virtual = kor::arch::phys_to_virt(ecam_base);
+    let ecam_virtual = kor_arch::phys_to_virt(ecam_base);
     kor::println!(
         "virtio-drivers: scanning PCIe ECAM at {:#x} for virtio-blk...",
         ecam_base

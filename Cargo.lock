@@ -136,6 +136,7 @@ name = "kor-alloc"
 version = "0.1.0"
 dependencies = [
  "kor",
+ "kor-arch",
  "spin",
 ]
 
@@ -189,6 +190,7 @@ version = "0.1.0"
 dependencies = [
  "kor",
  "kor-alloc",
+ "kor-arch",
  "kor-mmu",
  "spin",
 ]
@@ -198,6 +200,7 @@ name = "kor-virtio"
 version = "0.1.0"
 dependencies = [
  "kor",
+ "kor-arch",
  "kor-sched",
  "spin",
  "virtio-drivers",

@@ -1,4 +1,4 @@
-//! Physical / virtual Physical / virtual address helpers (used by page-table code in `kor-arch`).
+//! Physical / virtual address helpers (used by page-table code).
 
 /// Physical address (can be used before/without a direct map).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,25 +15,16 @@ impl PhysAddr {
         self.0
     }
 
-    /// View direct-mapped physical memory as a mutable slice.
+    /// View this page at an already-translated virtual address.
     ///
     /// # Safety
-    /// The caller must own the addressed memory for the returned lifetime,
-    /// ensure it is valid for `len` elements of `T`, and ensure no aliases
-    /// (mutable or immutable) exist while the slice is used.
+    /// `va` must be the correct kernel VA for this physical page, the page
+    /// must be valid for `len` elements of `T`, and access must be
+    /// serialized (no aliases while the slice is live).
     #[inline]
-    pub unsafe fn page_slice_mut<T>(self, len: usize) -> &'static mut [T] {
-        let va = crate::arch::phys_to_virt(self.0);
+    pub unsafe fn page_slice_at_mut<T>(self, va: usize, len: usize) -> &'static mut [T] {
+        // SAFETY: caller guarantees the VA translation and exclusivity.
         unsafe { core::slice::from_raw_parts_mut(va as *mut T, len) }
-    }
-
-    /// Zero one owned physical page through the direct map.
-    ///
-    /// # Safety
-    /// The caller must have exclusive ownership of a writable 4 KiB page.
-    #[inline]
-    pub unsafe fn clear_page(self) {
-        unsafe { self.page_slice_mut::<u8>(4096) }.fill(0);
     }
 }
 

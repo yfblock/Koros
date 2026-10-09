@@ -224,7 +224,7 @@ pub fn exit_current(code: i32) -> ! {
             }
             if let Some(paddr) = kor_mmu::translate(clear_child_tid) {
                 unsafe {
-                    *(kor::arch::current().phys_to_virt(paddr) as *mut u32) = 0;
+                    *(kor_arch::phys_to_virt(paddr) as *mut u32) = 0;
                 }
             }
         }

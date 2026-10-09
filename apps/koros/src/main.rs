@@ -30,7 +30,7 @@ struct KernelTrapCallbacks;
 impl kor::TrapCallbacks for KernelTrapCallbacks {
     fn on_timer(&self) {
         kor::time::increment_tick();
-        kor::arch::current().handle_tick();
+        kor_arch::handle_tick();
         kor_sched::timer_tick();
         kor_sched::preempt();
     }
@@ -47,8 +47,6 @@ extern "C" fn kernel_main() -> ! {
     kor::install_console(kor_arch::console());
     // 2. Platform config (firmware region, dtb, pci — read back by mm/driver probe).
     config::init(arch::platform_config());
-    // 3. Arch provider.
-    kor::install(kor_arch::provider());
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).
     let ic = kor_arch::interrupt_controller();
     kor::install_controller(ic);
@@ -63,13 +61,13 @@ extern "C" fn kernel_main() -> ! {
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
     // 7. Trap vectors.
-    kor::arch::current().trap_init();
+    kor_arch::trap_init();
     // 8. Memory init: capture cmdline, detect regions, clip the kernel image,
     //    feed the frame allocator, self-test, then dynamic page tables.
-    kor::cmdline::init_from(kor::arch::current().boot_cmdline().unwrap_or_default());
+    kor::cmdline::init_from(kor_arch::boot_cmdline().unwrap_or_default());
     let mut collected = kor::regions::RegionCollector::new();
-    kor::arch::current().detect_memory_regions(&mut |start, end| collected.add(start, end));
-    let (ks, ke) = kor::kernel_phys_range();
+    kor_arch::detect_memory_regions(&mut |start, end| collected.add(start, end));
+    let (ks, ke) = kor_arch::kernel_phys_range();
     let ks = kor::frame::PAGE_SIZE * (ks / kor::frame::PAGE_SIZE); // align-down
     let ke = ke.next_multiple_of(kor::frame::PAGE_SIZE); // align-up
     let hole_start = match config::firmware_phys_start() {
@@ -90,8 +88,8 @@ extern "C" fn kernel_main() -> ! {
         mmu_test::run();
     }
     // 9. Timer + interrupts on this CPU.
-    kor::arch::current().timer_init();
-    kor::arch::current().irq_enable();
+    kor_arch::timer_init();
+    kor_arch::irq_enable();
 
     kor::println!("Hello, world!");
     kor::println!("cmdline: {:?}", cmdline::raw());
@@ -100,11 +98,11 @@ extern "C" fn kernel_main() -> ! {
     probe_devices();
 
     // 11. Bring up the other CPUs.
-    let online = kor::smp::boot_secondaries();
+    let online = kor_arch::boot_secondaries();
     kor::println!(
         "SMP: {} CPU(s) online (boot cpu {})",
         online,
-        kor::arch::current().cpu_id()
+        kor_arch::cpu_id()
     );
 
     // `bench` on the command line runs the storage benchmark instead of the
@@ -122,7 +120,7 @@ extern "C" fn kernel_main() -> ! {
     // `shutdown` on the command line powers off once the self-checks pass.
     if cmdline::has_flag("shutdown") {
         kor::println!("powering off...");
-        kor::arch::current().shutdown();
+        kor_arch::shutdown();
     }
 
     // 12. Scheduler demo tasks, then become the idle task.
@@ -174,17 +172,17 @@ fn page_table_self_test() {
 /// Secondary-CPU entry, called from the `kor-arch` secondary boot stub.
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(cpu_id: usize) -> ! {
-    kor::arch::current().trap_init();
+    kor_arch::trap_init();
     kor::smp::register_online();
     kor::println!("cpu {} online", cpu_id);
     // Per-CPU interrupt controller init (GIC CPU interface on aarch64).
     if let Some(ic) = kor::controller() {
         ic.init();
     }
-    kor::arch::current().timer_init();
-    kor::arch::current().irq_enable();
+    kor_arch::timer_init();
+    kor_arch::irq_enable();
     while !kor_sched::is_ready() {
-        kor::arch::current().wait_for_interrupt();
+        kor_arch::wait_for_interrupt();
     }
     kor_sched::init_this_cpu();
     kor_sched::idle_loop();
@@ -208,11 +206,7 @@ fn probe_devices() {
     // firmware-passed register captured at boot.
     let fdt = {
         let c = config::config_dtb();
-        if c != 0 {
-            c
-        } else {
-            kor::arch::current().dtb_ptr()
-        }
+        if c != 0 { c } else { kor_arch::dtb_ptr() }
     };
     probe_fdt(fdt, DRIVERS);
 
@@ -240,7 +234,7 @@ fn demo_blkio() {
         match dev.read_block(id, &mut buf) {
             Ok(()) => kor::println!(
                 "[blkio cpu{}] read block {} ok (byte0={:#04x})",
-                kor::arch::current().cpu_id(),
+                kor_arch::cpu_id(),
                 id,
                 buf[0]
             ),
@@ -257,11 +251,7 @@ fn demo_producer() {
     for i in 0..5 {
         kor_sched::sleep_ms(150);
         DEMO_CHAN.send(i * 10);
-        kor::println!(
-            "[producer cpu{}] sent {}",
-            kor::arch::current().cpu_id(),
-            i * 10
-        );
+        kor::println!("[producer cpu{}] sent {}", kor_arch::cpu_id(), i * 10);
     }
 }
 
@@ -272,7 +262,7 @@ fn demo_consumer() {
         *total += v;
         kor::println!(
             "[consumer cpu{}] recv {} (total {})",
-            kor::arch::current().cpu_id(),
+            kor_arch::cpu_id(),
             v,
             *total
         );
@@ -290,11 +280,7 @@ fn busy_work() {
 fn demo_task_c() {
     for round in 0..6 {
         busy_work();
-        kor::println!(
-            "[task C cpu{}] round {}",
-            kor::arch::current().cpu_id(),
-            round
-        );
+        kor::println!("[task C cpu{}] round {}", kor_arch::cpu_id(), round);
     }
     kor::println!("[task C] done");
 }
@@ -302,22 +288,14 @@ fn demo_task_c() {
 fn demo_task_d() {
     for round in 0..6 {
         busy_work();
-        kor::println!(
-            "[task D cpu{}] round {}",
-            kor::arch::current().cpu_id(),
-            round
-        );
+        kor::println!("[task D cpu{}] round {}", kor_arch::cpu_id(), round);
     }
     kor::println!("[task D] done");
 }
 
 fn demo_task_a() {
     for i in 0..5 {
-        kor::println!(
-            "[task A cpu{}] iteration {}",
-            kor::arch::current().cpu_id(),
-            i
-        );
+        kor::println!("[task A cpu{}] iteration {}", kor_arch::cpu_id(), i);
         kor_sched::sleep_ms(200);
     }
     kor::println!("[task A] done");
@@ -325,7 +303,7 @@ fn demo_task_a() {
 
 fn demo_task_b() {
     for i in 0..8 {
-        kor::println!("[task B cpu{}] tick {}", kor::arch::current().cpu_id(), i);
+        kor::println!("[task B cpu{}] tick {}", kor_arch::cpu_id(), i);
         kor_sched::yield_now();
         kor_sched::sleep_ms(120);
     }

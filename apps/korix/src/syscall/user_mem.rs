@@ -21,7 +21,7 @@ fn current_user_phys(address: usize, write: bool) -> Option<usize> {
 /// Translate one validated user byte for legacy single-byte users.
 pub(super) fn kernel_address(address: usize) -> usize {
     current_user_phys(address, false)
-        .map(kor::arch::phys_to_virt)
+        .map(kor_arch::phys_to_virt)
         .unwrap_or(0)
 }
 
@@ -50,7 +50,7 @@ pub(super) fn copy_from(address: usize, destination: &mut [u8]) -> Option<()> {
         // writable bytes and does not overlap physical user memory.
         unsafe {
             core::ptr::copy_nonoverlapping(
-                kor::arch::current().phys_to_virt(physical) as *const u8,
+                kor_arch::phys_to_virt(physical) as *const u8,
                 destination.as_mut_ptr().add(copied),
                 chunk,
             );
@@ -72,7 +72,7 @@ pub(super) fn copy_to(address: usize, source: &[u8]) -> Option<()> {
         unsafe {
             core::ptr::copy_nonoverlapping(
                 source.as_ptr().add(copied),
-                kor::arch::current().phys_to_virt(physical) as *mut u8,
+                kor_arch::phys_to_virt(physical) as *mut u8,
                 chunk,
             );
         }

@@ -38,7 +38,7 @@ pub fn run() {
 fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
     use kor::FileType;
 
-    let timebase_hz = kor::arch::current().timer_hz();
+    let timebase_hz = kor_arch::timer_hz();
 
     let driver = match kor_fs::find_filesystem("ext2") {
         Some(d) => d,
@@ -73,7 +73,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         }
     };
     let buf = alloc::vec![0xCDu8; CHUNK];
-    let t0 = kor::arch::current().now_ticks();
+    let t0 = kor_arch::now_ticks();
     let mut off = 0;
     while off < BENCH_BYTES {
         if let Err(e) = file.write_at(off, &buf) {
@@ -86,7 +86,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         println!("ext2 bench SKIPPED: sync: {:?}", e);
         return;
     }
-    let write_ticks = kor::arch::current().now_ticks() - t0;
+    let write_ticks = kor_arch::now_ticks() - t0;
 
     let fs2 = match driver.mount(Some(device.clone())) {
         Ok(f) => f,
@@ -103,7 +103,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         }
     };
     let mut rb = alloc::vec![0u8; CHUNK];
-    let t2 = kor::arch::current().now_ticks();
+    let t2 = kor_arch::now_ticks();
     let mut off = 0;
     while off < BENCH_BYTES {
         match file2.read_at(off, &mut rb) {
@@ -115,7 +115,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
             }
         }
     }
-    let read_ticks = kor::arch::current().now_ticks() - t2;
+    let read_ticks = kor_arch::now_ticks() - t2;
 
     report(
         "ext2 bench",
@@ -130,7 +130,7 @@ fn ext2_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
 /// Sequential raw block-device throughput (no filesystem, no block cache).
 /// Overwrites blocks on the device, so it runs after the ext2 phase.
 fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
-    let timebase_hz = kor::arch::current().timer_hz();
+    let timebase_hz = kor_arch::timer_hz();
     let bs = device.block_size();
     let nblocks = BENCH_BYTES / bs;
     let start = 2048;
@@ -140,7 +140,7 @@ fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
     }
 
     let wbuf = alloc::vec![0xE5u8; bs];
-    let t0 = kor::arch::current().now_ticks();
+    let t0 = kor_arch::now_ticks();
     for i in 0..nblocks {
         if device.write_block(start + i, &wbuf).is_err() {
             println!("virtio bench SKIPPED: write_block @{}", start + i);
@@ -151,10 +151,10 @@ fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         println!("virtio bench SKIPPED: flush");
         return;
     }
-    let write_ticks = kor::arch::current().now_ticks() - t0;
+    let write_ticks = kor_arch::now_ticks() - t0;
 
     let mut rbuf = alloc::vec![0u8; bs];
-    let t2 = kor::arch::current().now_ticks();
+    let t2 = kor_arch::now_ticks();
     for i in 0..nblocks {
         if device.read_block(start + i, &mut rbuf).is_err() {
             println!("virtio bench SKIPPED: read_block @{}", start + i);
@@ -164,7 +164,7 @@ fn virtio_bench(device: &alloc::sync::Arc<dyn BlockDevice>) {
         // elide loads it can prove dead.
         core::hint::black_box(rbuf.as_ptr());
     }
-    let read_ticks = kor::arch::current().now_ticks() - t2;
+    let read_ticks = kor_arch::now_ticks() - t2;
 
     report(
         "virtio raw bench",

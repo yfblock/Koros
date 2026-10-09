@@ -471,9 +471,9 @@ fn build_stage2(manifest: GuestManifest) -> Stage2Root {
     let l1 = kor::frame::alloc_frame().expect("s2 L1");
     let l2_0 = kor::frame::alloc_frame().expect("s2 L2_0");
     let l2_1 = kor::frame::alloc_frame().expect("s2 L2_1");
-    let l1v = kor::arch::current().phys_to_virt(l1) as *mut u64;
-    let l2_0v = kor::arch::current().phys_to_virt(l2_0) as *mut u64;
-    let l2_1v = kor::arch::current().phys_to_virt(l2_1) as *mut u64;
+    let l1v = crate::arch::mm::phys_to_virt(l1) as *mut u64;
+    let l2_0v = crate::arch::mm::phys_to_virt(l2_0) as *mut u64;
+    let l2_1v = crate::arch::mm::phys_to_virt(l2_1) as *mut u64;
     unsafe {
         core::ptr::write_bytes(l1v.cast::<u8>(), 0, 4096);
         core::ptr::write_bytes(l2_0v.cast::<u8>(), 0, 4096);
@@ -719,7 +719,7 @@ fn handle_mmio(
                 let Some(desc_hpa) = memory.translate(desc_gpa, desc_bytes) else {
                     return false;
                 };
-                let desc_va = kor::arch::current().phys_to_virt(desc_hpa as usize) as *mut u8;
+                let desc_va = crate::arch::mm::phys_to_virt(desc_hpa as usize) as *mut u8;
                 let mut saved: alloc::vec::Vec<(u64, u64)> = alloc::vec::Vec::new();
                 for i in 0..queue_size {
                     let descriptor = unsafe { desc_va.add(i * 16) };
@@ -740,7 +740,7 @@ fn handle_mmio(
                             return false;
                         }
                         let indirect_va =
-                            kor::arch::current().phys_to_virt(host_address as usize) as *mut u8;
+                            crate::arch::mm::phys_to_virt(host_address as usize) as *mut u8;
                         for j in 0..length / 16 {
                             let indirect = unsafe { indirect_va.add(j * 16) };
                             let indirect_ptr = indirect.cast::<u64>();

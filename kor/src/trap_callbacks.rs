@@ -90,7 +90,7 @@ pub fn user_exit(code: i32) -> ! {
         hook(code)
     }
     loop {
-        crate::arch::current().wait_for_interrupt();
+        // arch wait handled by the caller (kor-arch trap path).
     }
 }
 

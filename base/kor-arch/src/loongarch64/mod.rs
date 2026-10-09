@@ -3,7 +3,6 @@ pub mod context;
 pub mod ic;
 pub mod irq;
 pub mod mm;
-pub mod provider;
 pub mod smp;
 pub mod time;
 pub mod trap;

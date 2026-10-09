@@ -41,3 +41,19 @@ pub fn init() {
 pub fn handle_tick() {
     set_timer(INTERVAL.load(Ordering::Relaxed));
 }
+
+/// Read the virtual count register.
+pub fn now_ticks() -> u64 {
+    let t: u64;
+    // SAFETY: `cntvct_el0` is a read-only count register.
+    unsafe { core::arch::asm!("mrs {}, cntvct_el0", out(reg) t) };
+    t
+}
+
+/// Counter frequency from the read-only `cntfrq_el0` register.
+pub fn timer_hz() -> u64 {
+    let f: u64;
+    // SAFETY: read-only system register.
+    unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) f) };
+    f
+}

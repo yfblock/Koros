@@ -4,7 +4,6 @@
 //! once against the 8254 PIT (channel 2, gated so it needs no interrupt), then
 //! run it periodically at [`kor::time::TICK_HZ`].
 
-use kor::arch as mm;
 use spin::Once;
 use x86_64::instructions::port::Port;
 
@@ -34,12 +33,12 @@ const PIT_CAL_COUNT: u16 = (PIT_HZ / (1000 / PIT_CAL_MS)) as u16;
 
 fn lapic_read(off: usize) -> u32 {
     // SAFETY: LAPIC MMIO is mapped in the direct map.
-    unsafe { ((mm::phys_to_virt(APIC_BASE_PHYS) + off) as *const u32).read_volatile() }
+    unsafe { ((super::mm::phys_to_virt(APIC_BASE_PHYS) + off) as *const u32).read_volatile() }
 }
 
 fn lapic_write(off: usize, val: u32) {
     // SAFETY: LAPIC MMIO is mapped in the direct map.
-    unsafe { ((mm::phys_to_virt(APIC_BASE_PHYS) + off) as *mut u32).write_volatile(val) }
+    unsafe { ((super::mm::phys_to_virt(APIC_BASE_PHYS) + off) as *mut u32).write_volatile(val) }
 }
 
 /// Busy-wait ~10 ms using PIT channel 2 (gated via port 0x61, no interrupt).
@@ -105,4 +104,34 @@ pub fn init() {
 /// Acknowledge the timer interrupt (signal end-of-interrupt to the LAPIC).
 pub fn handle_tick() {
     lapic_write(APIC_EOI, 0);
+}
+
+/// Read the time-stamp counter.
+pub fn now_ticks() -> u64 {
+    // SAFETY: `rdtsc` reads the time-stamp counter; safe in ring 0.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
+/// Calibrate the TSC against the 1.193182 MHz PIT (channel 2), gated so
+/// it needs no interrupt.
+pub fn timer_hz() -> u64 {
+    use x86_64::instructions::port::Port;
+    const PIT_HZ: u64 = 1_193_182;
+    let count: u16 = 11_932; // ≈ 10 ms
+    // SAFETY: ring-0 port I/O to the legacy PIT and control port.
+    unsafe {
+        let mut p61 = Port::<u8>::new(0x61);
+        let orig = p61.read();
+        p61.write((orig & 0xFC) | 0x01);
+        Port::<u8>::new(0x43).write(0b1011_0000);
+        Port::<u8>::new(0x42).write((count & 0xFF) as u8);
+        Port::<u8>::new(0x42).write((count >> 8) as u8);
+
+        let start = now_ticks();
+        while p61.read() & 0x20 == 0 {}
+        let end = now_ticks();
+        p61.write(orig);
+
+        (end - start).saturating_mul(PIT_HZ) / count as u64
+    }
 }

@@ -49,8 +49,8 @@ impl AddressSpace {
             let child_phys = child.map_zeroed(vaddr, page.flags)?;
             unsafe {
                 core::ptr::copy_nonoverlapping(
-                    kor::arch::current().phys_to_virt(page.phys) as *const u8,
-                    kor::arch::current().phys_to_virt(child_phys) as *mut u8,
+                    kor_arch::phys_to_virt(page.phys) as *const u8,
+                    kor_arch::phys_to_virt(child_phys) as *mut u8,
                     PAGE_SIZE,
                 );
             }
@@ -73,8 +73,8 @@ impl AddressSpace {
     }
 
     pub fn with_active<T>(&self, operation: impl FnOnce() -> T) -> T {
-        let interrupts_enabled = kor::irq::is_enabled();
-        kor::irq::disable();
+        let interrupts_enabled = kor_arch::irq_is_enabled();
+        kor_arch::irq_disable();
         let previous = kor_mmu::address_space_root();
         if previous != self.root {
             // SAFETY: same contract as `activate`.
@@ -86,7 +86,7 @@ impl AddressSpace {
             unsafe { kor_mmu::activate_address_space(previous) };
         }
         if interrupts_enabled {
-            kor::irq::enable();
+            kor_arch::irq_enable();
         }
         result
     }
@@ -160,7 +160,7 @@ impl AddressSpace {
                 Ok(()) => {
                     unsafe {
                         core::ptr::write_bytes(
-                            kor::arch::phys_to_virt(paddr) as *mut u8,
+                            kor_arch::phys_to_virt(paddr) as *mut u8,
                             0,
                             PAGE_SIZE,
                         );
@@ -240,7 +240,7 @@ impl AddressSpace {
                 }
                 unsafe {
                     core::ptr::write_bytes(
-                        kor::arch::phys_to_virt(fresh[index]) as *mut u8,
+                        kor_arch::phys_to_virt(fresh[index]) as *mut u8,
                         0,
                         PAGE_SIZE,
                     );
@@ -365,7 +365,7 @@ impl AddressSpace {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     bytes.as_ptr().add(written),
-                    kor::arch::current().phys_to_virt(paddr) as *mut u8,
+                    kor_arch::phys_to_virt(paddr) as *mut u8,
                     chunk,
                 );
             }
@@ -393,7 +393,7 @@ impl AddressSpace {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     bytes.as_ptr().add(written),
-                    kor::arch::current().phys_to_virt(paddr) as *mut u8,
+                    kor_arch::phys_to_virt(paddr) as *mut u8,
                     chunk,
                 );
             }

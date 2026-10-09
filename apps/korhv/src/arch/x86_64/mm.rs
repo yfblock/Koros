@@ -10,6 +10,7 @@ pub fn phys_to_virt(pa: usize) -> usize {
     pa + KERNEL_OFFSET
 }
 
+#[allow(dead_code)] // was consumed by the ArchProvider; kept for future NPT mapping
 pub fn virt_to_phys(va: usize) -> usize {
     va - KERNEL_OFFSET
 }

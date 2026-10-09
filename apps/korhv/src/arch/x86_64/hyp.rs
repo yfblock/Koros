@@ -139,7 +139,7 @@ impl GuestMemory {
     }
 
     fn host_ptr(&self) -> *mut u8 {
-        kor::arch::current().phys_to_virt(self.host_phys) as *mut u8
+        crate::arch::mm::phys_to_virt(self.host_phys) as *mut u8
     }
 }
 
@@ -161,9 +161,9 @@ impl NptRoot {
         let pml4 = kor::frame::alloc_frame().expect("npt pml4");
         let pdpt = kor::frame::alloc_frame().expect("npt pdpt");
         let pd = kor::frame::alloc_frame().expect("npt pd");
-        let pml4_v = kor::arch::current().phys_to_virt(pml4) as *mut u64;
-        let pdpt_v = kor::arch::current().phys_to_virt(pdpt) as *mut u64;
-        let pd_v = kor::arch::current().phys_to_virt(pd) as *mut u64;
+        let pml4_v = crate::arch::mm::phys_to_virt(pml4) as *mut u64;
+        let pdpt_v = crate::arch::mm::phys_to_virt(pdpt) as *mut u64;
+        let pd_v = crate::arch::mm::phys_to_virt(pd) as *mut u64;
         unsafe {
             core::ptr::write_bytes(pml4_v.cast::<u8>(), 0, 4096);
             core::ptr::write_bytes(pdpt_v.cast::<u8>(), 0, 4096);
@@ -299,8 +299,6 @@ unsafe extern "C" {
 
 /// Create the VM, run its vCPU, handle hypercall exits until HCALL_EXIT.
 pub fn run() {
-    let arch = kor::arch::current();
-
     // 1. Guest RAM is an owned 2 MiB extent; the guest sees it at GPA zero.
     let guest_memory = GuestMemory::allocate();
     let guest_v = guest_memory.host_ptr();
@@ -320,7 +318,7 @@ pub fn run() {
 
     // 4. VMCB (one 4 KiB frame).
     let vmcb_phys = kor::frame::alloc_frame().expect("vmcb");
-    let vmcb = arch.phys_to_virt(vmcb_phys) as *mut u8;
+    let vmcb = crate::arch::mm::phys_to_virt(vmcb_phys) as *mut u8;
     unsafe {
         // Zero the whole VMCB.
         core::ptr::write_bytes(vmcb, 0, 4096);

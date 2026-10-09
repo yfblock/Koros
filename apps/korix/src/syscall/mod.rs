@@ -425,7 +425,7 @@ fn ensure_signal_restorer() -> Option<usize> {
             kor::frame::free_frames(physical, 1);
             return None;
         }
-        let kernel = kor::arch::phys_to_virt(physical);
+        let kernel = kor_arch::phys_to_virt(physical);
         unsafe {
             core::ptr::write_bytes(kernel as *mut u8, 0, 0x1000);
             core::ptr::copy_nonoverlapping(
@@ -1419,7 +1419,7 @@ fn sys_clone(args: &[usize]) -> isize {
                 .and_then(|space| space.translate(args[4]))
             {
                 unsafe {
-                    *(kor::arch::current().phys_to_virt(paddr) as *mut u32) = pid as u32;
+                    *(kor_arch::phys_to_virt(paddr) as *mut u32) = pid as u32;
                 }
             }
         }
@@ -2947,15 +2947,13 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
 }
 
 fn realtime_seconds() -> u64 {
-    let arch = kor::arch::current();
-    let hz = arch.timer_hz().max(1);
-    arch.now_ticks() / hz
+    let hz = kor_arch::timer_hz().max(1);
+    kor_arch::now_ticks() / hz
 }
 
 fn sys_clock_gettime(timespec: usize) -> isize {
-    let arch = kor::arch::current();
-    let hz = arch.timer_hz().max(1);
-    let ticks = arch.now_ticks();
+    let hz = kor_arch::timer_hz().max(1);
+    let ticks = kor_arch::now_ticks();
     let value = [
         (ticks / hz) as i64,
         ((ticks % hz) * 1_000_000_000 / hz) as i64,
@@ -2971,9 +2969,8 @@ fn sys_gettimeofday(timeval: usize) -> isize {
     if timeval == 0 {
         return 0;
     }
-    let arch = kor::arch::current();
-    let hz = arch.timer_hz().max(1);
-    let ticks = arch.now_ticks();
+    let hz = kor_arch::timer_hz().max(1);
+    let ticks = kor_arch::now_ticks();
     let value = [(ticks / hz) as i64, ((ticks % hz) * 1_000_000 / hz) as i64];
     if write_user(timeval, &value).is_none() {
         -14
@@ -3007,7 +3004,7 @@ fn sys_reboot(magic: usize, _magic2: usize, cmd: usize) -> isize {
     match cmd as u32 {
         RB_HALT_SYSTEM | RB_POWER_OFF | RB_AUTOBOOT => {
             kor::println!("[kernel] reboot: powering off");
-            kor::arch::current().shutdown();
+            kor_arch::shutdown();
         }
         _ => -22, // -EINVAL
     }
@@ -3026,9 +3023,9 @@ fn sys_nanosleep(request: usize) -> isize {
         if kor_sched::is_ready() {
             kor_sched::sleep_ms(millis);
         } else {
-            let start = kor::arch::current().now_ticks();
-            let wait = millis * kor::arch::current().timer_hz() / 1000;
-            while kor::arch::current().now_ticks().wrapping_sub(start) < wait {
+            let start = kor_arch::now_ticks();
+            let wait = millis * kor_arch::timer_hz() / 1000;
+            while kor_arch::now_ticks().wrapping_sub(start) < wait {
                 core::hint::spin_loop();
             }
         }

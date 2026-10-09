@@ -114,7 +114,7 @@ fn sbi_hart_start(hartid: usize, start_addr: usize, opaque: usize) -> isize {
 /// successfully requested to start.
 pub fn start_secondaries() -> usize {
     let boot = cpu_id();
-    let start_phys = kor::arch::virt_to_phys(_secondary_start as *const () as usize);
+    let start_phys = super::mm::virt_to_phys(_secondary_start as *const () as usize);
     let mut started = 0;
     for hart in 0..MAX_CPUS {
         if hart == boot {
