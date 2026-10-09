@@ -4,7 +4,9 @@
 //! virtio-blk runs in polling mode.  The stub lets the shared virtio path
 //! compile uniformly and no-ops at runtime.
 
-use kor::{InterruptController, TrapCallbacks};
+use kor::TrapCallbacks;
+
+use crate::InterruptController;
 
 /// loongarch64 stub interrupt controller.
 pub struct StubController;

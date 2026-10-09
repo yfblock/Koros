@@ -27,7 +27,7 @@ static HEAP: kor_alloc::LockedSlabHeap = kor_alloc::LockedSlabHeap::empty();
 struct KernelTrapCallbacks;
 impl kor::TrapCallbacks for KernelTrapCallbacks {
     fn on_timer(&self) {
-        kor::time::increment_tick();
+        kor_arch::increment_tick();
         kor_arch::handle_tick();
         if kor_sched::is_ready() {
             kor_sched::timer_tick();
@@ -49,7 +49,7 @@ extern "C" fn kernel_main() -> ! {
     kor::install_console(kor_arch::console());
     config::init(arch::platform_config());
     let ic = kor_arch::interrupt_controller();
-    kor::install_controller(ic);
+    kor_arch::install_controller(ic);
     ic.init();
     kor::install_callbacks(&TRAP_CB);
     kor::trap_callbacks::install_user_trap_hooks(

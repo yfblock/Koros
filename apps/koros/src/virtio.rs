@@ -27,7 +27,7 @@ use kor_virtio::InterruptBlockDevice;
     target_arch = "loongarch64"
 ))]
 fn register_mmio_block(device: &DtDevice, block: Arc<dyn InterruptBlockDevice>) {
-    if let Some(irq) = kor::enable_device_irq(&device.interrupts) {
+    if let Some(irq) = kor_arch::enable_device_irq(&device.interrupts) {
         let handler = Arc::clone(&block);
         crate::registries::IRQS.register(
             irq,

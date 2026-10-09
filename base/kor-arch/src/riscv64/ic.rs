@@ -2,10 +2,12 @@
 //!
 //! The PLIC has no global one-shot init (priority/enables are per-source,
 //! SEIE is per-hart), so [`PlicController::init`] is a no-op; device IRQs are
-//! armed one-by-one via [`enable_device_irq`] and dispatched by
+//! armed one-by-one via [`crate::enable_device_irq`] and dispatched by
 //! [`dispatch_external`], which claims/ completes each pending source.
 
-use kor::{InterruptController, TrapCallbacks};
+use kor::TrapCallbacks;
+
+use crate::InterruptController;
 
 /// The riscv64 PLIC interrupt controller — a zero-sized marker.
 pub struct PlicController;

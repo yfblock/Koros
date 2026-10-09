@@ -5,7 +5,9 @@
 //! PPI to [`TrapCallbacks::on_timer`] and everything else to
 //! [`TrapCallbacks::on_external`], then signals EOI.
 
-use kor::{InterruptController, TrapCallbacks};
+use kor::TrapCallbacks;
+
+use crate::InterruptController;
 
 /// The aarch64 GICv2 interrupt controller — a zero-sized marker.
 pub struct GicController;

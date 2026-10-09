@@ -29,7 +29,7 @@ use kor::config;
 struct KernelTrapCallbacks;
 impl kor::TrapCallbacks for KernelTrapCallbacks {
     fn on_timer(&self) {
-        kor::time::increment_tick();
+        kor_arch::increment_tick();
         kor_arch::handle_tick();
         kor_sched::timer_tick();
         kor_sched::preempt();
@@ -49,7 +49,7 @@ extern "C" fn kernel_main() -> ! {
     config::init(arch::platform_config());
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).
     let ic = kor_arch::interrupt_controller();
-    kor::install_controller(ic);
+    kor_arch::install_controller(ic);
     ic.init();
     // 5. Trap callbacks (timer tick + external-IRQ dispatch).
     kor::install_callbacks(&TRAP_CB);
@@ -176,7 +176,7 @@ extern "C" fn secondary_entry(cpu_id: usize) -> ! {
     kor::smp::register_online();
     kor::println!("cpu {} online", cpu_id);
     // Per-CPU interrupt controller init (GIC CPU interface on aarch64).
-    if let Some(ic) = kor::controller() {
+    if let Some(ic) = kor_arch::controller() {
         ic.init();
     }
     kor_arch::timer_init();
@@ -271,8 +271,8 @@ fn demo_consumer() {
 }
 
 fn busy_work() {
-    let start = kor::time::ticks();
-    while kor::time::ticks() < start + 15 {
+    let start = kor_arch::ticks();
+    while kor_arch::ticks() < start + 15 {
         core::hint::spin_loop();
     }
 }

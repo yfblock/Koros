@@ -6,7 +6,9 @@
 //! polling mode on this architecture.  The stub lets the shared virtio path
 //! compile uniformly and no-ops at runtime.
 
-use kor::{InterruptController, TrapCallbacks};
+use kor::TrapCallbacks;
+
+use crate::InterruptController;
 
 /// x86_64 stub interrupt controller.
 pub struct StubController;

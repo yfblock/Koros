@@ -5,7 +5,7 @@ use core::arch::asm;
 /// QEMU `virt` timebase frequency (10 MHz).
 const TIMER_FREQ: u64 = 10_000_000;
 /// Timer period in ticks of the `time` CSR.
-const INTERVAL: u64 = TIMER_FREQ / kor::time::TICK_HZ;
+const INTERVAL: u64 = TIMER_FREQ / crate::TICK_HZ;
 
 // SBI TIME extension.
 const SBI_EXT_TIME: usize = 0x5449_4D45;

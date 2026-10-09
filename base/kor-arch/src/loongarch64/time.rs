@@ -52,7 +52,7 @@ fn csr_read(csr: usize) -> usize {
 /// Program the periodic timer and enable the timer interrupt *source*.
 /// Global interrupts are enabled separately via [`kor::irq::enable`].
 pub fn init() {
-    let interval = (timer_freq() / kor::time::TICK_HZ) as usize & !0x3;
+    let interval = (timer_freq() / crate::TICK_HZ) as usize & !0x3;
     csr_write(CSR_TCFG, interval | TCFG_EN | TCFG_PERIODIC);
     csr_write(CSR_ECFG, csr_read(CSR_ECFG) | ECFG_TI);
 }

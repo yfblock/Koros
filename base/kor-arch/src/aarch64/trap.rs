@@ -119,7 +119,7 @@ unsafe extern "C" {
 extern "C" fn handle_trap(tf: &mut TrapFrame, kind: u64, source: u64) {
     // IRQ (kind 1): dispatch through the interrupt controller.
     if kind == 1 {
-        kor::dispatch_external();
+        crate::dispatch_external();
         return;
     }
 

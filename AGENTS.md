@@ -5,7 +5,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv6
 ## Key Facts
 
 - **Twelve crates** (`Cargo.toml`, `resolver = "2"`):
-  - `kor/` (`kor`) — bottom abstraction layer: traits + registries, no arch code, no subsystem impls — **one exception: `kor::frame`**, the allocation-free physical frame allocator (every boot feeds it via `regions`; it has no dependencies of its own). Also defines `InterruptController`, `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, plus boot-time helpers (FDT, regions, cmdline, config, SMP/time).
+  - `kor/` (`kor`) — bottom abstraction layer: traits + registries, no arch code, no subsystem impls — **one exception: `kor::frame`**, the allocation-free physical frame allocator (every boot feeds it via `regions`; it has no dependencies of its own). Also defines `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, plus boot-time helpers (FDT, regions, cmdline, config, SMP).
   - `base/kor-alloc/` (`kor_alloc`) — slab kernel heap (`LockedSlabHeap`, the `#[global_allocator]`).
   - `filesystems/kor-fs/` (`kor_fs`) — VFS infrastructure: block cache, mount table, path resolver, fd, and the **filesystem-driver registry**. No concrete filesystems.
   - `filesystems/kor-ext2/` (`kor_ext2`) — ext2 (read/write, symlink, hard link, truncate, rename, indirect blocks, xattr, mknod) + `Ext2Driver` singleton.
@@ -59,8 +59,8 @@ Kernel virtual base addresses (high-half kernel; loongarch64 is direct-map, offs
 
 This is the central design decision. **Shared crates contain no `#[cfg(target_arch)]`** (narrow exceptions: the `cfg_select!` selectors of `kor-arch/src/lib.rs` and `kor-mmu/src/arch.rs`, plus a few `#[cfg]` guards in korhv, which keeps its own arch layer). Instead:
 
-- `kor` defines only *arch-neutral* registries that need runtime polymorphism: `InterruptController`, `Console`, `TrapCallbacks` (`spin::Once`-backed `install_controller`/`install_console`/`install_callbacks`). There is **no `ArchProvider` trait and no provider registry** — it was removed.
-- `kor-arch` is the single arch seam. Each architecture lives in `base/kor-arch/src/<arch>/` with an identical module surface (`boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`). The crate root (`base/kor-arch/src/lib.rs`) uses `cfg_select!` to re-export the active arch's functions as crate-root free functions: `kor_arch::phys_to_virt/virt_to_phys/kernel_offset/kernel_phys_range`, `kor_arch::cpu_id/wait_for_interrupt/start_secondaries/shutdown`, `kor_arch::trap_init/timer_init/handle_tick`, `kor_arch::irq_enable/irq_disable/irq_is_enabled/irq_without`, `kor_arch::now_ticks/timer_hz`, and the task-context trio `task_context_zero/task_context_init/unsafe context_switch`.
+- `kor` defines only *arch-neutral* registries that need runtime polymorphism: `Console` and `TrapCallbacks` (`spin::Once`-backed `install_console`/`install_callbacks` + the syscall-handler slot). There is **no `ArchProvider` trait and no provider registry** — it was removed.
+- `kor-arch` is the single arch seam. It also owns the `InterruptController` trait and its `spin::Once` registry (`kor_arch::install_controller`/`controller`/`enable_device_irq`/`dispatch_external`, in `src/interrupt.rs`), implemented per arch by `src/<arch>/ic.rs` (PLIC/GIC/polling stub). Each architecture lives in `base/kor-arch/src/<arch>/` with an identical module surface (`boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`). The crate root (`base/kor-arch/src/lib.rs`) uses `cfg_select!` to re-export the active arch's functions as crate-root free functions: `kor_arch::phys_to_virt/virt_to_phys/kernel_offset/kernel_phys_range`, `kor_arch::cpu_id/wait_for_interrupt/start_secondaries/shutdown`, `kor_arch::trap_init/timer_init/handle_tick`, `kor_arch::irq_enable/irq_disable/irq_is_enabled/irq_without`, `kor_arch::now_ticks/timer_hz`, the tick counter `kor_arch::TICK_HZ/increment_tick/ticks`, and the task-context trio `task_context_zero/task_context_init/unsafe context_switch`.
 - All downstream code (kor-alloc, kor-sched, kor-virtio, koros, korix) calls these static functions directly and lists `kor-arch` as a dependency. `kor-mmu` avoids a kor-mmu→kor-arch cycle by keeping its own per-arch `phys_to_virt`/`virt_to_phys`/`zero_page` in each `src/arch/<arch>.rs` back-end (kor-arch depends on kor-mmu, not the reverse). korhv does not depend on kor-arch at all; it has its own `apps/korhv/src/arch/{x86_64,aarch64}/` modules with the same shape.
 - If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same function names), then re-export through the crate-root `cfg_select!` — never as `#[cfg]` branches in shared code.
 
@@ -72,10 +72,9 @@ Each arch's `context.rs` defines its own typed `TaskContext` (`#[repr(C, align(1
 kor/
   src/lib.rs              — module decls, re-exports, kernel_phys_range()
   src/addr.rs             — PhysAddr/VirtAddr newtypes
-  src/interrupt.rs        — InterruptController trait + registry
-  src/trap_callbacks.rs   — TrapCallbacks trait + registry; on_timer/dispatch_external
+  src/trap_callbacks.rs   — TrapCallbacks trait + registry; on_timer, syscall-handler slot
   src/console.rs          — Console trait + registry; print!/println! macros
-  src/irq.rs / time.rs / smp.rs / cmdline.rs
+  src/smp.rs / cmdline.rs
   src/config.rs           — PlatformConfig (console, firmware_phys_start, dtb, PciEcam)
   src/mapping.rs          — MappingFlags, MapSize, MapError
   src/block.rs            — BlockDevice trait + BlockError
@@ -104,9 +103,10 @@ base/kor-sched/src/
   lib.rs                  — Task/PerCpu, scheduler core, WaitQueue/Semaphore/Mutex2
   sync.rs                 — guard-based Mutex<T>, unbounded Channel<T>
 base/kor-arch/src/
-  lib.rs                  — cfg_select! static facade (phys_to_virt, cpu_id, trap_init, ...) + interrupt_controller()/console()
+  interrupt.rs           — InterruptController trait + install_controller/controller/enable_device_irq registry
+  lib.rs                  — cfg_select! static facade (phys_to_virt, cpu_id, trap_init, tick counter, ...) + interrupt_controller()/console()
   uart/{mod,ns16550a,pl011}.rs
-  <arch>/{mod,boot,trap,mm,smp,time,irq,context,ic,console,provider}.rs   (page_table/mmu_format moved to base/kor-mmu/src/arch/)
+  <arch>/{mod,boot,trap,mm,smp,time,irq,context,ic,console}.rs   (page_table/mmu_format moved to base/kor-mmu/src/arch/)
     + riscv64: boot.S, trap.S, plic.rs
     + x86_64:  multiboot.S, trap.S, ap_boot.S  (no boot.S, no plic/gic)
     + aarch64: boot.S, trap.S, gic.rs
@@ -140,7 +140,7 @@ Per arch (assembly in `base/kor-arch/src/<arch>/`): `_start` → **clear BSS at 
 `kernel_main` init sequence (`apps/koros/src/main.rs`):
 1. Console — `kor::install_console(kor_arch::console())`.
 2. Platform config — `config::init(platform_config())` (per-arch console type, `firmware_phys_start`, dtb, optional `PciEcam`).
-3. Interrupt controller — `install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stubs on x86_64/loongarch64).
+3. Interrupt controller — `kor_arch::install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stubs on x86_64/loongarch64).
 4. Trap callbacks — `install_callbacks(&TRAP_CB)`; `on_timer` does `increment_tick` + `arch.handle_tick` + `kor_sched::timer_tick` + `kor_sched::preempt`; `on_external(irq)` dispatches `registries::IRQS`.
 5. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region), then register filesystem drivers (`kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)` + `&kor_ramfs::RAMFS_DRIVER`) — the registry `Vec` allocates, so this must follow heap init.
 6. Trap vectors — `arch.trap_init()`.

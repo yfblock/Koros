@@ -30,7 +30,7 @@ pub fn init() {
     // controller (`GicController::init`) before this runs.
     super::gic::enable_ppi(TIMER_INTID);
 
-    let interval = cntfrq() / kor::time::TICK_HZ;
+    let interval = cntfrq() / crate::TICK_HZ;
     INTERVAL.store(interval, Ordering::Relaxed);
     set_timer(interval);
     // Global interrupts are enabled separately via `kor::irq::enable`.

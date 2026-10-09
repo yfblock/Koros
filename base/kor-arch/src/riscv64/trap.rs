@@ -183,7 +183,7 @@ extern "C" fn handle_trap(tf: &mut TrapFrame) {
         return;
     }
     if is_interrupt && code == 9 {
-        kor::dispatch_external();
+        crate::dispatch_external();
         return;
     }
 

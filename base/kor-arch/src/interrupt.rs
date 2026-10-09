@@ -2,7 +2,7 @@
 
 use spin::Once;
 
-use crate::trap_callbacks::TrapCallbacks;
+use kor::trap_callbacks::TrapCallbacks;
 
 /// Routes device interrupts (claim/enable/dispatch) for the current platform.
 ///

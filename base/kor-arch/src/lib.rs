@@ -6,6 +6,7 @@
 #![no_std]
 #![allow(bad_asm_style)]
 
+use core::sync::atomic::{AtomicU64, Ordering};
 extern crate alloc;
 
 cfg_select! {
@@ -20,6 +21,18 @@ cfg_select! {
     target_arch = "x86_64"       => { pub use self::x86_64::context::TaskContext; }
     target_arch = "aarch64"      => { pub use self::aarch64::context::TaskContext; }
     target_arch = "loongarch64" => { pub use self::loongarch64::context::TaskContext; }
+}
+
+pub mod interrupt;
+
+pub use interrupt::{InterruptController, controller, enable_device_irq, install_controller};
+
+/// Dispatch pending external IRQs through the installed controller.
+pub fn dispatch_external() {
+    let cb = kor::trap_callbacks::callbacks();
+    if let Some(ic) = interrupt::controller() {
+        ic.dispatch_external(cb);
+    }
 }
 
 pub mod boot;
@@ -93,7 +106,7 @@ pub fn enter_user(pc: usize, sp: usize) -> ! {
 // ---------------------------------------------------------------------------
 
 /// The `InterruptController` for the current target (stub on x86_64/loongarch64).
-pub fn interrupt_controller() -> &'static dyn kor::InterruptController {
+pub fn interrupt_controller() -> &'static dyn InterruptController {
     cfg_select! {
         target_arch = "riscv64"      => { &riscv64::ic::PLIC }
         target_arch = "x86_64"       => { &x86_64::ic::IC }
@@ -137,6 +150,25 @@ pub use self::aarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shut
     target_arch = "loongarch64" => { pub use self::loongarch64::{trap, irq};
 pub use self::loongarch64::time::{now_ticks, timer_hz};
 pub use self::loongarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
+}
+
+// --- Timer tick counter (was kor::time) ------------------------------------
+
+/// Timer ticks since boot (incremented by the trap-callback `on_timer`).
+static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// Timer interrupts per second (the tick rate the arch timer programs).
+pub const TICK_HZ: u64 = 100;
+
+/// Increment the tick counter (called from `TrapCallbacks::on_timer`).
+#[inline]
+pub fn increment_tick() {
+    TICKS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Ticks elapsed since boot.
+pub fn ticks() -> u64 {
+    TICKS.load(Ordering::Relaxed)
 }
 
 /// Detect free memory regions through the current architecture's firmware

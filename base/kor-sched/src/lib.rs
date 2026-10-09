@@ -351,7 +351,7 @@ pub fn yield_now() {
 
 /// Sleep the current task for at least `ms` milliseconds.
 pub fn sleep_ms(ms: u64) {
-    let wake = kor::time::ticks() + (ms * kor::time::TICK_HZ / 1000).max(1);
+    let wake = kor_arch::ticks() + (ms * kor_arch::TICK_HZ / 1000).max(1);
     kor_arch::irq_disable();
     current().wake_tick.store(wake, Ordering::Relaxed);
     schedule(TO_SLEEP, 0);
@@ -383,13 +383,13 @@ fn reap() {
     });
 }
 
-/// Timer hook (called from the arch trap handler via [`kor::time`]):
+/// Timer hook (called from the arch trap handler via `kor_arch`):
 /// wake due sleepers and count down this CPU's time slice.
 pub fn timer_tick() {
     if !is_ready() {
         return;
     }
-    let now = kor::time::ticks();
+    let now = kor_arch::ticks();
     {
         let mut sleepers = SLEEPERS.lock();
         let mut i = 0;

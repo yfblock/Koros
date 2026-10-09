@@ -2,7 +2,7 @@
 //!
 //! The APIC timer frequency isn't architecturally fixed, so we calibrate it
 //! once against the 8254 PIT (channel 2, gated so it needs no interrupt), then
-//! run it periodically at [`kor::time::TICK_HZ`].
+//! run it periodically at [`crate::TICK_HZ`].
 
 use spin::Once;
 use x86_64::instructions::port::Port;
@@ -77,7 +77,7 @@ fn calibrate() -> u32 {
     let elapsed = 0xFFFF_FFFFu32 - lapic_read(APIC_TIMER_CURCNT);
     // `elapsed` is ticks per 10 ms; convert to ticks per timer period.
     let per_sec = elapsed as u64 * (1000 / PIT_CAL_MS as u64);
-    (per_sec / kor::time::TICK_HZ).max(1) as u32
+    (per_sec / crate::TICK_HZ).max(1) as u32
 }
 
 /// Enable the LAPIC and start the periodic timer; enable interrupts.

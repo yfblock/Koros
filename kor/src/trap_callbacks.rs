@@ -3,7 +3,6 @@
 use spin::Once;
 
 use crate::UserTrapFrame;
-use crate::interrupt::controller;
 
 /// Behaviour the arch trap handlers invoke on timer and external interrupts.
 pub trait TrapCallbacks: Send + Sync {
@@ -29,14 +28,6 @@ pub fn callbacks() -> &'static dyn TrapCallbacks {
 /// Invoke the timer callback (called from arch timer trap handlers).
 pub fn on_timer() {
     callbacks().on_timer();
-}
-
-/// Dispatch pending external IRQs through the installed controller.
-pub fn dispatch_external() {
-    let cb = callbacks();
-    if let Some(ic) = controller() {
-        ic.dispatch_external(cb);
-    }
 }
 
 // ---------------------------------------------------------------------------
