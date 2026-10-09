@@ -1,6 +1,5 @@
-//! `InterruptController` trait + installed-controller registry.
-
-use spin::Once;
+//! `InterruptController` trait.  The active controller comes from the
+//! crate's cfg_select `interrupt_controller()` selector — no registry.
 
 use kor::trap_callbacks::TrapCallbacks;
 
@@ -18,19 +17,8 @@ pub trait InterruptController: Send + Sync {
     fn dispatch_external(&self, callbacks: &dyn TrapCallbacks);
 }
 
-static INT_CONTROLLER: Once<&'static dyn InterruptController> = Once::new();
-
-/// Install the interrupt controller (may be omitted on stub platforms).
-pub fn install_controller(ic: &'static dyn InterruptController) {
-    INT_CONTROLLER.call_once(|| ic);
-}
-
-/// The installed interrupt controller, if any.
-pub fn controller() -> Option<&'static dyn InterruptController> {
-    INT_CONTROLLER.get().copied()
-}
-
-/// Convenience: enable a device IRQ through the installed controller.
+/// Convenience: enable a device IRQ (described by FDT `interrupts` cells)
+/// through the active controller.
 pub fn enable_device_irq(interrupts: &[u32; 3]) -> Option<u32> {
-    controller().and_then(|ic| ic.enable_device_irq(interrupts))
+    crate::interrupt_controller().enable_device_irq(interrupts)
 }

@@ -51,9 +51,7 @@ extern "C" fn kernel_main() -> ! {
 
     kor::install_console(kor_arch::console());
     config::init(arch::platform_config());
-    let ic = kor_arch::interrupt_controller();
-    kor_arch::install_controller(ic);
-    ic.init();
+    kor_arch::interrupt_controller().init();
     kor::install_callbacks(&TRAP_CB);
     kor::trap_callbacks::install_user_trap_hooks(
         syscall::user_trap_enter,

@@ -23,14 +23,12 @@ cfg_select! {
 
 pub mod interrupt;
 
-pub use interrupt::{InterruptController, controller, enable_device_irq, install_controller};
+pub use interrupt::{InterruptController, enable_device_irq};
 
 /// Dispatch pending external IRQs through the installed controller.
 pub fn dispatch_external() {
     let cb = kor::trap_callbacks::callbacks();
-    if let Some(ic) = interrupt::controller() {
-        ic.dispatch_external(cb);
-    }
+    interrupt_controller().dispatch_external(cb);
 }
 
 pub mod boot;

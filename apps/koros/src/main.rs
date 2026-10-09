@@ -47,9 +47,7 @@ extern "C" fn kernel_main() -> ! {
     // 2. Platform config (firmware region, dtb, pci — read back by mm/driver probe).
     config::init(arch::platform_config());
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).
-    let ic = kor_arch::interrupt_controller();
-    kor_arch::install_controller(ic);
-    ic.init();
+    kor_arch::interrupt_controller().init();
     // 5. Trap callbacks (timer tick + external-IRQ dispatch).
     kor::install_callbacks(&TRAP_CB);
 
@@ -178,9 +176,7 @@ extern "C" fn secondary_entry(cpu_id: usize) -> ! {
     kor::smp::register_online();
     kor::println!("cpu {} online", cpu_id);
     // Per-CPU interrupt controller init (GIC CPU interface on aarch64).
-    if let Some(ic) = kor_arch::controller() {
-        ic.init();
-    }
+    kor_arch::interrupt_controller().init();
     kor_arch::timer_init();
     kor_arch::irq_enable();
     while !kor_sched::is_ready() {
