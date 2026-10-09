@@ -27,7 +27,7 @@ pub enum Console {
 }
 
 /// A memory-mapped (ECAM) PCIe host bridge, for platforms whose virtio devices
-/// live on PCIe rather than on a virtio-mmio bus (e.g. QEMU loongarch `virt`).
+/// live on PCIe rather than on a virtio-mmio bus (e.g. QEMU x86_64 `q35`).
 #[derive(Clone, Copy)]
 pub struct PciEcam {
     /// Physical base of the ECAM configuration space.

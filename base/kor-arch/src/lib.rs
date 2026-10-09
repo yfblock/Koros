@@ -13,14 +13,12 @@ cfg_select! {
     target_arch = "riscv64"      => { pub mod riscv64; }
     target_arch = "x86_64"       => { pub mod x86_64; }
     target_arch = "aarch64"      => { pub mod aarch64; }
-    target_arch = "loongarch64" => { pub mod loongarch64; }
 }
 
 cfg_select! {
     target_arch = "riscv64"      => { pub use self::riscv64::context::TaskContext; }
     target_arch = "x86_64"       => { pub use self::x86_64::context::TaskContext; }
     target_arch = "aarch64"      => { pub use self::aarch64::context::TaskContext; }
-    target_arch = "loongarch64" => { pub use self::loongarch64::context::TaskContext; }
 }
 
 pub mod interrupt;
@@ -105,13 +103,12 @@ pub fn enter_user(pc: usize, sp: usize) -> ! {
 // Composition helpers: cfg-selected singletons for the binary crate to install.
 // ---------------------------------------------------------------------------
 
-/// The `InterruptController` for the current target (stub on x86_64/loongarch64).
+/// The `InterruptController` for the current target (polling stub on x86_64).
 pub fn interrupt_controller() -> &'static dyn InterruptController {
     cfg_select! {
         target_arch = "riscv64"      => { &riscv64::ic::PLIC }
         target_arch = "x86_64"       => { &x86_64::ic::IC }
         target_arch = "aarch64"      => { &aarch64::ic::GIC }
-        target_arch = "loongarch64" => { &loongarch64::ic::IC }
     }
 }
 
@@ -121,7 +118,6 @@ pub fn console() -> &'static dyn kor::Console {
         target_arch = "riscv64"      => { &riscv64::console::CONSOLE }
         target_arch = "x86_64"       => { &x86_64::console::CONSOLE }
         target_arch = "aarch64"      => { &aarch64::console::CONSOLE }
-        target_arch = "loongarch64" => { &loongarch64::console::CONSOLE }
     }
 }
 
@@ -134,7 +130,6 @@ cfg_select! {
     target_arch = "riscv64"      => { pub use self::riscv64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
     target_arch = "x86_64"       => { pub use self::x86_64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
     target_arch = "aarch64"      => { pub use self::aarch64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
-    target_arch = "loongarch64" => { pub use self::loongarch64::mm::{kernel_offset, phys_to_virt, virt_to_phys, dtb_ptr, boot_cmdline}; }
 }
 
 cfg_select! {
@@ -147,9 +142,6 @@ pub use self::x86_64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutd
     target_arch = "aarch64"      => { pub use self::aarch64::{trap, irq};
 pub use self::aarch64::time::{now_ticks, timer_hz};
 pub use self::aarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
-    target_arch = "loongarch64" => { pub use self::loongarch64::{trap, irq};
-pub use self::loongarch64::time::{now_ticks, timer_hz};
-pub use self::loongarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
 }
 
 // --- Timer tick counter (was kor::time) ------------------------------------
@@ -178,7 +170,6 @@ pub fn detect_memory_regions(add_region: &mut dyn FnMut(usize, usize)) {
         target_arch = "riscv64"      => { self::riscv64::mm::init(add_region) }
         target_arch = "x86_64"       => { self::x86_64::mm::init(add_region) }
         target_arch = "aarch64"      => { self::aarch64::mm::init(add_region) }
-        target_arch = "loongarch64" => { self::loongarch64::mm::init(add_region) }
     }
 }
 
@@ -188,7 +179,6 @@ pub fn trap_init() {
         target_arch = "riscv64"      => { self::riscv64::trap::init() }
         target_arch = "x86_64"       => { self::x86_64::trap::init() }
         target_arch = "aarch64"      => { self::aarch64::trap::init() }
-        target_arch = "loongarch64" => { self::loongarch64::trap::init() }
     }
 }
 
@@ -198,7 +188,6 @@ pub fn timer_init() {
         target_arch = "riscv64"      => { self::riscv64::time::init() }
         target_arch = "x86_64"       => { self::x86_64::time::init() }
         target_arch = "aarch64"      => { self::aarch64::time::init() }
-        target_arch = "loongarch64" => { self::loongarch64::time::init() }
     }
 }
 
@@ -208,7 +197,6 @@ pub fn handle_tick() {
         target_arch = "riscv64"      => { self::riscv64::time::handle_tick() }
         target_arch = "x86_64"       => { self::x86_64::time::handle_tick() }
         target_arch = "aarch64"      => { self::aarch64::time::handle_tick() }
-        target_arch = "loongarch64" => { self::loongarch64::time::handle_tick() }
     }
 }
 
@@ -218,7 +206,6 @@ pub fn irq_enable() {
         target_arch = "riscv64"      => { self::riscv64::irq::enable() }
         target_arch = "x86_64"       => { self::x86_64::irq::enable() }
         target_arch = "aarch64"      => { self::aarch64::irq::enable() }
-        target_arch = "loongarch64" => { self::loongarch64::irq::enable() }
     }
 }
 
@@ -228,7 +215,6 @@ pub fn irq_disable() {
         target_arch = "riscv64"      => { self::riscv64::irq::disable() }
         target_arch = "x86_64"       => { self::x86_64::irq::disable() }
         target_arch = "aarch64"      => { self::aarch64::irq::disable() }
-        target_arch = "loongarch64" => { self::loongarch64::irq::disable() }
     }
 }
 
@@ -238,7 +224,6 @@ pub fn irq_is_enabled() -> bool {
         target_arch = "riscv64"      => { self::riscv64::irq::is_enabled() }
         target_arch = "x86_64"       => { self::x86_64::irq::is_enabled() }
         target_arch = "aarch64"      => { self::aarch64::irq::is_enabled() }
-        target_arch = "loongarch64" => { self::loongarch64::irq::is_enabled() }
     }
 }
 
@@ -296,7 +281,6 @@ pub unsafe fn context_switch(prev: *mut TaskContext, next: *const TaskContext) {
             target_arch = "riscv64"      => { self::riscv64::context::context_switch(prev, next) }
             target_arch = "x86_64"       => { self::x86_64::context::context_switch(prev, next) }
             target_arch = "aarch64"      => { self::aarch64::context::context_switch(prev, next) }
-            target_arch = "loongarch64" => { self::loongarch64::context::context_switch(prev, next) }
         }
     }
 }

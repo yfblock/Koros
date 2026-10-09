@@ -2,30 +2,14 @@
 
 extern crate alloc;
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use alloc::sync::Arc;
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use kor::driver::DtDevice;
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 use kor_virtio::InterruptBlockDevice;
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 fn register_mmio_block(device: &DtDevice, block: Arc<dyn InterruptBlockDevice>) {
     if let Some(irq) = kor_arch::enable_device_irq(&device.interrupts) {
         let handler = Arc::clone(&block);
@@ -39,20 +23,12 @@ fn register_mmio_block(device: &DtDevice, block: Arc<dyn InterruptBlockDevice>) 
 }
 
 /// VirtIO MMIO driver configured with Koros' registry and IRQ policy.
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 pub static VIRTIO_MMIO_DRIVER: kor_virtio::VirtioMmioDriver =
     kor_virtio::VirtioMmioDriver::new(register_mmio_block);
 
 /// Probe PCI ECAM and register the first VirtIO block device found.
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 pub fn probe_pci_ecam_and_register(ecam_base: usize, mmio_base: u64, mmio_size: u64) {
     if let Some(block) = kor_virtio::discover_pci_ecam_blk(ecam_base, mmio_base, mmio_size) {
         crate::registries::BLOCKS.register(block);

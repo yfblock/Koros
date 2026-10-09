@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv64, x86_64, aarch64, loongarch64). The workspace is laid out in **four tiers**: `kor/` (foundation crate), `base/` (core kernel services), `filesystems/` (the storage stack), `apps/` (composition roots). It is a **twelve-crate Cargo workspace** of small, composable libraries plus two binary composition crates (`koros` kernel, `korhv` hypervisor). Architecture abstraction is a **compile-time static facade** (`kor_arch::<fn>()` free functions selected by `cfg_select!`), not trait objects — see [Architecture Abstraction Model](#architecture-abstraction-model).
+Koros is a `#![no_std]` Rust kernel targeting QEMU on three architectures (riscv64, x86_64, aarch64). The workspace is laid out in **four tiers**: `kor/` (foundation crate), `base/` (core kernel services), `filesystems/` (the storage stack), `apps/` (composition roots). It is a **twelve-crate Cargo workspace** of small, composable libraries plus two binary composition crates (`koros` kernel, `korhv` hypervisor). Architecture abstraction is a **compile-time static facade** (`kor_arch::<fn>()` free functions selected by `cfg_select!`), not trait objects — see [Architecture Abstraction Model](#architecture-abstraction-model).
 
 ## Key Facts
 
@@ -11,7 +11,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv6
   - `filesystems/kor-ext2/` (`kor_ext2`) — ext2 (read/write, symlink, hard link, truncate, rename, indirect blocks, xattr, mknod) + `Ext2Driver` singleton.
   - `filesystems/kor-ramfs/` (`kor_ramfs`) — in-memory reference fs + `RamFsDriver` singleton.
   - `base/kor-sched/` (`kor_sched`) — preemptive multi-core kernel-thread scheduler + blocking sync primitives.
-  - `base/kor-arch/` (`kor_arch`) — architecture-specific code **except page tables**; per-arch modules (`riscv64/`, `x86_64/`, `aarch64/`, `loongarch64/`, each with `boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`) plus the crate-root static facade: `cfg_select!` re-exports and thin `pub fn` wrappers (`kor_arch::phys_to_virt`, `kor_arch::cpu_id`, `kor_arch::trap_init`, …) that all downstream crates call directly. `interrupt_controller()`/`console()` selectors remain for the `kor` registries.
+  - `base/kor-arch/` (`kor_arch`) — architecture-specific code **except page tables**; per-arch modules (`riscv64/`, `x86_64/`, `aarch64/`, each with `boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`) plus the crate-root static facade: `cfg_select!` re-exports and thin `pub fn` wrappers (`kor_arch::phys_to_virt`, `kor_arch::cpu_id`, `kor_arch::trap_init`, …) that all downstream crates call directly. `interrupt_controller()`/`console()` selectors remain for the `kor` registries.
   - `base/kor-virtio/` (`kor_virtio`) — virtio adapter for apps/koros/korix (block + net, MMIO / PCI / PCI-ECAM).
   - `apps/koros/` (`[[bin]] koros`) — kernel composition root: `kernel_main` init, `#[global_allocator]`, `#[panic_handler]`, virtio adapter, registries, ext2 self-check, bench, scheduler demo.
   - `apps/korix/` (`[[bin]] korix`) — Linux-compatible composition root: thin syscall layer (`syscall/arch/` ABI adapters + portable dispatch), processes/signals, user address spaces, ext2 rootfs, smoltcp networking.
@@ -26,18 +26,18 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv6
 The only entry point is the Makefile. Always `--release`.
 
 ```
-make ARCH=<riscv64|x86_64|aarch64|loongarch64> run   # riscv64 default; x86_64 sets -no-pie
+make ARCH=<riscv64|x86_64|aarch64> run   # riscv64 default; x86_64 sets -no-pie
 make ARCH=riscv64 SMP=4 run   # multi-core
 make ARCH=riscv64 debug       # QEMU with -s -S for GDB attach
 make ARCH=riscv64 CMDLINE="bench loglevel=7" run   # kernel cmdline
 make build ARCH=<arch>        # cargo build --release --target <t> -p koros + objcopy
 ```
 
-`ARCH` defaults to `riscv64`. Artifacts: `target/<target>/release/koros` (ELF, x86_64/loongarch64) and `koros.bin` (raw, riscv64/aarch64, via `rust-objcopy --strip-all -O binary`).
+`ARCH` defaults to `riscv64`. Artifacts: `target/<target>/release/koros` (ELF, x86_64) and `koros.bin` (raw, riscv64/aarch64, via `rust-objcopy --strip-all -O binary`).
 
-The ext2 self-check needs a backing disk. The Makefile auto-creates `tools/os-images/ext2-test.img` (4 MiB, `mkfs.ext2 -b 1024`) and attaches it as virtio-blk — virtio-mmio on riscv64/aarch64 `virt`, virtio-blk-pci on x86_64/loongarch64. **Caveat:** the image persists and the self-check creates `test_dir` without cleanup, so a second run reports `ext2 test FAILED: AlreadyExists`. Delete `tools/os-images/ext2-test.img` (or pass `EXT2_IMG=<fresh path>`) for a clean pass.
+The ext2 self-check needs a backing disk. The Makefile auto-creates `tools/os-images/ext2-test.img` (4 MiB, `mkfs.ext2 -b 1024`) and attaches it as virtio-blk — virtio-mmio on riscv64/aarch64 `virt`, virtio-blk-pci on x86_64 `q35`. **Caveat:** the image persists and the self-check creates `test_dir` without cleanup, so a second run reports `ext2 test FAILED: AlreadyExists`. Delete `tools/os-images/ext2-test.img` (or pass `EXT2_IMG=<fresh path>`) for a clean pass.
 
-Clippy (no Makefile target; add `-p koros` to include the binary) — target is one of `riscv64gc-unknown-none-elf`, `x86_64-unknown-none`, `aarch64-unknown-none-softfloat`, `loongarch64-unknown-none`:
+Clippy (no Makefile target; add `-p koros` to include the binary) — target is one of `riscv64gc-unknown-none-elf`, `x86_64-unknown-none`, `aarch64-unknown-none-softfloat`:
 ```
 cargo clippy --target <target> --release
 ```
@@ -46,14 +46,13 @@ cargo clippy --target <target> --release
 
 `apps/koros/build.rs` generates `linker_<arch>.lds` from `tools/lds/koros.lds`, substituting `%ARCH%` and `%KERNEL_BASE%`. The generated script lands inside `OUT_DIR` (always under `target/`); `build.rs` emits `cargo:rustc-link-arg=-T<path>`. Edit `tools/lds/koros.lds`, not the generated file. Notable symbols: `_skernel`/`_end` (image bounds, clip the frame allocator via `kor::kernel_phys_range()`), `stext`/`etext`, `_sdata`/`_edata`, `_sbss`/`_ebss`, `_load_end`, `.bss.bstack` (512 KiB boot stack, `bstack_top`).
 
-Kernel virtual base addresses (high-half kernel; loongarch64 is direct-map, offset 0):
+Kernel virtual base addresses (high-half kernel):
 
 | Arch | Link/load VA (`KERNEL_BASE`) | Physical Load | `kernel_offset()` |
 |------|------------------------------|---------------|-------------------------------------|
 | riscv64 | `0xffffffc080200000` | `0x80200000` | `0xffffffc000000000` |
 | x86_64 | `0xffff800000200000` | `0x200000` | `0xffff800000000000` |
 | aarch64 | `0xffff000040080000` | `0x40080000` | `0xffff000000000000` |
-| loongarch64 | `0x9000000080000000` | `0x9000000080000000` | `0` (no paging — VA == PA via DMW) |
 
 ## Architecture Abstraction Model
 
@@ -110,7 +109,6 @@ base/kor-arch/src/
     + riscv64: boot.S, trap.S, plic.rs
     + x86_64:  multiboot.S, trap.S, ap_boot.S  (no boot.S, no plic/gic)
     + aarch64: boot.S, trap.S, gic.rs
-    + loongarch64: trap.S only (boot is inline naked_asm! in boot.rs; no paging, no plic/gic)
 apps/koros/
   src/main.rs             — kernel_main (composition root) + demo tasks
   src/ext2_test.rs        — in-kernel ext2 functional self-check
@@ -135,12 +133,12 @@ apps/korhv/                       — Type-1 hypervisor binary crate (parallel t
 
 ## Entry Flow
 
-Per arch (assembly in `base/kor-arch/src/<arch>/`): `_start` → **clear BSS at physical addresses** (x86_64 excepted — Multiboot zeroes BSS via `bss_end_addr`) → build boot page tables → enable MMU → jump to high-half VA (loongarch64 skips MMU) → `rust_entry` (boot.rs) → `unsafe { kernel_main() }` (in `koros`).
+Per arch (assembly in `base/kor-arch/src/<arch>/`): `_start` → **clear BSS at physical addresses** (x86_64 excepted — Multiboot zeroes BSS via `bss_end_addr`) → build boot page tables → enable MMU → jump to high-half VA → `rust_entry` (boot.rs) → `unsafe { kernel_main() }` (in `koros`).
 
 `kernel_main` init sequence (`apps/koros/src/main.rs`):
 1. Console — `kor::install_console(kor_arch::console())`.
 2. Platform config — `config::init(platform_config())` (per-arch console type, `firmware_phys_start`, dtb, optional `PciEcam`).
-3. Interrupt controller — `kor_arch::install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stubs on x86_64/loongarch64).
+3. Interrupt controller — `kor_arch::install_controller` + `ic.init()` (GICv2 on aarch64, PLIC on riscv64, polling stub on x86_64).
 4. Trap callbacks — `install_callbacks(&TRAP_CB)`; `on_timer` does `increment_tick` + `arch.handle_tick` + `kor_sched::timer_tick` + `kor_sched::preempt`; `on_external(irq)` dispatches `registries::IRQS`.
 5. Bootstrap heap (`heap::init_bootstrap` on a 0xE000-byte static region), then register filesystem drivers (`kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER)` + `&kor_ramfs::RAMFS_DRIVER`) — the registry `Vec` allocates, so this must follow heap init.
 6. Trap vectors — `arch.trap_init()`.
@@ -167,7 +165,6 @@ Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` 
 - **riscv64**: Sv39 paging; OpenSBI/SBI ecalls (HSM for secondaries, TIME for timer); PLIC at `0x0c00_0000`; NS16550A MMIO at `0x1000_0000`. Simplest boot. `_secondary_start` entered via SBI `hart_start`.
 - **x86_64**: Multiboot1 (magic `0x1BADB002`); 4-level paging with 2 MiB huge pages; LAPIC timer (calibrated against PIT); APs via INIT-SIPI-SIPI trampoline copied to `0x8000`; NS16550A port I/O at `0x3F8`. `q35` machine, `IvyBridge-v2` CPU. IC is a polling stub. Needs `-Clink-arg=-no-pie` (Makefile sets `RUSTFLAGS`).
 - **aarch64**: EL1, 4-level paging (1 GiB blocks at boot); EL1 physical generic timer via GICv2 PPI; PSCI `CPU_ON` (HVC) for secondaries; GICv2 distributor `0x0800_0000` / CPU interface `0x0801_0000`; PL011 MMIO at `0x0900_0000`. `cortex-a72` CPU.
-- **loongarch64**: **No paging yet** (direct-map, `kernel_offset() == 0`, VA == PA via DMW); boot entry is inline `naked_asm!` (no `boot.S`); constant timer; IPI+IOCSR-mailbox secondary bring-up; NS16550A MMIO at `0x1FE0_01E0`; PCI ECAM at `0x2000_0000`. IC and dynamic page-table are stubs (`dynamic_maps_supported() == false`, `TEST_VA_* == 0`). QEMU gets `-m 1G` explicitly.
 
 ## Coding Rules
 
@@ -178,5 +175,5 @@ Secondary CPUs: `secondary_entry(cpu_id)` → `trap_init` → `register_online` 
 
 ## Verification
 
-- **Functional:** `make ARCH=<arch> run` boots the kernel, runs the ext2 self-check, then the scheduler demo. All four architectures boot to a completed scheduler demo on a fresh ext2 image.
+- **Functional:** `make ARCH=<arch> run` boots the kernel, runs the ext2 self-check, then the scheduler demo. All three architectures boot to a completed scheduler demo on a fresh ext2 image.
 - **Formal:** `./tools/scripts/verify.sh` runs Verus on the per-crate verification modules (`base/kor-alloc/verify/slab_heap.rs`, `kor/verify/frame_allocator.rs` — standalone, Verus-annotated copies of the allocator logic; keep new verification code under `<crate>/verify/`). Set `VERUS` env var or install Verus to `/tmp/verus-release/`. Pass a module name to verify one file: `./tools/scripts/verify.sh frame_allocator`.

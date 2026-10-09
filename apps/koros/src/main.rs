@@ -192,11 +192,7 @@ extern "C" fn secondary_entry(cpu_id: usize) -> ! {
 // Driver probing
 // ---------------------------------------------------------------------------
 
-#[cfg(any(
-    target_arch = "riscv64",
-    target_arch = "aarch64",
-    target_arch = "loongarch64"
-))]
+#[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 fn probe_devices() {
     use kor::driver::{DeviceDriver, probe_fdt};
     use virtio::VIRTIO_MMIO_DRIVER;

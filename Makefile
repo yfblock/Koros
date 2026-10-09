@@ -39,13 +39,6 @@ else ifeq ($(ARCH), aarch64)
   else ifeq ($(BIN), koros)
     EXT2_IMG := tools/os-images/ext2-test.img
   endif
-else ifeq ($(ARCH), loongarch64)
-  TARGET := loongarch64-unknown-none
-  QEMU_EXEC += -M virt -m 1G
-  KERNEL_IMG := target/$(TARGET)/release/$(BIN)
-  ifeq ($(BIN), koros)
-    EXT2_IMG := tools/os-images/ext2-test.img
-  endif
 else ifeq ($(ARCH), x86_64)
   TARGET := x86_64-unknown-none
   RUSTFLAGS_EXTRA := -Clink-arg=-no-pie
@@ -63,7 +56,7 @@ else ifeq ($(ARCH), x86_64)
     EXT2_IMG := tools/os-images/ext2-test.img
   endif
 else
-  $(error ARCH must be one of: riscv64, x86_64, aarch64, loongarch64)
+  $(error ARCH must be one of: riscv64, x86_64, aarch64)
 endif
 
 KERNEL_ELF := target/$(TARGET)/release/$(BIN)
@@ -78,9 +71,9 @@ ifneq ($(SMP),1)
 endif
 
 ifdef EXT2_IMG
-  # x86_64 (q35) and loongarch64 (virt) carry virtio on PCIe; riscv64/aarch64
-  # 'virt' machines use the virtio-mmio bus.
-  ifneq ($(filter $(ARCH),x86_64 loongarch64),)
+  # x86_64 (q35) carries virtio on PCIe; riscv64/aarch64 'virt' machines
+  # use the virtio-mmio bus.
+  ifeq ($(ARCH),x86_64)
     QEMU_EXEC += -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-pci,drive=ext2drv
     ifeq ($(BIN), korix)
       QEMU_EXEC += -netdev user,id=net0 -device virtio-net-pci,netdev=net0
@@ -93,7 +86,7 @@ ifdef EXT2_IMG
   endif
 endif
 
-# Kernel command line: FDT /chosen/bootargs (riscv64/aarch64/loongarch64) or
+# Kernel command line: FDT /chosen/bootargs (riscv64/aarch64) or
 # the Multiboot cmdline (x86_64). Read at boot via koros_core::cmdline.
 ifneq ($(CMDLINE),)
   QEMU_EXEC += -append "$(CMDLINE)"

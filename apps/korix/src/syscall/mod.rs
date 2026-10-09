@@ -108,7 +108,6 @@ pub static RX_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 pub fn rx_fill() {
     // LoongArch64 (unsupported for korix) has no UART source compiled in;
     // every other target drains its console into the shared buffer.
-    #[cfg(not(target_arch = "loongarch64"))]
     {
         let mut buf = RX_BUF.lock();
         #[cfg(target_arch = "riscv64")]
@@ -1364,9 +1363,6 @@ fn sys_clone(args: &[usize]) -> isize {
         Some(address_space) => address_space,
         None => return -12,
     };
-    // loongarch64 (unsupported) has no per-arch fixup block, so `mut` is
-    // unneeded there — and only there (expect verifies exactly that).
-    #[cfg_attr(target_arch = "loongarch64", expect(unused_mut))]
     let mut context = match kor_sched::current()
         .with_user_context(|tf| unsafe { kor_arch::capture_user_context(tf) })
         .flatten()

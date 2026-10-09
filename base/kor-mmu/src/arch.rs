@@ -4,8 +4,7 @@
 //! encoders, the [`crate::format::MmuFormat`] implementation for the
 //! generic engine, the active-address-space operations (`root`/`activate`),
 //! fork-style cloning (`clone_active`/`new_user`/`destroy_address_space`),
-//! and boot-time identity-map surgery (`split_identity`).  loongarch64 runs
-//! unpaged and provides stubs only.
+//! and boot-time identity-map surgery (`split_identity`).
 //!
 //! This is the one `cfg`-selected module inside `kor-mmu` (the same narrow
 //! exception `kor-arch` uses); everything above it is arch-neutral.
@@ -14,5 +13,4 @@ cfg_select! {
     target_arch = "riscv64"      => { pub mod riscv64; pub use riscv64 as current; }
     target_arch = "x86_64"       => { pub mod x86_64; pub use x86_64 as current; }
     target_arch = "aarch64"      => { pub mod aarch64; pub use aarch64 as current; }
-    target_arch = "loongarch64"  => { pub mod loongarch64; pub use loongarch64 as current; }
 }
