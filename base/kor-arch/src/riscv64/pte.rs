@@ -1,6 +1,6 @@
 //! Sv39 PTE flag bits and the generic↔hardware flag encoders.
 
-use kor::mapping::MappingFlags;
+use crate::MappingFlags;
 
 /// Valid/present.
 pub const PTE_V: usize = 1 << 0;

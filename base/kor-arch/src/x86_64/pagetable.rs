@@ -2,8 +2,8 @@
 
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
-use kor::mapping::MapError;
-use kor::mapping::MappingFlags;
+use crate::MapError;
+use crate::MappingFlags;
 use x86_64::registers::control::Cr3;
 
 

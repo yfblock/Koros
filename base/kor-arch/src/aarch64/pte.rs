@@ -2,7 +2,7 @@
 //! (attribute indices match MAIR_EL1 as programmed by the boot fragments:
 //! index 1 = Normal WB).
 
-use kor::mapping::MappingFlags;
+use crate::MappingFlags;
 
 /// Valid/present.
 pub const PTE_VALID: usize = 1 << 0;

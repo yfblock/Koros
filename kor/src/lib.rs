@@ -26,7 +26,6 @@ pub mod console;
 pub mod driver;
 pub mod fdt;
 pub mod frame;
-pub mod mapping;
 pub mod regions;
 pub mod smp;
 pub mod vfs;
@@ -34,5 +33,4 @@ pub mod vfs;
 // Convenience re-exports at the crate root.
 pub use block::{BlockDevice, BlockError};
 pub use console::{Console, install_console, putc};
-pub use mapping::{MapError, MapSize, MappingFlags};
 pub use vfs::{FileSystemDriver, FileType, FsError, FsInfo, INode, Metadata, SuperBlock};

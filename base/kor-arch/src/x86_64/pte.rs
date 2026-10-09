@@ -1,6 +1,6 @@
 //! x86-64 long-mode PTE flag bits and the generic↔hardware flag encoders.
 
-use kor::mapping::MappingFlags;
+use crate::MappingFlags;
 
 /// Present.
 pub const PTE_P: usize = 1 << 0;

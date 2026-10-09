@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use spin::Mutex;
 
-use kor::mapping::MappingFlags;
+use kor_arch::MappingFlags;
 
 /// Entries per page-table page (64-bit PTEs, 4 KiB pages).
 pub const PT_ENTRIES: usize = 512;

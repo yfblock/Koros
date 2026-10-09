@@ -26,7 +26,7 @@ pub mod page_table;
 pub use descriptor::PageStatus;
 pub use page_table::{AddrSpace, RCursor};
 
-use kor::mapping::MapError;
+use kor_arch::MapError;
 
 /// Install runtime page-table services (e.g. capture the boot root).
 pub fn page_table_init() {

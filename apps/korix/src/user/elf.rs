@@ -5,7 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use kor::MappingFlags;
+use kor_arch::MappingFlags;
 
 use super::layout::{
     ADDRESS_LIMIT, INTERP_BASE, LOAD_BASE, PAGE_SIZE, STACK_SIZE as USER_STACK_SIZE,

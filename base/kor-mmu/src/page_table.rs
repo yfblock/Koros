@@ -14,8 +14,8 @@
 
 use crate::descriptor::{PageStatus, descriptor_of};
 use kor::frame::{PAGE_SIZE, alloc_frame, free_frames};
-use kor::mapping::{MapError, MapSize, MappingFlags};
 use kor_arch::pagetable::{PT_ENTRIES, span, table_index, table_mut, zero_page};
+use kor_arch::{MapError, MapSize, MappingFlags};
 
 /// Bits below the level indexes (4 KiB base pages).
 

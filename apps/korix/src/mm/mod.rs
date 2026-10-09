@@ -3,7 +3,7 @@
 extern crate alloc;
 
 use alloc::collections::BTreeMap;
-use kor::{MapError, MapSize, MappingFlags};
+use kor_arch::{MapError, MapSize, MappingFlags};
 
 pub const PAGE_SIZE: usize = 4096;
 pub use crate::user::layout::ADDRESS_LIMIT as USER_ADDRESS_LIMIT;

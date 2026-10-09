@@ -36,6 +36,58 @@ cfg_select! {
 pub mod interrupt;
 pub mod pagetable;
 
+// --- Page-mapping types (moved from kor) ------------------------------------
+
+/// Mapping permissions for `map`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MappingFlags(u8);
+
+impl MappingFlags {
+    /// Readable.
+    pub const R: Self = Self(1 << 0);
+    /// Writable.
+    pub const W: Self = Self(1 << 1);
+    /// Executable.
+    pub const X: Self = Self(1 << 2);
+    /// User-mode accessible.
+    pub const U: Self = Self(1 << 3);
+    /// Kernel read/write/execute (supervisor-only).
+    pub const KERNEL_RWX: Self = Self(Self::R.0 | Self::W.0 | Self::X.0);
+
+    #[inline]
+    pub const fn contains(self, other: Self) -> bool {
+        (self.0 & other.0) == other.0
+    }
+}
+
+impl core::ops::BitOr for MappingFlags {
+    type Output = Self;
+    #[inline]
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+/// Page size for a mapping operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapSize {
+    /// 4 KiB base page.
+    Page4K,
+    /// 2 MiB large page (where the arch supports it).
+    Page2M,
+}
+
+/// Errors from `map`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapError {
+    /// Frame or table allocation failed.
+    OutOfMemory,
+    /// An explicit mapping already occupies the range.
+    BlockedByExistingMapping,
+    /// The operation is not supported on this architecture.
+    Unsupported,
+}
+
 pub use interrupt::{InterruptController, enable_device_irq};
 
 /// Dispatch pending external IRQs through the active controller: device

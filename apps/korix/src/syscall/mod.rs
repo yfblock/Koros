@@ -451,13 +451,14 @@ fn ensure_signal_restorer() -> Option<usize> {
         .is_none()
     {
         let physical = kor::frame::alloc_frame()?;
-        let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::X;
+        let flags =
+            kor_arch::MappingFlags::U | kor_arch::MappingFlags::R | kor_arch::MappingFlags::X;
         if kor_mmu::active()
             .map(
                 SIGNAL_RESTORER_ADDRESS,
                 physical,
                 flags,
-                kor::MapSize::Page4K,
+                kor_arch::MapSize::Page4K,
             )
             .is_err()
         {
@@ -1597,12 +1598,13 @@ fn sys_brk(addr: usize) -> isize {
         let Some(page_end) = addr.checked_add(4095).map(|value| value & !4095) else {
             return process.brk as isize;
         };
-        let flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
+        let flags =
+            kor_arch::MappingFlags::U | kor_arch::MappingFlags::R | kor_arch::MappingFlags::W;
         let mut mapped = page_start;
         while mapped < page_end {
             let result = process
                 .address_space_mut()
-                .ok_or(kor::MapError::Unsupported)
+                .ok_or(kor_arch::MapError::Unsupported)
                 .and_then(|space| {
                     if space.is_mapped(mapped) {
                         Ok(0)
@@ -2290,12 +2292,13 @@ fn sys_mremap(old_address: usize, old_size: usize, new_size: usize, flags: usize
     if !address_space.range_is_free(growth_start, growth) {
         return -12;
     }
-    let mapping_flags = kor::MappingFlags::U | kor::MappingFlags::R | kor::MappingFlags::W;
+    let mapping_flags =
+        kor_arch::MappingFlags::U | kor_arch::MappingFlags::R | kor_arch::MappingFlags::W;
     let mut mapped = 0;
     while mapped < growth {
         if let Err(error) = address_space.map_zeroed(growth_start + mapped, mapping_flags) {
             let _ = address_space.unmap_range(growth_start, mapped);
-            return if error == kor::MapError::OutOfMemory {
+            return if error == kor_arch::MapError::OutOfMemory {
                 -12
             } else {
                 -22
@@ -2350,15 +2353,15 @@ fn sys_mmap(
     let Some(rounded) = length.checked_add(4095).map(|value| value & !4095) else {
         return -22;
     };
-    let mut map_flags = kor::MappingFlags::U;
+    let mut map_flags = kor_arch::MappingFlags::U;
     if prot & 1 != 0 {
-        map_flags = map_flags | kor::MappingFlags::R;
+        map_flags = map_flags | kor_arch::MappingFlags::R;
     }
     if prot & 2 != 0 {
-        map_flags = map_flags | kor::MappingFlags::W;
+        map_flags = map_flags | kor_arch::MappingFlags::W;
     }
     if prot & 4 != 0 {
-        map_flags = map_flags | kor::MappingFlags::X;
+        map_flags = map_flags | kor_arch::MappingFlags::X;
     }
     // Linux anonymous mappings without explicit PROT bits are inaccessible;
     // BusyBox requests the required permissions explicitly.
@@ -2381,7 +2384,7 @@ fn sys_mmap(
         while mapped < rounded {
             if let Err(error) = address_space.map_zeroed(page_start + mapped, map_flags) {
                 let _ = address_space.unmap_range(page_start, mapped);
-                return if error == kor::MapError::OutOfMemory {
+                return if error == kor_arch::MapError::OutOfMemory {
                     -12
                 } else {
                     -22
@@ -2415,7 +2418,7 @@ fn sys_mmap(
     }
     match result {
         Ok(()) => page_start as isize,
-        Err(kor::MapError::OutOfMemory) => -12,
+        Err(kor_arch::MapError::OutOfMemory) => -12,
         Err(_) => -22,
     }
 }
@@ -2427,15 +2430,15 @@ fn sys_mprotect(address: usize, length: usize, prot: usize) -> isize {
     let Some(rounded) = length.checked_add(4095).map(|value| value & !4095) else {
         return -22;
     };
-    let mut flags = kor::MappingFlags::U;
+    let mut flags = kor_arch::MappingFlags::U;
     if prot & 1 != 0 {
-        flags = flags | kor::MappingFlags::R;
+        flags = flags | kor_arch::MappingFlags::R;
     }
     if prot & 2 != 0 {
-        flags = flags | kor::MappingFlags::W;
+        flags = flags | kor_arch::MappingFlags::W;
     }
     if prot & 4 != 0 {
-        flags = flags | kor::MappingFlags::X;
+        flags = flags | kor_arch::MappingFlags::X;
     }
     let Some(process) = crate::sched::current_process() else {
         return -12;
