@@ -30,6 +30,7 @@ pub struct ProcessState {
     pub files: BTreeMap<usize, crate::syscall::SharedFile>,
     pub stdio: BTreeMap<usize, usize>,
     pub sockets: BTreeMap<usize, usize>,
+    pub pipes: BTreeMap<usize, (usize, bool)>,
     /// File descriptors created through AF_INET6; transport remains IPv4-only.
     pub ipv6_fds: BTreeMap<usize, ()>,
     pub robust_list: usize,
@@ -57,6 +58,7 @@ impl ProcessState {
             files: BTreeMap::new(),
             stdio: BTreeMap::new(),
             sockets: BTreeMap::new(),
+            pipes: BTreeMap::new(),
             ipv6_fds: BTreeMap::new(),
             robust_list: 0,
             robust_list_len: 0,
@@ -161,8 +163,8 @@ pub fn current_process_arc() -> Option<Arc<Mutex<ProcessState>>> {
     current_process()
 }
 
-// Reserved for waitpid(<specific pid>); only the any-child path is wired yet.
-#[expect(dead_code, reason = "staged: pending wiring")]
+/// Find any child (running or zombie) of `parent` matching `requested`
+/// (-1 = any, >0 = that pid). Used by wait4's ECHILD check.
 pub fn matching_child(parent: usize, requested: isize) -> Option<Arc<Mutex<ProcessState>>> {
     PROCESSES
         .lock()
@@ -209,6 +211,12 @@ pub fn exit_current(code: i32) -> ! {
         process.state = STATE_ZOMBIE;
         process.files.clear();
         process.sockets.clear();
+        let closed_pipes: alloc::vec::Vec<(usize, bool)> =
+            process.pipes.values().copied().collect();
+        process.pipes.clear();
+        for (pipe, is_read) in closed_pipes {
+            crate::syscall::pipe_release(pipe, is_read);
+        }
         (
             process.pid,
             process.parent,

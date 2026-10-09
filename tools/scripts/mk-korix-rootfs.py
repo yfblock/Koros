@@ -26,10 +26,14 @@ def main():
     busybox = ARCHES[arch]
     os.makedirs(os.path.dirname(image), exist_ok=True)
     with tempfile.TemporaryDirectory() as root:
-        for directory in ("bin", "dev", "proc", "etc", "tmp", "root"):
+        for directory in ("bin", "dev", "proc", "etc", "tmp", "root", "tests"):
             os.makedirs(os.path.join(root, directory), exist_ok=True)
         shutil.copy2(busybox, os.path.join(root, "bin", "busybox"))
         os.chmod(os.path.join(root, "bin", "busybox"), 0o755)
+        ltp = "tools/ltp/target/riscv64gc-unknown-none-elf/release/korix-ltp"
+        if arch == "riscv64" and os.path.exists(ltp):
+            shutil.copy2(ltp, os.path.join(root, "tests", "korix-ltp"))
+            os.chmod(os.path.join(root, "tests", "korix-ltp"), 0o755)
         for applet in APPLETS:
             os.symlink("busybox", os.path.join(root, "bin", applet))
         with open(os.path.join(root, "etc", "passwd"), "w", encoding="ascii") as file:

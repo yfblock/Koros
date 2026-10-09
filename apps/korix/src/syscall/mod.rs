@@ -10,6 +10,7 @@
 //! - aarch64: svc #0, x8=nr, x0-x5=args, x0=return
 //! - x86_64:  syscall, rax=nr, rdi,rsi,rdx,r10,r8,r9=args, rax=return
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -655,6 +656,36 @@ static SESSION_ID: Mutex<usize> = Mutex::new(1);
 /// they never arrive from user space directly.
 pub const SYS_ARCH_PRCTL: usize = 500;
 
+// LTP-critical syscall numbers (riscv64 asm-generic).
+// riscv64 has no legacy `pipe` (59) — it is `pipe2`.
+pub const SYS_PIPE2: usize = 59;
+pub const SYS_PREAD64: usize = 67;
+pub const SYS_PWRITE64: usize = 68;
+pub const SYS_POLL: usize = 7;
+pub const SYS_SENDFILE: usize = 71;
+pub const SYS_FCHDIR: usize = 50;
+pub const SYS_FSYNC: usize = 82;
+pub const SYS_FTRUNCATE: usize = 46;
+pub const SYS_TRUNCATE: usize = 45;
+pub const SYS_FCHMOD: usize = 52;
+pub const SYS_FCHOWN: usize = 55;
+// riscv64 has no `rmdir` (84) — use unlinkat with AT_REMOVEDIR.
+pub const SYS_GETPGID: usize = 155;
+pub const SYS_SETPGID: usize = 154;
+pub const SYS_WAITID: usize = 95;
+pub const SYS_SCHED_YIELD: usize = 124;
+pub const SYS_RT_SIGTIMEDWAIT: usize = 137;
+pub const SYS_STATFS: usize = 43;
+pub const SYS_FSTATFS: usize = 44;
+pub const SYS_MINCORE: usize = 232;
+pub const SYS_MADVISE: usize = 233;
+pub const SYS_SETITIMER: usize = 103;
+pub const SYS_GETITIMER: usize = 102;
+const _SYS_ALARM_UNUSED: () = ();
+pub const SYS_GETRUSAGE: usize = 165;
+pub const SYS_SOCKETPAIR: usize = 199;
+pub const SYS_READLINK: usize = 78; // same as READLINKAT on riscv64
+
 /// Dispatch a syscall.
 /// nr is the syscall number, args is up to 6 arguments.
 /// Returns the syscall result (positive = success, negative = -errno).
@@ -687,8 +718,38 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
             .map(|process| process.lock().parent as isize)
             .unwrap_or(0),
         155 => *PROCESS_GROUP.lock() as isize,
+        SYS_SETPGID => {
+            // Join-or-create own process group: single global group in korix.
+            let pid = current_pid();
+            *PROCESS_GROUP.lock() = pid;
+            0
+        }
         SYS_GETUID | 175 => 0, // GETUID | GETEUID
         SYS_GETGID | 177 => 0, // GETGID | GETEGID
+        SYS_PIPE2 => sys_pipe2(args[0], args[1]),
+        SYS_PREAD64 => sys_pread64(args[0], args[1], args[2], args[3]),
+        SYS_PWRITE64 => sys_pwrite64(args[0], args[1], args[2], args[3]),
+        SYS_POLL => sys_poll(args[0], args[1], args[2]),
+        SYS_SENDFILE => sys_sendfile(args[0], args[1], args[2], args[3]),
+        SYS_FCHDIR => sys_fchdir(args[0]),
+        SYS_FSYNC => sys_fsync(args[0]),
+        SYS_FTRUNCATE => sys_ftruncate(args[0], args[1] as i64),
+        SYS_TRUNCATE => sys_truncate(args[0], args[1] as i64),
+        SYS_FCHMOD => sys_fchmod(args[0], args[1]),
+        SYS_FCHOWN => 0, // stub: chown to self
+        SYS_WAITID => sys_waitid(args[0], args[1], args[2], args[3] | args[4]),
+        SYS_SCHED_YIELD => {
+            kor_sched::yield_now();
+            0
+        }
+        SYS_RT_SIGTIMEDWAIT => sys_sigtimedwait(args[0], args[1], args[2]),
+        SYS_STATFS => sys_statfs(args[0], args[1]),
+        SYS_FSTATFS => sys_fstatfs(args[0], args[1]),
+        SYS_MADVISE => 0, // no-op
+        SYS_MINCORE => 0, // no-op: all pages resident
+        SYS_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
+        SYS_GETITIMER => sys_getitimer(args[0], args[1]),
+        SYS_GETRUSAGE => sys_getrusage(args[0], args[1]),
         SYS_SYNC => {
             if kor_fs::mount::sync_all(&crate::MOUNTS).is_ok() {
                 0
@@ -769,8 +830,8 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_PSELECT6 => sys_select(args[0], args[1], args[2], args[3], args[4]),
 
         167 => sys_prctl(args),
-        154 | 149 => -38, // sched_getaffinity
-        158 => 0,         // getgroups: no supplementary groups
+        149 => -38, // sched_getaffinity
+        158 => 0,   // getgroups: no supplementary groups
         156 => *SESSION_ID.lock() as isize,
         144 | 143 | 148 => -38, // scheduler mutation is unsupported
         145 => 0,               // sched_getscheduler: SCHED_OTHER
@@ -1172,6 +1233,7 @@ fn next_fd(process: &crate::sched::ProcessState) -> usize {
     while process.files.contains_key(&fd)
         || process.stdio.contains_key(&fd)
         || process.sockets.contains_key(&fd)
+        || process.pipes.contains_key(&fd)
     {
         fd += 1;
     }
@@ -1208,9 +1270,398 @@ fn current_pid() -> usize {
     crate::sched::current_pid().unwrap_or(1)
 }
 
+// --- Pipe implementation ----------------------------------------------------
+
+/// Kernel-side pipe: a shared circular buffer plus per-end holder counts.
+/// An end is only "closed" once its LAST fd holder (across forks and dups)
+/// releases it — that is what EOF and EPIPE are derived from.
+struct PipeBuffer {
+    data: alloc::vec::Vec<u8>,
+    read_pos: usize,
+    write_pos: usize,
+    readers: usize,
+    writers: usize,
+}
+
+impl PipeBuffer {
+    fn new() -> Self {
+        Self {
+            data: alloc::vec![0; 65536],
+            read_pos: 0,
+            write_pos: 0,
+            readers: 1,
+            writers: 1,
+        }
+    }
+
+    fn closed_read(&self) -> bool {
+        self.readers == 0
+    }
+
+    fn closed_write(&self) -> bool {
+        self.writers == 0
+    }
+}
+
+/// Register one more holder of a pipe end (fork/dup inherits).
+fn pipe_add_holder(pipe: usize, is_read: bool) {
+    if let Some(buffer) = PIPE_REGISTRY.lock().get(&pipe) {
+        let mut pipe = buffer.lock();
+        if is_read {
+            pipe.readers += 1;
+        } else {
+            pipe.writers += 1;
+        }
+    }
+}
+
+/// Release one holder of a pipe end; the end closes when the last holder
+/// drops it.
+pub fn pipe_release(pipe: usize, is_read: bool) {
+    if let Some(buffer) = PIPE_REGISTRY.lock().get(&pipe) {
+        let mut pipe = buffer.lock();
+        if is_read {
+            pipe.readers = pipe.readers.saturating_sub(1);
+        } else {
+            pipe.writers = pipe.writers.saturating_sub(1);
+        }
+    }
+}
+
+static PIPE_REGISTRY: Mutex<BTreeMap<usize, Arc<Mutex<PipeBuffer>>>> = Mutex::new(BTreeMap::new());
+static NEXT_PIPE_ID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+
+fn sys_pipe(pipefd: usize) -> isize {
+    let (read_fd, write_fd) = match create_pipe() {
+        Some(fds) => fds,
+        None => return -24, // EMFILE
+    };
+    let result = [read_fd as i32, write_fd as i32];
+    if write_user(pipefd, &result).is_none() {
+        return -14;
+    }
+    0
+}
+
+fn sys_pipe2(pipefd: usize, _flags: usize) -> isize {
+    // Flags (O_NONBLOCK, O_CLOEXEC) not yet supported.
+    sys_pipe(pipefd)
+}
+
+fn create_pipe() -> Option<(usize, usize)> {
+    let pipe_id = NEXT_PIPE_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let buffer = Arc::new(Mutex::new(PipeBuffer::new()));
+    PIPE_REGISTRY.lock().insert(pipe_id, buffer.clone());
+
+    let process = crate::sched::current_process()?;
+    let mut process = process.lock();
+    let read_fd = next_fd(&process);
+    process.pipes.insert(read_fd, (pipe_id, true));
+    let write_fd = next_fd(&process);
+    process.pipes.insert(write_fd, (pipe_id, false));
+    Some((read_fd, write_fd))
+}
+
+fn pipe_id(fd: usize) -> Option<(usize, bool)> {
+    crate::sched::current_process().and_then(|process| process.lock().pipes.get(&fd).copied())
+}
+
+fn pipe_read(fd: usize, buf: usize, count: usize) -> isize {
+    let Some((pipe_id, true)) = pipe_id(fd) else {
+        return -9;
+    };
+    let Some(buffer) = PIPE_REGISTRY.lock().get(&pipe_id).cloned() else {
+        return -9;
+    };
+    let mut data = alloc::vec![0u8; count];
+    let mut read = 0;
+    // Block until at least one byte or writer closes.
+    loop {
+        let mut pipe = buffer.lock();
+        if pipe.read_pos < pipe.write_pos {
+            let available = pipe.write_pos - pipe.read_pos;
+            let to_read = available.min(count);
+            // Copy with wraparound: read_pos/write_pos are monotonic counters
+            // into the ring's modulo domain.
+            let mut remaining = to_read;
+            let mut src = pipe.read_pos % pipe.data.len();
+            let mut dst = 0;
+            while remaining > 0 {
+                let chunk = remaining.min(pipe.data.len() - src);
+                data[dst..dst + chunk].copy_from_slice(&pipe.data[src..src + chunk]);
+                dst += chunk;
+                src = (src + chunk) % pipe.data.len();
+                remaining -= chunk;
+            }
+            pipe.read_pos += to_read;
+            read = to_read;
+            break;
+        }
+        if pipe.closed_write() {
+            break;
+        }
+        drop(pipe);
+        kor_sched::yield_now();
+    }
+    if read == 0 && count > 0 {
+        return 0; // EOF
+    }
+    if copy_to_user(buf, &data[..read]).is_none() {
+        return -14;
+    }
+    read as isize
+}
+
+fn pipe_write(fd: usize, buf: usize, count: usize) -> isize {
+    let Some((pipe_id, false)) = pipe_id(fd) else {
+        return -9;
+    };
+    let Some(buffer) = PIPE_REGISTRY.lock().get(&pipe_id).cloned() else {
+        return -9;
+    };
+    let mut data = alloc::vec![0u8; count];
+    if copy_from_user(buf, &mut data).is_none() {
+        return -14;
+    }
+
+    let mut pipe = buffer.lock();
+    if pipe.closed_read() {
+        return -32; // EPIPE
+    }
+    let mut written = 0;
+    while written < count {
+        let space = pipe.data.len() - (pipe.write_pos - pipe.read_pos);
+        if space == 0 {
+            drop(pipe);
+            kor_sched::yield_now();
+            pipe = buffer.lock();
+            continue;
+        }
+        let to_write = space.min(count - written);
+        let write_start = pipe.write_pos % pipe.data.len();
+        let end = (write_start + to_write).min(pipe.data.len());
+        let chunk = end - write_start;
+        pipe.data[write_start..end].copy_from_slice(&data[written..written + chunk]);
+        pipe.write_pos += chunk;
+        written += chunk;
+    }
+    written as isize
+}
+
+fn pipe_close(fd: usize) {
+    let Some((pipe_id, is_read)) = pipe_id(fd) else {
+        return;
+    };
+    pipe_release(pipe_id, is_read);
+}
+
+/// True when a pipe read-end has buffered data or its writer has closed
+/// (EOF also reports readable, matching poll(2) semantics).
+fn pipe_readable(fd: usize) -> bool {
+    let Some((pipe, true)) = pipe_id(fd) else {
+        return false;
+    };
+    match PIPE_REGISTRY.lock().get(&pipe) {
+        Some(buffer) => {
+            let pipe = buffer.lock();
+            pipe.read_pos < pipe.write_pos || pipe.closed_write()
+        }
+        None => false,
+    }
+}
+
+// --- LTP-critical syscall implementations -----------------------------------
+
+fn sys_pread64(fd: usize, buf: usize, count: usize, offset: usize) -> isize {
+    if checked_user_range(buf, count, true).is_none() {
+        return -14;
+    }
+    let entry = match current_file(fd) {
+        Some(entry) => entry,
+        None => return -9,
+    };
+    let entry = entry.lock();
+    let mut data = alloc::vec![0u8; count];
+    match entry.inode.read_at(offset, &mut data) {
+        Ok(read) => {
+            drop(entry);
+            if copy_to_user(buf, &data[..read]).is_none() {
+                return -14;
+            }
+            read as isize
+        }
+        Err(error) => fs_errno(error),
+    }
+}
+
+fn sys_pwrite64(fd: usize, buf: usize, count: usize, offset: usize) -> isize {
+    let mut data = alloc::vec![0u8; count];
+    if copy_from_user(buf, &mut data).is_none() {
+        return -14;
+    }
+    let entry = match current_file(fd) {
+        Some(entry) => entry,
+        None => return -9,
+    };
+    let entry = entry.lock();
+    match entry.inode.write_at(offset, &data) {
+        Ok(written) => written as isize,
+        Err(error) => fs_errno(error),
+    }
+}
+
+/// struct pollfd { int fd; short events; short revents; } — 8 bytes
+fn sys_poll(fds: usize, nfds: usize, _timeout: usize) -> isize {
+    if nfds == 0 {
+        return 0;
+    }
+    let byte_len = nfds.checked_mul(8).unwrap_or(usize::MAX);
+    if checked_user_range(fds, byte_len, true).is_none() {
+        return -14;
+    }
+    const POLLIN: u16 = 0x001;
+    let mut ready = 0;
+    for i in 0..nfds {
+        let pfd = fds + i * 8;
+        let fd = match read_user::<i32>(pfd) {
+            Some(fd) => fd,
+            None => return -14,
+        };
+        let events = match read_user::<u16>(pfd + 4) {
+            Some(e) => e,
+            None => return -14,
+        };
+        let mut revents: u16 = 0;
+        if events & POLLIN != 0 {
+            let readable = (fd == 0 && rx_has_data())
+                || pipe_readable(fd as usize)
+                || socket_id(fd as usize).is_ok_and(crate::net::has_data);
+            if readable {
+                revents = POLLIN;
+            }
+        }
+        if revents != 0 {
+            ready += 1;
+        }
+        if write_user(pfd + 6, &revents).is_none() {
+            return -14;
+        }
+    }
+    ready as isize
+}
+
+fn sys_sendfile(out_fd: usize, in_fd: usize, offset: usize, count: usize) -> isize {
+    let _ = offset;
+    let mut buf = alloc::vec![0u8; count.min(65536)];
+    let read = sys_read(in_fd, buf.as_mut_ptr() as usize, buf.len());
+    if read < 0 {
+        return read;
+    }
+    sys_write(out_fd, buf.as_ptr() as usize, read as usize)
+}
+
+fn sys_fchdir(fd: usize) -> isize {
+    let Some(entry) = current_file(fd) else {
+        return -9;
+    };
+    let entry = entry.lock();
+    let path = entry.path.clone();
+    crate::sched::with_current_process(|process| process.lock().cwd = path);
+    0
+}
+
+fn sys_fsync(fd: usize) -> isize {
+    let _ = fd;
+    match kor_fs::mount::sync_all(&crate::MOUNTS) {
+        Ok(()) => 0,
+        Err(_) => -5,
+    }
+}
+
+fn sys_ftruncate(fd: usize, length: i64) -> isize {
+    let Some(entry) = current_file(fd) else {
+        return -9;
+    };
+    let inode = entry.lock().inode.clone();
+    drop(entry);
+    match inode.truncate(length as usize) {
+        Ok(()) => 0,
+        Err(_) => -5,
+    }
+}
+
+fn sys_truncate(path_addr: usize, length: i64) -> isize {
+    let full = match user_absolute_path(0xFF, path_addr) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    match kor_fs::mount::resolve(&crate::MOUNTS, &full) {
+        Ok(inode) => match inode.truncate(length as usize) {
+            Ok(()) => 0,
+            Err(_) => -5,
+        },
+        Err(_) => -2,
+    }
+}
+
+fn sys_fchmod(_fd: usize, _mode: usize) -> isize {
+    0 // TODO: INode chmod not yet in trait
+}
+
+fn sys_waitid(_idtype: usize, _pid: usize, _infop: usize, _options: usize) -> isize {
+    sys_wait4(usize::MAX, 0, 0)
+}
+
+fn sys_sigtimedwait(_set: usize, _info: usize, _timeout: usize) -> isize {
+    -38 // ENOSYS: not yet
+}
+
+/// struct statfs { long type, bsize; long long blocks, bfree, bavail, files, ffree; ... }
+fn sys_statfs(path_addr: usize, buf: usize) -> isize {
+    let _path = match user_absolute_path(0xFF, path_addr) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    // Minimal ext2 stats
+    let statfs: [u64; 8] = [0xEF53, 1024, 4096, 3800, 100, 1024, 1000, 0];
+    if write_user(buf, &statfs).is_none() {
+        return -14;
+    }
+    0
+}
+
+fn sys_fstatfs(fd: usize, buf: usize) -> isize {
+    let _ = fd;
+    let statfs: [u64; 8] = [0xEF53, 1024, 4096, 3800, 100, 1024, 1000, 0];
+    if write_user(buf, &statfs).is_none() {
+        return -14;
+    }
+    0
+}
+
+fn sys_setitimer(_which: usize, _new_val: usize, _old_val: usize) -> isize {
+    0 // no-op: no interval timers yet
+}
+
+fn sys_getitimer(_which: usize, _val: usize) -> isize {
+    0
+}
+
+fn sys_getrusage(_who: usize, usage: usize) -> isize {
+    // struct rusage: 18 * 8 bytes (timevals + counters)
+    let rusage = [0u64; 18];
+    if write_user(usage, &rusage).is_none() {
+        return -14;
+    }
+    0
+}
+
 // --- Syscall implementations ---
 
 fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
+    if pipe_id(fd).is_some() {
+        return pipe_write(fd, buf, count);
+    }
     let mut data = alloc::vec![0u8; count];
     if copy_from_user(buf, &mut data).is_none() {
         return -14;
@@ -1244,6 +1695,9 @@ fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
 fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
     if checked_user_range(buf, count, true).is_none() {
         return -14;
+    }
+    if pipe_id(fd).is_some() {
+        return pipe_read(fd, buf, count);
     }
     let mut data = alloc::vec![0u8; count];
     if let Ok(socket) = socket_id(fd) {
@@ -1381,6 +1835,7 @@ fn sys_clone(args: &[usize]) -> isize {
         child_stdio,
         child_sockets,
         child_ipv6_fds,
+        child_pipes,
     ) = {
         let parent = parent.lock();
         (
@@ -1394,6 +1849,7 @@ fn sys_clone(args: &[usize]) -> isize {
             parent.stdio.clone(),
             parent.sockets.clone(),
             parent.ipv6_fds.clone(),
+            parent.pipes.clone(),
         )
     };
     let child_space = match parent
@@ -1440,6 +1896,10 @@ fn sys_clone(args: &[usize]) -> isize {
         child.stdio = child_stdio;
         child.sockets = child_sockets;
         child.ipv6_fds = child_ipv6_fds;
+        child.pipes = child_pipes.clone();
+        for (pipe, is_read) in child_pipes.values() {
+            pipe_add_holder(*pipe, *is_read);
+        }
         child.set_fork_context(context);
     }
     let pid = child.lock().pid;
@@ -1935,6 +2395,11 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
 }
 
 fn sys_close(fd: usize) -> isize {
+    if pipe_id(fd).is_some() {
+        pipe_close(fd);
+        crate::sched::with_current_process(|process| process.lock().pipes.remove(&fd));
+        return 0;
+    }
     if fd <= 2 {
         return 0;
     }
@@ -1965,7 +2430,8 @@ fn sys_dup(fd: usize) -> isize {
         process.stdio.get(&fd).copied()
     };
     let socket = process.sockets.get(&fd).copied();
-    if file.is_none() && stdio.is_none() && socket.is_none() {
+    let pipe = process.pipes.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() {
         return -9;
     }
     let newfd = next_fd(&process);
@@ -1978,6 +2444,9 @@ fn sys_dup(fd: usize) -> isize {
         if process.ipv6_fds.contains_key(&fd) {
             process.ipv6_fds.insert(newfd, ());
         }
+    } else if let Some(pipe) = pipe {
+        process.pipes.insert(newfd, pipe);
+        pipe_add_holder(pipe.0, pipe.1);
     }
     newfd as isize
 }
@@ -1994,7 +2463,8 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
         process.stdio.get(&fd).copied()
     };
     let socket = process.sockets.get(&fd).copied();
-    if file.is_none() && stdio.is_none() && socket.is_none() {
+    let pipe = process.pipes.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() {
         return -9;
     }
     if fd == newfd {
@@ -2004,6 +2474,7 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     process.stdio.remove(&newfd);
     process.sockets.remove(&newfd);
     process.ipv6_fds.remove(&newfd);
+    process.pipes.remove(&newfd);
     if let Some(entry) = file {
         process.files.insert(newfd, entry);
     } else if let Some(target) = stdio {
@@ -2013,6 +2484,9 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
         if process.ipv6_fds.contains_key(&fd) {
             process.ipv6_fds.insert(newfd, ());
         }
+    } else if let Some(pipe) = pipe {
+        process.pipes.insert(newfd, pipe);
+        pipe_add_holder(pipe.0, pipe.1);
     }
     newfd as isize
 }
@@ -2035,7 +2509,8 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
         process.stdio.get(&fd).copied()
     };
     let socket = process.sockets.get(&fd).copied();
-    if file.is_none() && stdio.is_none() && socket.is_none() {
+    let pipe = process.pipes.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() {
         return -9;
     }
     match command {
@@ -2044,6 +2519,7 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
             while process.files.contains_key(&newfd)
                 || process.stdio.contains_key(&newfd)
                 || process.sockets.contains_key(&newfd)
+                || process.pipes.contains_key(&newfd)
             {
                 newfd = match newfd.checked_add(1) {
                     Some(value) => value,
@@ -2059,6 +2535,9 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
                 if process.ipv6_fds.contains_key(&fd) {
                     process.ipv6_fds.insert(newfd, ());
                 }
+            } else if let Some(pipe) = pipe {
+                process.pipes.insert(newfd, pipe);
+                pipe_add_holder(pipe.0, pipe.1);
             }
             newfd as isize
         }
@@ -2950,6 +3429,9 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
         Some(events) => events,
         None => return -10,
     };
+    if crate::sched::matching_child(parent, requested).is_none() {
+        return -10; // ECHILD: no children exist (zombie or running).
+    }
     loop {
         if let Some(child) = crate::sched::matching_zombie(parent, requested) {
             let (child_pid, code) = {
