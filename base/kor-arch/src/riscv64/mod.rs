@@ -7,3 +7,4 @@ pub mod plic;
 pub mod smp;
 pub mod time;
 pub mod trap;
+pub mod boot_macros;

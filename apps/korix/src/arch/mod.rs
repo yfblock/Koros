@@ -1,24 +1,16 @@
-//! Arch-specific application code: boot MMU policy + platform constants.
-use kor::config::PlatformConfig;
+//! Arch-specific application code: per-arch boot modules + platform constants.
+//!
+//! The boot trampolines live in the per-arch `boot.rs` modules, composed
+//! from kor-arch fragment macros with this app's mapping policy inline.
 
-kor_arch::boot_stack!(0x80000);
-
-unsafe extern "C" {
-    static bstack_top: u64;
-    #[cfg(target_arch = "riscv64")]
-    fn rust_entry();
-    #[cfg(target_arch = "x86_64")]
-    fn rust_entry();
-    #[cfg(target_arch = "aarch64")]
-    fn rust_entry();
-}
-
-#[cfg(target_arch = "riscv64")]
-kor_arch::boot_trampoline_riscv64!(bstack_top, rust_entry);
-#[cfg(target_arch = "x86_64")]
-kor_arch::boot_trampoline_x86_64!(bstack_top, rust_entry);
 #[cfg(target_arch = "aarch64")]
-kor_arch::boot_trampoline_aarch64!(bstack_top, rust_entry);
+mod aarch64;
+#[cfg(target_arch = "riscv64")]
+mod riscv64;
+#[cfg(target_arch = "x86_64")]
+mod x86_64;
+
+use kor::config::PlatformConfig;
 
 pub(crate) fn platform_config() -> PlatformConfig {
     #[cfg(target_arch = "riscv64")]
@@ -49,10 +41,3 @@ pub(crate) fn platform_config() -> PlatformConfig {
     )))]
     compile_error!("korix supports riscv64, aarch64, and x86_64");
 }
-
-#[cfg(target_arch = "aarch64")]
-mod aarch64;
-#[cfg(target_arch = "riscv64")]
-mod riscv64;
-#[cfg(target_arch = "x86_64")]
-mod x86_64;
