@@ -40,7 +40,7 @@ extern "C" fn kernel_main() -> ! {
     // 2. Platform config (firmware region, dtb, pci — read back by mm/driver probe).
     config::init(arch::platform_config());
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).
-    kor_arch::interrupt_controller().init();
+    kor_arch::interrupt_init();
     // 5. Trap callbacks (timer tick + external-IRQ dispatch).
 
     // 6. Bootstrap heap (frame buddy's internal BTreeSet needs it).
@@ -162,7 +162,7 @@ extern "C" fn secondary_entry(cpu_id: usize) -> ! {
     kor::smp::register_online();
     kor::println!("cpu {} online", cpu_id);
     // Per-CPU interrupt controller init (GIC CPU interface on aarch64).
-    kor_arch::interrupt_controller().init();
+    kor_arch::interrupt_init();
     kor_arch::timer_init();
     kor_arch::irq_enable();
     while !kor_sched::is_ready() {

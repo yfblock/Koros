@@ -7,26 +7,18 @@
 //! compile uniformly and no-ops at runtime.
 
 
-use crate::InterruptController;
 
-/// x86_64 stub interrupt controller.
-pub struct StubController;
 
-/// Singleton instance installed by the binary crate.
-pub static IC: StubController = StubController;
+pub fn init() {
+    // LAPIC enable is part of IDT / trap setup; nothing controller-global.
+}
 
-impl InterruptController for StubController {
-    fn init(&self) {
-        // LAPIC enable is part of IDT / trap setup; nothing controller-global.
-    }
+pub fn enable_device_irq(_interrupts: &[u32; 3]) -> Option<u32> {
+    None
+}
 
-    fn enable_device_irq(&self, _interrupts: &[u32; 3]) -> Option<u32> {
-        None
-    }
-
-    fn dispatch_external(&self, _handle_irq: &mut dyn FnMut(u32), _timer_tick: &mut dyn FnMut()) {
-        // x86_64 external IRQs go through IDT vectors, not a controller dispatch.
-    }
+pub fn dispatch_external(_handle_irq: &mut dyn FnMut(u32), _timer_tick: &mut dyn FnMut()) {
+    // x86_64 external IRQs go through IDT vectors, not a controller dispatch.
 }
 
 // --- Local IRQ mask (DAIF.I / sie) ---
@@ -37,17 +29,17 @@ const RFLAGS_IF: u64 = 1 << 9;
 
 pub fn enable() {
     // SAFETY: sets the interrupt flag.
-    unsafe { asm!("sti", options(nomem, nostack)) };
+unsafe { asm!("sti", options(nomem, nostack)) };
 }
 
 pub fn disable() {
     // SAFETY: clears the interrupt flag.
-    unsafe { asm!("cli", options(nomem, nostack)) };
+unsafe { asm!("cli", options(nomem, nostack)) };
 }
 
 pub fn is_enabled() -> bool {
-    let flags: u64;
+let flags: u64;
     // SAFETY: reads RFLAGS.
-    unsafe { asm!("pushfq; pop {}", out(reg) flags, options(nomem)) };
-    flags & RFLAGS_IF != 0
+unsafe { asm!("pushfq; pop {}", out(reg) flags, options(nomem)) };
+flags & RFLAGS_IF != 0
 }

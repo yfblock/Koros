@@ -27,7 +27,6 @@ cfg_select! {
     target_arch = "aarch64"      => { pub use self::aarch64::trap::TrapFrame; }
 }
 
-pub mod interrupt;
 pub mod pagetable;
 
 // --- Page-mapping types (moved from kor) ------------------------------------
@@ -82,13 +81,34 @@ pub enum MapError {
     Unsupported,
 }
 
-pub use interrupt::{InterruptController, enable_device_irq};
-
 /// Dispatch pending external IRQs through the active controller: device
 /// IRQs go to `handle_irq`; a controller-delivered timer interrupt (GIC
 /// PPI) calls `timer_tick`.
 pub fn dispatch_external(handle_irq: &mut dyn FnMut(u32), timer_tick: &mut dyn FnMut()) {
-    interrupt_controller().dispatch_external(handle_irq, timer_tick);
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::interrupt::dispatch_external(handle_irq, timer_tick) }
+        target_arch = "x86_64"       => { let _ = (handle_irq, timer_tick); }
+        target_arch = "aarch64"      => { self::aarch64::interrupt::dispatch_external(handle_irq, timer_tick) }
+    }
+}
+
+/// Enable a device IRQ described by FDT `interrupts` cells through the
+/// active controller.
+pub fn enable_device_irq(interrupts: &[u32; 3]) -> Option<u32> {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::interrupt::enable_device_irq(interrupts) }
+        target_arch = "x86_64"       => { let _ = interrupts; None }
+        target_arch = "aarch64"      => { self::aarch64::interrupt::enable_device_irq(interrupts) }
+    }
+}
+
+/// One-time interrupt-controller initialisation (GIC distributor, etc.).
+pub fn interrupt_init() {
+    cfg_select! {
+        target_arch = "riscv64"      => { self::riscv64::interrupt::init() }
+        target_arch = "x86_64"       => { self::x86_64::interrupt::init() }
+        target_arch = "aarch64"      => { self::aarch64::interrupt::init() }
+    }
 }
 
 pub mod boot;
@@ -155,19 +175,6 @@ pub fn enter_user(pc: usize, sp: usize) -> ! {
     // SAFETY: the composition layer activates the new address space before
     // calling this function; `initial` contains no privileged state.
     unsafe { resume_user_context(&context) }
-}
-
-// ---------------------------------------------------------------------------
-// Composition helpers: cfg-selected singletons for the binary crate to install.
-// ---------------------------------------------------------------------------
-
-/// The `InterruptController` for the current target (polling stub on x86_64).
-pub fn interrupt_controller() -> &'static dyn InterruptController {
-    cfg_select! {
-        target_arch = "riscv64"      => { &riscv64::interrupt::PLIC }
-        target_arch = "x86_64"       => { &x86_64::interrupt::IC }
-        target_arch = "aarch64"      => { &aarch64::interrupt::GIC }
-    }
 }
 
 /// The `Console` for the current target.

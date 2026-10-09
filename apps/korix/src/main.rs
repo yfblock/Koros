@@ -45,7 +45,7 @@ extern "C" fn kernel_main() -> ! {
     kor::install_console(kor_arch::console());
     kor::println!("console: base {:#x} (from FDT)", kor_arch::console_base());
     config::init(arch::platform_config());
-    kor_arch::interrupt_controller().init();
+    kor_arch::interrupt_init();
     heap::init_bootstrap();
     kor_fs::register_filesystem(&kor_ext2::EXT2_DRIVER);
     kor_fs::register_filesystem(&kor_ramfs::RAMFS_DRIVER);
@@ -127,8 +127,7 @@ fn probe_devices() {
 #[unsafe(no_mangle)]
 extern "C" fn secondary_entry(_cpu_id: usize) -> ! {
     arch::trap::init();
-    let ic = kor_arch::interrupt_controller();
-    ic.init();
+    kor_arch::interrupt_init();
     kor_arch::timer_init();
     kor_arch::irq_enable();
     kor::smp::register_online();
