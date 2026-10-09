@@ -3,7 +3,7 @@
 //! The base address is supplied by the platform configuration; this module
 //! only knows the register layout.
 
-use kor::mmio::register_bitfields;
+use kor::register_bitfields;
 
 // Register offsets (same for MMIO and port-I/O variants).
 const THR: usize = 0; // Transmit Holding Register (write)

@@ -2,7 +2,7 @@
 //!
 //! The base address is supplied by the platform configuration.
 
-use kor::mmio::register_bitfields;
+use kor::register_bitfields;
 
 const UART_DR: usize = 0x00; // Data Register
 const UART_FR: usize = 0x18; // Flag Register

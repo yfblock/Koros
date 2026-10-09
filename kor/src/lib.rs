@@ -10,8 +10,15 @@
 extern crate alloc;
 
 pub mod addr;
-pub mod mmio;
 pub use addr::{KernelAddr, PhysAddr, VirtAddr, install_translation};
+// Device-register bit-field definitions (tock-registers re-export).
+// Register access goes through the address newtypes; this gives drivers
+// `register_bitfields!` for named fields (e.g. `LSR [THRE 5, DR 0]`)
+// and the native `FIELD.is_set(value)` helper.
+pub use tock_registers::RegisterLongName;
+pub use tock_registers::fields::Field;
+pub use tock_registers::register_bitfields;
+
 pub mod block;
 pub mod cmdline;
 pub mod config;
