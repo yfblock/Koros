@@ -8,5 +8,4 @@ pub mod smp;
 pub mod time;
 pub mod trap;
 pub mod boot;
-pub mod pte;
 pub mod pagetable;

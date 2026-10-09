@@ -1,9 +1,46 @@
 //! x86_64 runtime page-table operations (4-level, 4 KiB pages + 2 MiB huge pages).
 
+use crate::MappingFlags;
+
+/// Present.
+pub const PTE_P: usize = 1 << 0;
+/// Read/write (clear = read-only).
+pub const PTE_RW: usize = 1 << 1;
+/// User/supervisor (clear = kernel-only).
+pub const PTE_US: usize = 1 << 2;
+/// Page size (huge-page leaf at this level).
+pub const PTE_PS: usize = 1 << 7;
+
+/// Encode generic mapping flags into x86-64 PTE flag bits (present implies
+/// readable and executable — the encoders never set NX).
+pub fn hw_flags(flags: MappingFlags) -> usize {
+    let mut hw = PTE_P;
+    if flags.contains(MappingFlags::W) {
+        hw |= PTE_RW;
+    }
+    if flags.contains(MappingFlags::U) {
+        hw |= PTE_US;
+    }
+    hw
+}
+
+/// Decode x86-64 PTE flag bits back into generic mapping flags (mirror of
+/// [`hw_flags`]: present implies readable and executable).
+pub fn mapping_flags(entry: usize) -> MappingFlags {
+    let mut flags = MappingFlags::R | MappingFlags::X;
+    if entry & PTE_RW != 0 {
+        flags = flags | MappingFlags::W;
+    }
+    if entry & PTE_US != 0 {
+        flags = flags | MappingFlags::U;
+    }
+    flags
+}
+
+
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
 use crate::MapError;
-use crate::MappingFlags;
 use x86_64::registers::control::Cr3;
 
 
@@ -20,7 +57,6 @@ pub unsafe fn zero_page(pa: usize) {
     unsafe { core::ptr::write_bytes(va, 0, 512) };
 }
 
-use crate::pte::{PTE_P, PTE_PS, PTE_RW, PTE_US, hw_flags};
 const PTE_NUM: usize = 512;
 
 pub fn init() {}

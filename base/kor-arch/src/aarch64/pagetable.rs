@@ -1,9 +1,56 @@
 //! AArch64 runtime page-table operations (4 KiB pages + 2 MiB blocks).
 
+use crate::MappingFlags;
+
+/// Valid/present.
+pub const PTE_VALID: usize = 1 << 0;
+/// Descriptor is a table pointer (not a block/page leaf).
+pub const PTE_TABLE: usize = 1 << 1;
+/// MAIR attribute index 1 (Normal WB).
+pub const PTE_ATTR: usize = 1 << 2;
+/// Accessed — software-set (QEMU/hardware may require it).
+pub const PTE_AF: usize = 1 << 10;
+/// AP[2]: read-only.
+pub const PTE_AP2_RO: usize = 1 << 7;
+/// AP[1]: EL0 access allowed.
+pub const PTE_AP1_EL0: usize = 1 << 6;
+/// UXN: unprivileged execute-never.
+pub const PTE_UXN: usize = 1 << 54;
+
+/// Encode generic mapping flags into AP/UXN permission bits.
+pub fn ap_flags(flags: MappingFlags) -> usize {
+    let mut extra = 0;
+    if !flags.contains(MappingFlags::W) {
+        extra |= PTE_AP2_RO;
+    }
+    if flags.contains(MappingFlags::U) {
+        extra |= PTE_AP1_EL0;
+    }
+    if !flags.contains(MappingFlags::X) {
+        extra |= PTE_UXN;
+    }
+    extra
+}
+
+/// Decode PTE permission bits back into generic mapping flags.
+pub fn mapping_flags(entry: usize) -> MappingFlags {
+    let mut flags = MappingFlags::R;
+    if entry & PTE_AP2_RO == 0 {
+        flags = flags | MappingFlags::W;
+    }
+    if entry & PTE_AP1_EL0 != 0 {
+        flags = flags | MappingFlags::U;
+    }
+    if entry & PTE_UXN == 0 {
+        flags = flags | MappingFlags::X;
+    }
+    flags
+}
+
+
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
 use crate::MapError;
-use crate::MappingFlags;
 
 
 
@@ -19,11 +66,9 @@ pub unsafe fn zero_page(pa: usize) {
     unsafe { core::ptr::write_bytes(va, 0, 512) };
 }
 
-use crate::pte::{PTE_VALID, ap_flags};
 
 /// Entries per page-table page (512 × 64-bit PTEs).
 const PTE_NUM: usize = 512;
-pub(crate) use crate::pte::PTE_TABLE;
 
 /// Build the default boot tables: L0[0] -> L1, L1[i] = 1 GiB identity
 /// block (covers the first 512 GiB).  TTBR0 and TTBR1 share the root, so
@@ -58,7 +103,6 @@ pub unsafe extern "C" fn boot_mmu_build(table_pa: usize, _table_len: usize) -> u
     let pages = unsafe { &mut *(table_pa as *mut [usize; PTE_NUM * 2]) };
     boot_table_identity_512g(pages)
 }
-use crate::pte::{PTE_AF, PTE_ATTR};
 
 pub fn init() {}
 
