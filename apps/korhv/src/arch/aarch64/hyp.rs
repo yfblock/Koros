@@ -10,6 +10,7 @@
 
 use super::console_mux::{ConsoleMux, InputAction};
 use core::arch::{asm, global_asm};
+use kor::mmio::{Readable, Writeable};
 
 const EC_WFI: u64 = 0x01;
 const EC_HVC: u64 = 0x16;
@@ -434,28 +435,25 @@ pub fn init() {
         asm!("msr vmpidr_el2, {}", in(reg) mpidr);
         asm!("msr cntv_ctl_el0, xzr"); // disable guest virtual timer
         // Enable real PL011 UART for RX so QEMU chardev can deliver stdin
-        kor::mmio::Reg::<u32>::at_pa((UART_BASE + 0x02c) as usize).write(0x70); // UARTLCR_H: 8N1, FIFO on
-        kor::mmio::Reg::<u32>::at_pa((UART_BASE + 0x030) as usize).write(0x301); // UARTCR: UARTEN|TXE|RXE
+        kor::mmio::wo::<u32>((UART_BASE + 0x02c) as usize).set(0x70); // UARTLCR_H: 8N1, FIFO on
+        kor::mmio::wo::<u32>((UART_BASE + 0x030) as usize).set(0x301); // UARTCR: UARTEN|TXE|RXE
     }
     // Real GIC for hypervisor interrupts (PPI 27 timer, PPI 30 CNTP).
-    {
-        let gicd = kor::mmio::Reg::<u32>::at_pa(GICD_BASE as usize);
-        let gicc = kor::mmio::Reg::<u32>::at_pa(GICC_BASE as usize);
-        gicd.at_offset(0 * 4).write(3); // GICD_CTLR: enable Group 0 + Group 1
-        // (IGROUPR0 left at QEMU default — already Group 1)
-        gicd.at_offset(0x100 / 4 * 4).write(1 << VIRQ_TIMER); // ISENABLER0 (guest timer PPI only)
-        // Route all SPIs (32-63) to CPU 0 and set Group 1
-        for i in 32..64usize {
-            kor::mmio::Reg::<u8>::at_pa((GICD_BASE as usize) + 0x800 + i).write(1);
-        }
-        gicd.at_offset(0x84 / 4 * 4).write(0xFFFF_FFFF); // IGROUPR1: all Group 1
-        gicd.at_offset(0x104 / 4 * 4).write(0xFFFF_FFFF); // ISENABLER1: enable all SPIs
-        for i in 32..64usize {
-            kor::mmio::Reg::<u8>::at_pa((GICD_BASE as usize) + 0x400 + i).write(0);
-        } // priority 0
-        gicc.at_offset(0 * 4).write(3); // GICC_CTLR: enable Group 0 + Group 1
-        gicc.at_offset(1 * 4).write(0xFF); // GICC_PMR: allow all priorities
+    // Distributor: enable both groups, the guest-timer PPI, and all SPIs
+    // (routed to CPU 0, Group 1, priority 0).
+    kor::mmio::wo::<u32>(GICD_BASE as usize).set(3); // GICD_CTLR
+    kor::mmio::wo::<u32>(GICD_BASE as usize + 0x100).set(1 << VIRQ_TIMER); // ISENABLER0
+    for i in 32..64usize {
+        kor::mmio::wo::<u8>(GICD_BASE as usize + 0x800 + i).set(1); // ITARGETSR
     }
+    kor::mmio::wo::<u32>(GICD_BASE as usize + 0x84).set(0xFFFF_FFFF); // IGROUPR1
+    kor::mmio::wo::<u32>(GICD_BASE as usize + 0x104).set(0xFFFF_FFFF); // ISENABLER1
+    for i in 32..64usize {
+        kor::mmio::wo::<u8>(GICD_BASE as usize + 0x400 + i).set(0); // IPRIORITYR
+    }
+    // CPU interface: enable both groups, mask all priorities.
+    kor::mmio::wo::<u32>(GICC_BASE as usize).set(3); // GICC_CTLR
+    kor::mmio::wo::<u32>(GICC_BASE as usize + 0x4).set(0xFF); // GICC_PMR
     kor::println!(
         "el2: Linux stage-2 + vGIC + UART ON (HCR={:#x})",
         HCR_EL2_BASE
@@ -607,7 +605,7 @@ fn uart_read(vu: &mut Vuart, off: usize) -> u32 {
 fn uart_write(vu: &mut Vuart, off: usize, val: u32, vgic: &mut Vgic) {
     match off {
         0x000 => {
-            kor::mmio::Reg::<u8>::at_pa(UART_BASE as usize).write(val as u8);
+            kor::mmio::wo::<u8>(UART_BASE as usize).set(val as u8);
         }
         0x004 => {}
         0x024 => {}
@@ -708,9 +706,8 @@ fn handle_mmio(
             if off == 0x050 {
                 // Validate and temporarily translate every descriptor before
                 // exposing it to the physical bus-mastering device.
-                let qpn = kor::mmio::Reg::<u32>::at_pa((dev_base + 0x040) as usize).read() as u64;
-                let queue_size =
-                    kor::mmio::Reg::<u32>::at_pa((dev_base + 0x038) as usize).read() as usize;
+                let qpn = kor::mmio::ro::<u32>((dev_base + 0x040) as usize).get() as u64;
+                let queue_size = kor::mmio::ro::<u32>((dev_base + 0x038) as usize).get() as usize;
                 if queue_size == 0 || queue_size > 1024 {
                     return false;
                 }
@@ -762,7 +759,7 @@ fn handle_mmio(
                 unsafe {
                     asm!("dsb sy");
                 }
-                kor::mmio::Reg::<u32>::at_pa((dev_base + off as u64) as usize).write(val_in as u32);
+                kor::mmio::wo::<u32>((dev_base + off as u64) as usize).set(val_in as u32);
                 for _ in 0..200000 {
                     let isp1 = unsafe { ((GICD_BASE + 0x204) as *const u32).read_volatile() };
                     if isp1 & spi_bit != 0 {
@@ -785,7 +782,7 @@ fn handle_mmio(
                 } else {
                     val_in
                 };
-                kor::mmio::Reg::<u32>::at_pa((dev_base + off as u64) as usize).write(value as u32);
+                kor::mmio::wo::<u32>((dev_base + off as u64) as usize).set(value as u32);
                 if off == 0x050 {
                     for _ in 0..200000 {
                         let isp1 = unsafe { ((GICD_BASE + 0x204) as *const u32).read_volatile() };
@@ -1067,7 +1064,7 @@ pub fn run() {
                 let virq = if iar == 49 && cur == 1 { 48 } else { iar };
                 gs[cur].vgic.inject(virq);
             }
-            kor::mmio::Reg::<u32>::at_pa((GICC_BASE + 0x10) as usize).write(iar); // EOI
+            kor::mmio::wo::<u32>((GICC_BASE + 0x10) as usize).set(iar); // EOI
             continue;
         }
         match ec {

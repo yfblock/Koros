@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 spin = "0.9"
 fdt = { version = "0.2.0-alpha2", default-features = false }
+tock-registers = { version = "0.10.1", default-features = false, features = ["register_types"] }

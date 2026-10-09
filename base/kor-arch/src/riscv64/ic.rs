@@ -6,6 +6,7 @@
 //! [`dispatch_external`], which claims/ completes each pending source.
 
 use kor::TrapCallbacks;
+use kor::mmio::{Readable, Writeable};
 
 use crate::InterruptController;
 
@@ -38,13 +39,13 @@ impl InterruptController for PlicController {
         let claim = super::plic::claim_reg(ctx);
         loop {
             // SAFETY: claim register read returns the highest-priority pending IRQ.
-            let irq = claim.read();
+            let irq = claim.get();
             if irq == 0 {
                 break;
             }
             callbacks.on_external(irq);
             // SAFETY: writing the IRQ back signals completion.
-            claim.write(irq);
+            claim.set(irq);
         }
     }
 }

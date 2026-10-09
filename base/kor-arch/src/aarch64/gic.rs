@@ -4,6 +4,7 @@
 //! trap path calls [`dispatch`], which reads the acknowledge register, routes
 //! the timer to the tick path and everything else to the external-interrupt
 //! registry, then signals end-of-interrupt.
+use kor::mmio::{Readable, Writeable};
 
 
 const GICD_BASE: usize = 0x0800_0000;
@@ -19,22 +20,24 @@ const GICC_PMR: usize = 0x004;
 const GICC_IAR: usize = 0x00C;
 const GICC_EOIR: usize = 0x010;
 
-fn gicd(off: usize) -> kor::mmio::Reg<u32> {
-    kor::mmio::Reg::at_pa(GICD_BASE + off)
+use kor::mmio::registers::ReadWrite;
+
+fn gicd(off: usize) -> &'static ReadWrite<u32> {
+    kor::mmio::rw(GICD_BASE + off)
 }
 
-fn gicc(off: usize) -> kor::mmio::Reg<u32> {
-    kor::mmio::Reg::at_pa(GICC_BASE + off)
+fn gicc(off: usize) -> &'static ReadWrite<u32> {
+    kor::mmio::rw(GICC_BASE + off)
 }
 
 fn gicc_read(off: usize) -> u32 {
     // SAFETY: GIC CPU-interface MMIO is mapped in the direct map.
-    (gicc(off)).read()
+    (gicc(off)).get()
 }
 
 fn gicc_write(off: usize, val: u32) {
     // SAFETY: GIC CPU-interface MMIO is mapped in the direct map.
-    (gicc(off)).write(val);
+    (gicc(off)).set(val);
 }
 
 /// Read the interrupt acknowledge register (returns the active INTID).
@@ -49,15 +52,15 @@ pub fn write_eoir(iar: u32) {
 
 /// Enable an interrupt id (sets priority to 0 = highest, sets the enable bit).
 fn enable_intid(intid: u32) {
-    kor::mmio::Reg::<u8>::at_pa(GICD_BASE + GICD_IPRIORITYR + intid as usize).write(0);
+    kor::mmio::wo::<u8>(GICD_BASE + GICD_IPRIORITYR + intid as usize).set(0);
     let en = gicd(GICD_ISENABLER + (intid as usize / 32) * 4);
-    en.write(en.read() | (1 << (intid % 32)));
+    en.set(en.get() | (1 << (intid % 32)));
 }
 
 /// Distributor + CPU-interface enable and priority mask.  Called per CPU.
 pub fn init() {
     // SAFETY: GIC MMIO is mapped.
-    (gicd(GICD_CTLR)).write(1);
+    gicd(GICD_CTLR).set(1);
     gicc_write(GICC_PMR, 0xFF);
     gicc_write(GICC_CTLR, 1);
 }
@@ -71,5 +74,5 @@ pub fn enable_ppi(intid: u32) {
 pub fn enable_spi(intid: u32) {
     enable_intid(intid);
     // ITARGETSR is byte-per-interrupt; target CPU 0.
-    kor::mmio::Reg::<u8>::at_pa(GICD_BASE + GICD_ITARGETSR + intid as usize).write(0x01);
+    kor::mmio::wo::<u8>(GICD_BASE + GICD_ITARGETSR + intid as usize).set(0x01);
 }

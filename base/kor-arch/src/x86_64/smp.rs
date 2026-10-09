@@ -4,6 +4,7 @@
 //! page (`AP_BOOT_PADDR`); the `ap_boot.S` trampoline copied there walks it up
 //! to long mode on the kernel page table and jumps to [`ap_rust_entry`].  APs
 //! are brought up one at a time so they can share the single trampoline page.
+use kor::mmio::{Readable, Writeable};
 
 use kor::smp::MAX_CPUS;
 
@@ -37,16 +38,16 @@ unsafe extern "C" {
     fn ap_end();
 }
 
-fn lapic_reg(off: usize) -> kor::mmio::Reg<u32> {
-    kor::mmio::Reg::at_pa(APIC_BASE_PHYS + off)
+fn lapic_reg(off: usize) -> &'static kor::mmio::registers::ReadWrite<u32> {
+    kor::mmio::rw(APIC_BASE_PHYS + off)
 }
 
 fn lapic_read(off: usize) -> u32 {
-    lapic_reg(off).read()
+    lapic_reg(off).get()
 }
 
 fn lapic_write(off: usize, val: u32) {
-    lapic_reg(off).write(val)
+    lapic_reg(off).set(val)
 }
 
 /// Software-enable this CPU's Local APIC (spurious vector 0xFF, enable bit).
@@ -130,8 +131,8 @@ pub fn start_secondaries() -> usize {
             kor::PhysAddr::new(AP_BOOT_PADDR).to_va().raw() as *mut u8,
             len,
         );
-        kor::mmio::Reg::<usize>::at_pa(SLOT_CR3).write(cr3);
-        kor::mmio::Reg::<usize>::at_pa(SLOT_ENTRY).write(ap_rust_entry as *const () as usize);
+        kor::mmio::wo::<u64>(SLOT_CR3).set(cr3 as u64);
+        kor::mmio::wo::<u64>(SLOT_ENTRY).set(ap_rust_entry as *const () as usize as u64);
     }
 
     let vector = (AP_BOOT_PADDR >> 12) as u32;
@@ -145,7 +146,7 @@ pub fn start_secondaries() -> usize {
             core::ptr::addr_of!(SECONDARY_STACKS[apic].0) as usize + SECONDARY_STACK_SIZE
         };
         // SAFETY: writing the trampoline's stack slot before the SIPI.
-        kor::mmio::Reg::<usize>::at_pa(SLOT_STACK).write(sp);
+        kor::mmio::wo::<u64>(SLOT_STACK).set(sp as u64);
 
         let before = kor::smp::online_count();
         // INIT, then two STARTUP IPIs (per the Intel MP protocol).

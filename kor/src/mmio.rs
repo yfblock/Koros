@@ -1,50 +1,59 @@
-//! Memory-mapped device-register access.
+//! Memory-mapped device-register access, built on `tock-registers`.
 //!
-//! [`Reg`] wraps one device register and exposes safe volatile reads and
-//! writes.  The address-validity contract is concentrated at construction:
-//! a `Reg` must only be built from a platform device address whose register
-//! file really contains a `T` at that offset (the per-arch driver constants
-//! satisfy this by construction).  Addresses translate through the
-//! application-installed [`crate::addr`] pair, so the same driver works
-//! identity-mapped and through a high-half window.
+//! The tock register cells ([`ReadOnly`]/[`WriteOnly`]/[`ReadWrite`]) are
+//! placed over device memory by pointer cast; this module is where the
+//! address-validity contract concentrates:
+//!
+//! * [`ro`]/[`wo`]/[`rw`] take a *physical* device address, translate it
+//!   through the application-installed [`crate::addr`] pair (identity until
+//!   installed), and cast — the caller must pass the address of a real
+//!   register of width `T` on a mapped device (the per-arch driver constants
+//!   satisfy this by construction).
+//!
+//! Named bit-fields come from [`register_bitfields!`]
+//! (`reg.read(CTRL::ENABLE)`, `reg.modify(CTRL::MODE::PLL)`, …), replacing
+//! raw mask arithmetic at the call sites.
 
-use core::marker::PhantomData;
+use tock_registers::RegisterLongName;
+use tock_registers::UIntLike;
+use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
 
 use crate::addr::PhysAddr;
 
-/// One memory-mapped device register of width `T`.
-pub struct Reg<T: Copy> {
-    addr: usize,
-    _width: PhantomData<T>,
+/// Re-exported register types, access traits, and the bit-field macro so
+/// drivers never depend on the tock crate directly.
+pub use tock_registers::{
+    interfaces::{Readable, Writeable},
+    register_bitfields, registers,
+};
+
+/// Read-only register cell at physical device address `pa`.
+pub fn ro<T: UIntLike>(pa: usize) -> &'static ReadOnly<T> {
+    // SAFETY: `pa` names a real read-only device register of width `T`.
+    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadOnly<T>) }
 }
 
-impl<T: Copy> Reg<T> {
-    /// Register at a physical device address (`pa` must point at a real
-    /// `T`-wide register of a mapped device).
-    pub fn at_pa(pa: usize) -> Self {
-        Self {
-            addr: PhysAddr::new(pa).to_va().raw(),
-            _width: PhantomData,
-        }
-    }
+/// Read-only register cell whose named bit-fields ([`register_bitfields!`])
+/// are accessible via `read(field)`/`is_set(field)`.
+pub fn rof<T: UIntLike, R: RegisterLongName>(pa: usize) -> &'static ReadOnly<T, R> {
+    // SAFETY: `pa` names a real read-only device register of width `T`.
+    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadOnly<T, R>) }
+}
 
-    /// Volatile read of the register.
-    pub fn read(&self) -> T {
-        // SAFETY: constructed from a valid device register address.
-        unsafe { (self.addr as *const T).read_volatile() }
-    }
+/// Write-only register cell at physical device address `pa`.
+pub fn wo<T: UIntLike>(pa: usize) -> &'static WriteOnly<T> {
+    // SAFETY: `pa` names a real write-only device register of width `T`.
+    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const WriteOnly<T>) }
+}
 
-    /// Volatile write of the register.
-    pub fn write(&self, value: T) {
-        // SAFETY: constructed from a valid device register address.
-        unsafe { (self.addr as *mut T).write_volatile(value) }
-    }
+/// Read-write register cell at physical device address `pa`.
+pub fn rw<T: UIntLike>(pa: usize) -> &'static ReadWrite<T> {
+    // SAFETY: `pa` names a real read-write device register of width `T`.
+    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadWrite<T>) }
+}
 
-    /// Register at a fixed byte offset from this one.
-    pub fn at_offset(&self, off: usize) -> Self {
-        Self {
-            addr: self.addr + off,
-            _width: PhantomData,
-        }
-    }
+/// Read-write cell with named bit-fields (`read`/`modify`/`is_set`).
+pub fn rwf<T: UIntLike, R: RegisterLongName>(pa: usize) -> &'static ReadWrite<T, R> {
+    // SAFETY: `pa` names a real read-write device register of width `T`.
+    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadWrite<T, R>) }
 }
