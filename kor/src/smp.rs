@@ -1,7 +1,7 @@
 //! Multi-core support: online tracking + secondary bring-up orchestration.
 //!
 //! CPU identity / `wait_for_interrupt` / `start_secondaries` live in the
-//! `ArchProvider`; the secondary CPU entry point (`secondary_entry`) is owned
+//! kor-arch; the secondary CPU entry point (`secondary_entry`) is owned
 //! by the composition layer (`koros`).  This module tracks how many CPUs have
 //! come online and waits for secondaries to register.
 

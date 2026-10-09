@@ -9,7 +9,7 @@ pub fn phys_to_virt(pa: usize) -> usize {
     pa
 }
 
-#[allow(dead_code)] // was consumed by the ArchProvider; kept for future stage-2 mapping
+#[allow(dead_code)] // reserved for future stage-2 mapping
 pub fn virt_to_phys(va: usize) -> usize {
     va
 }
@@ -20,7 +20,7 @@ pub fn set_dtb_ptr(dtb: usize) {
     DTB_PTR.store(dtb, Ordering::Relaxed);
 }
 
-#[allow(dead_code)] // was consumed by the ArchProvider; kept for config::init
+#[allow(dead_code)] // reserved for future config::init wiring
 pub fn dtb_ptr() -> usize {
     DTB_PTR.load(Ordering::Relaxed)
 }

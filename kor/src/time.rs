@@ -1,4 +1,4 @@
-//! Timer tick counter.  The arch timer is armed via the `ArchProvider`
+//! Timer tick counter.  The arch timer is armed via kor-arch
 //! (`timer_init`/`handle_tick`); the composition layer's `TrapCallbacks`
 //! increments this counter and drives the scheduler.
 

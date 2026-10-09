@@ -1,7 +1,7 @@
 //! Architecture implementations (boot, trap, mm, IRQ, timer, SMP, context
 //! switch, console, interrupt controllers) for all four targets, plus the
 //! register-level UART drivers.  Each target selects its module via
-//! `cfg_select`; the binary crate installs the matching `ArchProvider` /
+//! `cfg_select`; the binary crate installs the matching
 //! `InterruptController` / `Console` at boot.
 #![no_std]
 #![allow(bad_asm_style)]
@@ -106,7 +106,7 @@ pub fn console() -> &'static dyn kor::Console {
 }
 
 // ---------------------------------------------------------------------------
-// Static dispatch facade: one cfg-selected call per former ArchProvider method.
+// Static dispatch facade: one cfg-selected call per arch operation.
 // Consumers call these directly — no trait objects, no runtime registry.
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,7 @@
 //! Kernel command-line storage and parsing.
 //!
 //! The raw command line is supplied by the composition layer (which obtains it
-//! from the `ArchProvider`); it is captured once via [`init_from`] and then
+//! from kor-arch); it is captured once via [`init_from`] and then
 //! queried as whitespace-separated `key=value` pairs and bare flags.
 
 use alloc::string::String;

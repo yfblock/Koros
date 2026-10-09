@@ -12,7 +12,7 @@
 //!   one place ([`arch::current`]).
 //! - [`descriptor`]/[`page_table`]: the arch-neutral engine.
 //!
-//! The free functions below mirror the (removed) `ArchProvider` page-table
+//! The free functions below are the page-table
 //! methods one-to-one, so composition crates call `kor_mmu::map(...)` etc.
 //! directly.
 //!

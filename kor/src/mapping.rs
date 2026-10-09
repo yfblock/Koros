@@ -1,4 +1,4 @@
-//! Page-mapping types used by the `ArchProvider` page-table operations.
+//! Page-mapping types used by the kor-mmu page-table operations.
 
 /// Mapping permissions for `map`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

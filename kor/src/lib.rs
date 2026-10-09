@@ -1,7 +1,7 @@
 #![no_std]
 //! Bottom layer of the flat-composable kernel: generic OS abstractions.
 //!
-//! Traits (`ArchProvider`, `InterruptController`, `TrapCallbacks`, `Console`,
+//! Traits (`InterruptController`, `TrapCallbacks`, `Console`,
 //! `BlockDevice`, `DeviceDriver`, `INode`/`SuperBlock`), the opaque
 //! `TaskContext`, address/region/FDT/cmdline/config helpers, and the trait
 //! object registries installed at boot.  No arch-specific code, no
