@@ -33,6 +33,7 @@ extern "C" fn sched_task_switch(_user_stack_top: usize) {}
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
     // 1. Console (before any println).
+    // dtb_ptr diagnostic: remove after SG2002 bringup complete
     kor_arch::console_init(kor_arch::dtb_ptr());
     kor::install_console(kor_arch::console());
     kor::println!("console: base {:#x} (from FDT)", kor_arch::console_base());

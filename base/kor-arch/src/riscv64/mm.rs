@@ -36,10 +36,16 @@ pub fn set_dtb_ptr(dtb: usize) {
     // firmware's control-FDT address at this well-known mailbox address
     // before jumping (see the SG2002 boardctl .scr: `mw.l {addr} $fdtcontroladdr`).
     const FDT_MAILBOX: usize = 0x801F_F000;
+    /// Plausible DRAM range for the FDT blob on this class of board.
+    const DRAM_LO: usize = 0x8000_0000;
+    const DRAM_HI: usize = 0x9000_0000;
     // The boot script stores the firmware's control-FDT *pointer* here.
-    // SAFETY: one aligned read from the fixed mailbox address.
-    let candidate = unsafe { (FDT_MAILBOX as *const usize).read_volatile() };
-    if fdt_magic_at(candidate) {
+    // U-Boot's `mw.l` writes only 32 bits; mask to the Sv39 physical
+    // address width (56 bits) to strip stale upper bytes.
+    // SAFETY: one aligned read from the fixed mailbox address (in DRAM).
+    const PADDR_MASK: usize = (1 << 56) - 1;
+    let candidate = unsafe { (FDT_MAILBOX as *const usize).read_volatile() } & PADDR_MASK;
+    if (DRAM_LO..DRAM_HI).contains(&candidate) && fdt_magic_at(candidate) {
         DTB_PTR.store(candidate, Ordering::Relaxed);
         return;
     }
