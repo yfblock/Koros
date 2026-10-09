@@ -3,7 +3,7 @@
 //! The base address is supplied by the platform configuration; this module
 //! only knows the register layout.
 
-use kor::mmio::{bit_set, register_bitfields};
+use kor::mmio::register_bitfields;
 
 // Register offsets (same for MMIO and port-I/O variants).
 const THR: usize = 0; // Transmit Holding Register (write)
@@ -19,10 +19,10 @@ pub fn putchar_mmio(base: usize, reg_shift: u32, reg_width: u32, c: u8) {
     let lsr = reg_addr(base, LSR, reg_shift);
     let thr = reg_addr(base, THR, reg_shift);
     if reg_width == 4 {
-        while !bit_set(lsr.read_u32() as u8, LSR::THRE) {}
+        while !LSR::THRE.is_set(lsr.read_u32() as u8) {}
         thr.write_u32(c as u32);
     } else {
-        while !bit_set(lsr.read_u8(), LSR::THRE) {}
+        while !LSR::THRE.is_set(lsr.read_u8()) {}
         thr.write_u8(c);
     }
 }
@@ -33,9 +33,9 @@ pub fn getchar_mmio(base: usize, reg_shift: u32, reg_width: u32) -> Option<u8> {
     let lsr = reg_addr(base, LSR, reg_shift);
     let rbr = reg_addr(base, RBR, reg_shift);
     let ready = if reg_width == 4 {
-        bit_set(lsr.read_u32() as u8, LSR::DR)
+        LSR::DR.is_set(lsr.read_u32() as u8)
     } else {
-        bit_set(lsr.read_u8(), LSR::DR)
+        LSR::DR.is_set(lsr.read_u8())
     };
     if ready {
         Some(if reg_width == 4 {
@@ -59,7 +59,7 @@ pub fn putchar_port(base: u16, c: u8) {
     use x86_64::instructions::port::Port;
     // SAFETY: `base` is the console UART I/O port from the platform config.
     unsafe {
-        while !bit_set(Port::<u8>::new(base + LSR as u16).read(), LSR::THRE) {}
+        while !LSR::THRE.is_set(Port::<u8>::new(base + LSR as u16).read()) {}
         Port::<u8>::new(base + THR as u16).write(c);
     }
 }
@@ -71,7 +71,7 @@ pub fn getchar_port(base: u16) -> Option<u8> {
     use x86_64::instructions::port::Port;
     // SAFETY: `base` is the console UART I/O port from the platform config.
     unsafe {
-        if bit_set(Port::<u8>::new(base + LSR as u16).read(), LSR::DR) {
+        if LSR::DR.is_set(Port::<u8>::new(base + LSR as u16).read()) {
             Some(Port::<u8>::new(base + RBR as u16).read())
         } else {
             None

@@ -3205,20 +3205,20 @@ pub extern "Rust" fn korix_set_current_tf(tf: *mut u8) {
     }
 }
 
-pub fn user_trap_enter(frame: kor::UserTrapFrame<'_>) {
-    korix_set_current_tf(frame.as_ptr());
+pub fn user_trap_enter(frame: *mut u8) {
+    korix_set_current_tf(frame);
 }
 
-pub fn user_trap_leave(frame: kor::UserTrapFrame<'_>) {
-    let frame = frame.as_ptr();
+pub fn user_trap_leave(frame: *mut u8) {
+    let frame = frame;
     let task = kor_sched::current();
     if task.with_user_context(|active| core::ptr::eq(active, frame)) == Some(true) {
         task.clear_user_context();
     }
 }
 
-pub fn user_trap_status(frame: kor::UserTrapFrame<'_>) -> Option<i32> {
-    korix_deliver_pending_signal(frame.as_ptr())
+pub fn user_trap_status(frame: *mut u8) -> Option<i32> {
+    korix_deliver_pending_signal(frame)
 }
 
 fn sys_fstatat(dirfd: usize, path: usize, stat: usize, flags: usize) -> isize {

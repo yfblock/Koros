@@ -22,12 +22,10 @@ pub mod frame;
 pub mod mapping;
 pub mod regions;
 pub mod smp;
-pub mod user_trap;
 pub mod vfs;
 
 // Convenience re-exports at the crate root.
 pub use block::{BlockDevice, BlockError};
 pub use console::{Console, install_console, putc};
 pub use mapping::{MapError, MapSize, MappingFlags};
-pub use user_trap::UserTrapFrame;
 pub use vfs::{FileSystemDriver, FileType, FsError, FsInfo, INode, Metadata, SuperBlock};

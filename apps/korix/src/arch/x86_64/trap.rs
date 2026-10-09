@@ -18,8 +18,7 @@ unsafe extern "C" {
 /// and return the pending fatal status for the asm's `int 0x81` exit path.
 #[unsafe(no_mangle)]
 extern "C" fn handle_syscall(tf: &mut TrapFrame) -> i32 {
-    let frame = unsafe { kor::UserTrapFrame::from_raw(tf as *mut TrapFrame as *mut u8) };
-    let Some(frame) = frame else { return 0 };
+    let frame = tf as *mut TrapFrame as *mut u8 as *mut u8;
     crate::syscall::user_trap_enter(frame);
     let nr = tf.rax as usize;
     let args = [
@@ -63,8 +62,8 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
 
     // System call via int 0x80 from user mode.
     if tf.vector == 0x80 && from_user {
-        let frame = unsafe { kor::UserTrapFrame::from_raw(tf as *mut TrapFrame as *mut u8) };
-        if let Some(frame) = frame {
+        let frame = tf as *mut TrapFrame as *mut u8 as *mut u8;
+        if !frame.is_null() {
             crate::syscall::user_trap_enter(frame);
             let nr = tf.rax as usize;
             let args = [

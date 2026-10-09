@@ -48,10 +48,7 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame, kind: u64, source: u64) {
         // SVC from AArch64 (EC=0x15) out of lower EL — syscall.  (ELR
         // already points past the svc instruction.)
         if ec == 0x15 && source == 2 {
-            let frame = unsafe { kor::UserTrapFrame::from_raw(tf as *mut TrapFrame as *mut u8) };
-            let Some(frame) = frame else {
-                panic!("null trap frame")
-            };
+            let frame = tf as *mut TrapFrame as *mut u8 as *mut u8;
             crate::syscall::user_trap_enter(frame);
             let nr = tf.regs[8];
             let args = [

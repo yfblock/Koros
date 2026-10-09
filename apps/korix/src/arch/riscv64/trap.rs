@@ -50,10 +50,7 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
 
     // Environment call from U-mode: run the syscall.
     if !is_interrupt && code == 8 && tf.sstatus & (1 << 8) == 0 {
-        let frame = unsafe { kor::UserTrapFrame::from_raw(tf as *mut TrapFrame as *mut u8) };
-        let Some(frame) = frame else {
-            panic!("null trap frame")
-        };
+        let frame = tf as *mut TrapFrame as *mut u8;
         crate::syscall::user_trap_enter(frame);
         let nr = tf.regs[17];
         let args = [
