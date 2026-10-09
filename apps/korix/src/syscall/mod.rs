@@ -2973,17 +2973,12 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
 }
 
 fn realtime_seconds() -> u64 {
-    let hz = kor_arch::timer_hz().max(1);
-    kor_arch::now_ticks() / hz
+    kor_arch::now().as_secs()
 }
 
 fn sys_clock_gettime(timespec: usize) -> isize {
-    let hz = kor_arch::timer_hz().max(1);
-    let ticks = kor_arch::now_ticks();
-    let value = [
-        (ticks / hz) as i64,
-        ((ticks % hz) * 1_000_000_000 / hz) as i64,
-    ];
+    let now = kor_arch::now();
+    let value = [now.as_secs() as i64, now.subsec_nanos() as i64];
     if write_user(timespec, &value).is_none() {
         -14
     } else {
@@ -2995,9 +2990,8 @@ fn sys_gettimeofday(timeval: usize) -> isize {
     if timeval == 0 {
         return 0;
     }
-    let hz = kor_arch::timer_hz().max(1);
-    let ticks = kor_arch::now_ticks();
-    let value = [(ticks / hz) as i64, ((ticks % hz) * 1_000_000 / hz) as i64];
+    let now = kor_arch::now();
+    let value = [now.as_secs() as i64, (now.subsec_nanos() / 1000) as i64];
     if write_user(timeval, &value).is_none() {
         -14
     } else {
@@ -3047,11 +3041,10 @@ fn sys_nanosleep(request: usize) -> isize {
     let millis = seconds as u64 * 1000 + (nanos as u64).div_ceil(1_000_000);
     if millis != 0 {
         if kor_sched::is_ready() {
-            kor_sched::sleep_ms(millis);
+            kor_sched::sleep(core::time::Duration::from_millis(millis));
         } else {
-            let start = kor_arch::now_ticks();
-            let wait = millis * kor_arch::timer_hz() / 1000;
-            while kor_arch::now_ticks().wrapping_sub(start) < wait {
+            let deadline = kor_arch::now() + core::time::Duration::from_millis(millis);
+            while kor_arch::now() < deadline {
                 core::hint::spin_loop();
             }
         }
@@ -3062,16 +3055,15 @@ fn sys_nanosleep(request: usize) -> isize {
 /// ppoll — block until stdin or a socket has data, then return POLLIN.
 /// struct pollfd { int fd; short events; short revents; } = 8 bytes
 /// Convert a user `struct timespec *` (16 bytes: tv_sec, tv_nsec) into an
-/// absolute deadline in timer ticks; `None` for null/infinite.
-fn poll_deadline(timespec_ptr: usize) -> Option<u64> {
+/// absolute deadline; `None` for null/infinite.
+fn poll_deadline(timespec_ptr: usize) -> Option<core::time::Duration> {
     if timespec_ptr == 0 {
         return None;
     }
     let seconds = user_mem::read::<usize>(timespec_ptr)? as u64;
     let nanos = user_mem::read::<usize>(timespec_ptr + core::mem::size_of::<usize>())? as u64;
-    let hz = kor_arch::timer_hz().max(1);
-    let ticks = seconds.saturating_mul(hz) + nanos.saturating_mul(hz) / 1_000_000_000;
-    Some(kor_arch::now_ticks().saturating_add(ticks))
+    let timeout = core::time::Duration::new(seconds, nanos.min(1_000_000_000) as u32);
+    Some(kor_arch::now() + timeout)
 }
 
 fn sys_ppoll(fds: usize, nfds: usize, tmo_p: usize) -> isize {
@@ -3081,7 +3073,7 @@ fn sys_ppoll(fds: usize, nfds: usize, tmo_p: usize) -> isize {
     // tmo_p: `struct timespec { tv_sec, tv_nsec }` in kernel timebase
     // units below; null = infinite.  Honoring the timeout is what lets
     // programs time out an escape-sequence probe (busybox vi's ESC key).
-    let deadline_ticks = poll_deadline(tmo_p);
+    let deadline = poll_deadline(tmo_p);
     let Some(byte_len) = nfds.checked_mul(8) else {
         return -22;
     };
@@ -3119,8 +3111,8 @@ fn sys_ppoll(fds: usize, nfds: usize, tmo_p: usize) -> isize {
         if ready != 0 {
             return ready;
         }
-        if let Some(deadline) = deadline_ticks
-            && kor_arch::now_ticks() >= deadline
+        if let Some(deadline) = deadline
+            && kor_arch::now() >= deadline
         {
             return 0;
         }
@@ -3198,7 +3190,7 @@ fn sys_select(
             return ready;
         }
         if let Some(deadline) = poll_deadline(timeout)
-            && kor_arch::now_ticks() >= deadline
+            && kor_arch::now() >= deadline
         {
             return 0;
         }

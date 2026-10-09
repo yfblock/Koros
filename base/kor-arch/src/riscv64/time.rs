@@ -60,3 +60,10 @@ pub fn now_ticks() -> u64 {
 pub fn timer_hz() -> u64 {
     10_000_000
 }
+
+/// Elapsed time since boot.
+pub fn now() -> core::time::Duration {
+    let ticks = now_ticks();
+    let hz = timer_hz().max(1);
+    core::time::Duration::from_nanos((ticks as u128 * 1_000_000_000 / hz as u128) as u64)
+}

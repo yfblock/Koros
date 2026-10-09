@@ -232,7 +232,7 @@ static DEMO_TOTAL: kor_sched::sync::Mutex<u64> = kor_sched::sync::Mutex::new(0);
 
 fn demo_producer() {
     for i in 0..5 {
-        kor_sched::sleep_ms(150);
+        kor_sched::sleep(core::time::Duration::from_millis(150));
         DEMO_CHAN.send(i * 10);
         kor::println!("[producer cpu{}] sent {}", kor_arch::cpu_id(), i * 10);
     }
@@ -279,7 +279,7 @@ fn demo_task_d() {
 fn demo_task_a() {
     for i in 0..5 {
         kor::println!("[task A cpu{}] iteration {}", kor_arch::cpu_id(), i);
-        kor_sched::sleep_ms(200);
+        kor_sched::sleep(core::time::Duration::from_millis(200));
     }
     kor::println!("[task A] done");
 }
@@ -288,7 +288,7 @@ fn demo_task_b() {
     for i in 0..8 {
         kor::println!("[task B cpu{}] tick {}", kor_arch::cpu_id(), i);
         kor_sched::yield_now();
-        kor_sched::sleep_ms(120);
+        kor_sched::sleep(core::time::Duration::from_millis(120));
     }
     kor::println!("[task B] done");
 }

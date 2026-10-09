@@ -139,13 +139,13 @@ cfg_select! {
 
 cfg_select! {
     target_arch = "riscv64"      => { pub use self::riscv64::{trap, irq};
-pub use self::riscv64::time::{now_ticks, timer_hz};
+pub use self::riscv64::time::{now, now_ticks, timer_hz};
 pub use self::riscv64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
     target_arch = "x86_64"       => { pub use self::x86_64::{trap, irq};
-pub use self::x86_64::time::{now_ticks, timer_hz};
+pub use self::x86_64::time::{now, now_ticks, timer_hz};
 pub use self::x86_64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
     target_arch = "aarch64"      => { pub use self::aarch64::{trap, irq};
-pub use self::aarch64::time::{now_ticks, timer_hz};
+pub use self::aarch64::time::{now, now_ticks, timer_hz};
 pub use self::aarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
 }
 

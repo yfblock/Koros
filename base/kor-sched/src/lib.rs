@@ -370,8 +370,9 @@ pub fn yield_now() {
     }
 }
 
-/// Sleep the current task for at least `ms` milliseconds.
-pub fn sleep_ms(ms: u64) {
+/// Sleep the current task for at least `duration`.
+pub fn sleep(duration: core::time::Duration) {
+    let ms = duration.as_millis() as u64;
     let wake = kor_arch::ticks() + (ms * kor_arch::TICK_HZ / 1000).max(1);
     kor_arch::irq_disable();
     current().wake_tick.store(wake, Ordering::Relaxed);

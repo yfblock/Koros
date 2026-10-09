@@ -57,3 +57,10 @@ pub fn timer_hz() -> u64 {
     unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) f) };
     f
 }
+
+/// Elapsed time since boot.
+pub fn now() -> core::time::Duration {
+    let ticks = now_ticks();
+    let hz = timer_hz().max(1);
+    core::time::Duration::from_nanos((ticks as u128 * 1_000_000_000 / hz as u128) as u64)
+}
