@@ -10,8 +10,8 @@
 //! concrete registry (which drivers to enable) is assembled by the `koros`
 //! binary crate.
 
+use alloc::vec::Vec;
 use fdt::Fdt;
-use fdt::properties::Compatible;
 
 use crate::println;
 
@@ -64,6 +64,27 @@ pub fn probe_fdt(fdt_base: usize, drivers: &[&dyn DeviceDriver]) {
     };
 
     for (_depth, node) in fdt.all_nodes() {
+        // Check compatible FIRST: only parse `reg` on nodes a driver
+        // actually claims (the fdt crate panics on unusual `reg` layouts
+        // in firmware control trees).
+        let compatible_strings: Vec<&str> = node
+            .raw_property("compatible")
+            .map(|prop| {
+                prop.value
+                    .split(|b| *b == 0)
+                    .filter(|s| !s.is_empty())
+                    .filter_map(|s| core::str::from_utf8(s).ok())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !drivers.iter().any(|drv| {
+            compatible_strings
+                .iter()
+                .any(|s| drv.compatible().contains(s))
+        }) {
+            continue;
+        }
+
         // Only consider nodes with a memory-mapped `reg`.
         let (base, size) = match node
             .reg()
@@ -84,10 +105,9 @@ pub fn probe_fdt(fdt_base: usize, drivers: &[&dyn DeviceDriver]) {
         }
 
         for drv in drivers {
-            let matched = node
-                .property::<Compatible>()
-                .map(|c| c.all().any(|s| drv.compatible().contains(&s)))
-                .unwrap_or(false);
+            let matched = compatible_strings
+                .iter()
+                .any(|s| drv.compatible().contains(s));
             if matched {
                 if let Err(e) = drv.probe(&DtDevice {
                     reg_base: base,

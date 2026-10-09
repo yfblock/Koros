@@ -110,16 +110,7 @@ pub fn rx_fill() {
     // every other target drains its console into the shared buffer.
     {
         let mut buf = RX_BUF.lock();
-        #[cfg(target_arch = "riscv64")]
-        while let Some(b) = kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000) {
-            buf.push(b);
-        }
-        #[cfg(target_arch = "aarch64")]
-        while let Some(b) = kor_arch::uart::pl011::getchar(0x0900_0000) {
-            buf.push(b);
-        }
-        #[cfg(target_arch = "x86_64")]
-        while let Some(b) = kor_arch::uart::ns16550a::getchar_port(0x3F8) {
+        while let Some(b) = kor::console::getchar() {
             buf.push(b);
         }
     }

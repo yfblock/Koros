@@ -26,7 +26,13 @@ pub fn virt_to_phys(va: usize) -> usize {
 pub(crate) static DTB_PTR: AtomicUsize = AtomicUsize::new(0);
 
 pub fn set_dtb_ptr(dtb: usize) {
-    DTB_PTR.store(dtb, Ordering::Relaxed);
+    // Reject non-FDT garbage (e.g. U-Boot `go` passes argv in a1): the
+    // blob must start with the FDT magic big-endian word.
+    let valid = dtb != 0
+        // SAFETY: one 32-bit read at the candidate blob address; a garbage
+        // pointer may read arbitrary memory but stays mapped on these boots.
+        && unsafe { (dtb as *const u32).read_volatile() }.to_be() == 0xd00d_feed;
+    DTB_PTR.store(if valid { dtb } else { 0 }, Ordering::Relaxed);
 }
 
 /// Pointer to the flattened device tree, or 0 if none was provided.

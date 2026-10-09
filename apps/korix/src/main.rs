@@ -41,7 +41,9 @@ extern "C" fn kernel_main() -> ! {
     // korix runs high-half: one translation for heap, devices, and DMA.
     kor::install_translation(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
 
+    kor_arch::console_init(kor_arch::dtb_ptr());
     kor::install_console(kor_arch::console());
+    kor::println!("console: base {:#x} (from FDT)", kor_arch::console_base());
     config::init(arch::platform_config());
     kor_arch::interrupt_controller().init();
     heap::init_bootstrap();
@@ -92,12 +94,7 @@ extern "C" fn kernel_main() -> ! {
     kor_mmu::split_identity();
 
     // Drain UART RX buffer (leftover bytes from boot).
-    #[cfg(target_arch = "riscv64")]
-    while kor_arch::uart::ns16550a::getchar_mmio(0x1000_0000).is_some() {}
-    #[cfg(target_arch = "aarch64")]
-    while kor_arch::uart::pl011::getchar(0x0900_0000).is_some() {}
-    #[cfg(target_arch = "x86_64")]
-    while kor_arch::uart::ns16550a::getchar_port(0x3F8).is_some() {}
+    while kor::console::getchar().is_some() {}
 
     // Verify rootfs is accessible
     match crate::fs::list_dir("/") {

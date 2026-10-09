@@ -133,6 +133,27 @@ pub fn console() -> &'static dyn kor::Console {
     }
 }
 
+/// Discover the console base from the device tree (no-op where the console
+/// is not FDT-described, e.g. x86_64 legacy port I/O).  Call once, before
+/// `install_console(console())`.
+pub fn console_init(dtb: usize) {
+    cfg_select! {
+        target_arch = "riscv64"      => { riscv64::console::console_init(dtb) }
+        target_arch = "x86_64"       => { x86_64::console::console_init(dtb) }
+        target_arch = "aarch64"      => { aarch64::console::console_init(dtb) }
+    }
+}
+
+/// The console base in effect (after [`console_init`]); port number on
+/// x86_64.
+pub fn console_base() -> usize {
+    cfg_select! {
+        target_arch = "riscv64"      => { riscv64::console::CONSOLE.base.load(core::sync::atomic::Ordering::Relaxed) }
+        target_arch = "x86_64"       => { x86_64::console::CONSOLE.base as usize }
+        target_arch = "aarch64"      => { aarch64::console::CONSOLE.base.load(core::sync::atomic::Ordering::Relaxed) }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Static dispatch facade: one cfg-selected call per arch operation.
 // Consumers call these directly — no trait objects, no runtime registry.

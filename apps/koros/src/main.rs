@@ -33,7 +33,9 @@ extern "C" fn sched_task_switch(_user_stack_top: usize) {}
 #[unsafe(no_mangle)]
 extern "C" fn kernel_main() -> ! {
     // 1. Console (before any println).
+    kor_arch::console_init(kor_arch::dtb_ptr());
     kor::install_console(kor_arch::console());
+    kor::println!("console: base {:#x} (from FDT)", kor_arch::console_base());
     // 2. Platform config (firmware region, dtb, pci — read back by mm/driver probe).
     config::init(arch::platform_config());
     // 4. Interrupt controller (+ per-CPU init; GIC on aarch64).
@@ -120,12 +122,6 @@ extern "C" fn kernel_main() -> ! {
     kor_sched::spawn(demo_blkio);
     kor_sched::idle_loop();
 }
-
-/// No-op boot-root reactivation for the riscv64 shutdown fallback: koros
-/// runs unmapped, so the syscon is always reachable at its physical address.
-#[cfg(target_arch = "riscv64")]
-#[unsafe(no_mangle)]
-unsafe extern "C" fn boot_mmu_activate() {}
 
 /// koros runs without page tables: every task shares the one (absent)
 /// address space, so the scheduler's root hooks are identity stubs.

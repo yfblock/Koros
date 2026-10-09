@@ -14,7 +14,13 @@ use spin::Once;
     note = "porting checklist: provide the impl for this architecture/crate"
 )]
 pub trait Console: Send + Sync {
+    /// Emit one byte.
     fn putc(&self, c: u8);
+
+    /// Poll one input byte, if the console device provides input.
+    fn getchar(&self) -> Option<u8> {
+        None
+    }
 }
 
 static CONSOLE: Once<&'static dyn Console> = Once::new();
@@ -29,6 +35,11 @@ pub fn putc(c: u8) {
     if let Some(con) = CONSOLE.get() {
         con.putc(c);
     }
+}
+
+/// Poll one input byte from the installed console, if any.
+pub fn getchar() -> Option<u8> {
+    CONSOLE.get().and_then(|con| con.getchar())
 }
 
 /// Emit a byte string, translating `'\n'` to `"'\r\n'"`.
