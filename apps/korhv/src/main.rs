@@ -16,19 +16,6 @@ extern crate alloc;
 
 mod arch;
 
-use core::arch::global_asm;
-
-// Boot stack — 512 KiB in BSS (owned by this app; kor::boot_stack is gone).
-global_asm!(
-    ".section .bss.bstack
-     .global bstack
-     .global bstack_top
-     bstack:
-     .fill 0x80000
-     .size bstack, . - bstack
-     bstack_top:"
-);
-
 mod boot;
 mod heap;
 mod hypervisor;

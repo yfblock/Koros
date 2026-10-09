@@ -80,7 +80,7 @@ extern "C" fn kernel_main() -> ! {
         });
     });
     // Slab growth and large allocations may now draw from the frame buddy.
-    HEAP.enable_frame_growth();
+    HEAP.enable_frame_growth(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
     heap::self_test();
     kor_mmu::page_table_init();
     page_table_self_test();

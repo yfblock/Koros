@@ -15,7 +15,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on three architectures (riscv
   - `base/kor-virtio/` (`kor_virtio`) — virtio adapter for apps/koros/korix (block + net, MMIO / PCI / PCI-ECAM).
   - `apps/koros/` (`[[bin]] koros`) — kernel composition root: `kernel_main` init, `#[global_allocator]`, `#[panic_handler]`, virtio adapter, registries, ext2 self-check, bench, scheduler demo.
   - `apps/korix/` (`[[bin]] korix`) — Linux-compatible composition root: thin syscall layer (`syscall/arch/` ABI adapters + portable dispatch), processes/signals, user address spaces, ext2 rootfs, smoltcp networking.
-  - `apps/korhv/` (`[[bin]] korhv`) — Type-1 hypervisor, parallel composition root: reuses `kor`/`kor-alloc` and enables hardware virtualization instead of fs/sched/timer. x86_64 = AMD SVM (VMRUN/#VMEXIT, NPT stage-2, VMMCALL); aarch64 = EL2 (ERET to EL1 guest, HVC). Run with `make ARCH=x86_64 BIN=korhv run` or `make ARCH=aarch64 BIN=korhv run`.
+  - `apps/korhv/` (`[[bin]] korhv`) — Type-1 hypervisor, parallel composition root: reuses `kor`/`kor-alloc`/`kor-arch` and enables hardware virtualization instead of fs/sched/timer. x86_64 = AMD SVM (VMRUN/#VMEXIT, NPT stage-2, VMMCALL); aarch64 = EL2 (ERET to EL1 guest, HVC). Run with `make ARCH=x86_64 BIN=korhv run` or `make ARCH=aarch64 BIN=korhv run`.
 - **Boot → entry:** each app composes its trampoline in `src/arch/<arch>/boot.rs` from kor-arch's identically-named fragment macros (`kor_arch::boot_stack_asm!` + per-arch `boot_pt_buffer_asm!`/`boot_setup_asm!`/`boot_cross_asm!`/`boot_call_asm!`/`boot_secondary_asm!`/`boot_entry!` — defined in each arch's `boot.rs`, so only the active arch's set is exported) with the app's mapping policy as a raw asm string between setup and cross (x86_64: policy = swap the default-tables fragment). `boot_call_asm!(kernel_main)` loads the app entry's address into the third argument register (`a2`/`x2`/`rdx`) and calls kor-arch's `rust_entry`, which stashes the firmware args and tail-calls that pointer. Secondary CPUs enter via `secondary_entry` (declared extern in `kor-arch`, defined in the app).
 - **Nightly Rust** — pinned `nightly-2026-06-19` (`rust-toolchain.toml`). `build-std` in `.cargo/config.toml` compiles `core`/`alloc`/`compiler_builtins` from source with `compiler-builtins-mem`. No `std`. (x86_64's `-Clink-arg=-no-pie` is set by the Makefile via `RUSTFLAGS`, not here.)
 - **`base/kor-mmu/` (`kor-mmu`)** — **owns the page tables end to end** (CortenMM, SOSP '25): per-table-page descriptors (lock + per-PTE metadata), a transactional cursor (`AddrSpace::lock(range) → RCursor{query,map,mark,unmap}`), per-arch back-ends under `src/arch/` that supply PTE flags/encoders as **inherent associated items of `AddrSpace`** (compile-time dispatch, no trait objects), plus active-root switching, fork cloning, boot identity splits. There is no `ArchProvider` trait — composition crates call the `kor_mmu::map/translate/unmap/…` facade directly.
@@ -56,11 +56,11 @@ Kernel virtual base addresses (high-half kernel):
 
 ## Architecture Abstraction Model
 
-This is the central design decision. **Shared crates contain no `#[cfg(target_arch)]`** (narrow exceptions: the `cfg_select!` selectors of `kor-arch/src/lib.rs` and `kor-mmu/src/arch.rs`, plus a few `#[cfg]` guards in korhv, which keeps its own arch layer). Instead:
+This is the central design decision. **Shared crates contain no `#[cfg(target_arch)]`** (narrow exceptions: the `cfg_select!` selectors of `kor-arch/src/lib.rs` and `kor-mmu/src/arch.rs`, plus a few `#[cfg]` guards in korhv, which keeps its own hypervisor arch layer (EL2/SVM specifics) while composing kor-arch boot fragments). Instead:
 
 - `kor` defines only *arch-neutral* registries that need runtime polymorphism: `Console` and `TrapCallbacks` (`spin::Once`-backed `install_console`/`install_callbacks` + the syscall-handler slot). There is **no `ArchProvider` trait and no provider registry** — it was removed.
 - `kor-arch` is the single arch seam. It also owns the `InterruptController` trait and its `spin::Once` registry (`kor_arch::install_controller`/`controller`/`enable_device_irq`/`dispatch_external`, in `src/interrupt.rs`), implemented per arch by `src/<arch>/ic.rs` (PLIC/GIC/polling stub). Each architecture lives in `base/kor-arch/src/<arch>/` with an identical module surface (`boot`, `trap`, `mm`, `smp`, `time`, `irq`, `context`, `ic`, `console`). The crate root (`base/kor-arch/src/lib.rs`) uses `cfg_select!` to re-export the active arch's functions as crate-root free functions: `kor_arch::phys_to_virt/virt_to_phys/kernel_offset/kernel_phys_range`, `kor_arch::cpu_id/wait_for_interrupt/start_secondaries/shutdown`, `kor_arch::trap_init/timer_init/handle_tick`, `kor_arch::irq_enable/irq_disable/irq_is_enabled/irq_without`, `kor_arch::now_ticks/timer_hz`, the tick counter `kor_arch::TICK_HZ/increment_tick/ticks`, and the task-context trio `task_context_zero/task_context_init/unsafe context_switch`.
-- All downstream code (kor-alloc, kor-sched, kor-virtio, koros, korix) calls these static functions directly and lists `kor-arch` as a dependency. `kor-mmu` avoids a kor-mmu→kor-arch cycle by keeping its own per-arch `phys_to_virt`/`virt_to_phys`/`zero_page` in each `src/arch/<arch>.rs` back-end (kor-arch depends on kor-mmu, not the reverse). korhv does not depend on kor-arch at all; it has its own `apps/korhv/src/arch/{x86_64,aarch64}/` modules with the same shape.
+- All downstream code (kor-mmu, kor-sched, kor-virtio, koros, korix, korhv) calls these static functions directly and lists `kor-arch` as a dependency — `kor-arch` itself depends only on `kor`. The two kor-arch↔kor-mmu touch points are link-time `extern "C"` hooks resolved in the final binary (`boot_mmu_build`, called by the boot trampoline, and `boot_mmu_activate`, called by the riscv64 shutdown fallback), so neither crate imports the other. kor-alloc stays arch-neutral: frame-growth translation is injected per app via `HEAP.enable_frame_growth(phys_to_virt, virt_to_phys)` (koros/korix pass the `kor_arch` pair, korhv at EL2 passes its identity pair).
 - If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same function names), then re-export through the crate-root `cfg_select!` — never as `#[cfg]` branches in shared code.
 
 Each arch's `context.rs` defines its own typed `TaskContext` (`#[repr(C, align(16))]`, exact callee-saved layout, no opaque buffer); `kor-arch/src/lib.rs` re-exports the active arch's type as `kor_arch::TaskContext`, which kor-sched embeds directly. The facade trio `kor_arch::task_context_zero/task_context_init/context_switch` forwards to its inherent `zero`/`init` and the arch `context_switch`.
@@ -121,12 +121,16 @@ apps/koros/
 
 
 apps/korhv/                       — Type-1 hypervisor binary crate (parallel to koros)
-  Cargo.toml                — depends on kor / kor-alloc (+ x86_64 crate on x86_64)
+  Cargo.toml                — depends on kor / kor-alloc / kor-arch (+ x86_64 crate on x86_64)
   build.rs                — same template as koros (tools/lds/korhv.lds); aarch64 links at 0x40080000 (identity, non-VHE EL2)
-  src/main.rs               — hyp_main: console + provider + heap + frame alloc, then arch::hyp::init/run
+  src/main.rs               — kernel_main: console + heap + frame alloc, then arch::hyp::init/run
   src/panic.rs / heap.rs    — copies of the koros panic/heap bootstrap
   src/arch/mod.rs           — cfg-selects x86_64 or aarch64 (other arches compile_error)
+  src/arch/x86_64/boot.rs   — kor-arch fragment composition (multiboot + default tables)
+  src/arch/x86_64/mm.rs     — forwards Multiboot/FDT helpers to kor-arch
   src/arch/x86_64/hyp.rs    — SVM hyp: VMCB + NPT stage-2, VMRUN/#VMEXIT loop, VMMCALL hypercall, embedded guest
+  src/arch/aarch64/boot.rs  — kor-arch setup/call fragments + app-owned EL2 identity-mapping policy
+  src/arch/aarch64/mm.rs    — identity phys↔virt (EL2 single regime); FDT helpers forward to kor-arch
   src/arch/aarch64/hyp.rs   — EL2 hyp: vcpu_enter (ERET to EL1) + guest-exit handler, HVC hypercall, embedded guest.
                               Stage-2/VTTBR prepared but currently disabled (see HCR_EL2_VAL note in-file).
 ```

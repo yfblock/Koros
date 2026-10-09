@@ -1,46 +1,25 @@
-//! aarch64 host memory helpers.  The hypervisor runs at EL2 identity-mapped
-//! (VA == PA), so phys_to_virt is the identity.  Memory regions and the
-//! command line come from the device tree (reusing kor::fdt).
-
-use alloc::string::String;
-use core::sync::atomic::{AtomicUsize, Ordering};
+//! aarch64 host memory helpers.
+//!
+//! The hypervisor runs at EL2 identity-mapped (VA == PA, single translation
+//! regime), so translation here is the identity — unlike kor-arch's EL1
+//! high-half back-end, which is why `phys_to_virt`/`virt_to_phys` stay
+//! local.  The DTB capture and the FDT-derived helpers forward to kor-arch
+//! (single source; kor-arch's `rust_entry` stashes the pointer there).
 
 pub fn phys_to_virt(pa: usize) -> usize {
     pa
 }
 
-#[allow(dead_code)] // reserved for future stage-2 mapping
+/// Reserved for future stage-2 mapping.
+#[allow(dead_code)]
 pub fn virt_to_phys(va: usize) -> usize {
     va
 }
 
-pub(crate) static DTB_PTR: AtomicUsize = AtomicUsize::new(0);
+pub use kor_arch::aarch64::mm::boot_cmdline;
 
-pub fn set_dtb_ptr(dtb: usize) {
-    DTB_PTR.store(dtb, Ordering::Relaxed);
-}
-
-#[allow(dead_code)] // reserved for future config::init wiring
-pub fn dtb_ptr() -> usize {
-    DTB_PTR.load(Ordering::Relaxed)
-}
-
-/// Read the kernel command line from the device tree /chosen/bootargs.
-pub fn boot_cmdline() -> Option<String> {
-    let dtb = DTB_PTR.load(Ordering::Relaxed);
-    if dtb == 0 {
-        return None;
-    }
-    // SAFETY: DTB_PTR was captured at boot and points to a valid FDT blob in
-    // identity-mapped memory.
-    unsafe { kor::fdt::bootargs(dtb) }
-}
-
-/// Detect physical memory regions via FDT and register them with add_region.
-pub fn detect_memory_regions(mut add_region: impl FnMut(usize, usize)) {
-    let dtb = DTB_PTR.load(Ordering::Relaxed);
-    if dtb != 0 {
-        // SAFETY: dtb is a valid FDT pointer.
-        unsafe { kor::fdt::parse_memory_regions(dtb, &mut add_region) };
-    }
+/// Detect physical memory regions via FDT and register them with
+/// `add_region`.
+pub fn detect_memory_regions(add_region: impl FnMut(usize, usize)) {
+    kor_arch::aarch64::mm::init(add_region);
 }

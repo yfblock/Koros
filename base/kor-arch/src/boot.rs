@@ -31,6 +31,9 @@
 //!
 //! Mapping-slot contract (riscv64 / aarch64):
 //!
+//! * the slot executes inside the `.text.entry` section flow — a policy
+//!   that emits its own data sections (page-table buffers) must switch
+//!   back with `.section .text.entry` before its instructions;
 //! * entering the slot: BSS cleared, `sp` on the boot stack, firmware args
 //!   preserved in callee-saved registers (`s0`/`s1` on riscv64,
 //!   `x19`/`x20`/`x24` on aarch64), MMU off, PC physical;

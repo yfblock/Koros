@@ -8,7 +8,7 @@
 # but may not work through pipes/sockets due to QEMU TCG single-thread.
 set -e
 ROOT=$(cd "$(dirname "$0")" && pwd)
-KORHV=${KORHV:-$ROOT/../../target/aarch64-unknown-none-softfloat/release/korhv.bin}
+KORHV=${KORHV:-$ROOT/../../../target/aarch64-unknown-none-softfloat/release/korhv.bin}
 IMAGE=${IMAGE:-$ROOT/Image}
 DTB=${DTB:-$ROOT/virt.dtb}
 DTB0=${DTB0:-$ROOT/virt0.dtb}

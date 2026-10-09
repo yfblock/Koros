@@ -5,5 +5,4 @@ edition = "2024"
 
 [dependencies]
 kor = { path = "../../kor" }
-kor-arch = { path = "../kor-arch" }
 spin = "0.9"

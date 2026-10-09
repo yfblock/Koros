@@ -80,7 +80,7 @@ extern "C" fn kernel_main() -> ! {
             kor::frame::add_region(s, e)
         });
     });
-    HEAP.enable_frame_growth();
+    HEAP.enable_frame_growth(kor_arch::phys_to_virt, kor_arch::virt_to_phys);
     heap::self_test();
     kor_mmu::page_table_init();
     kor_arch::timer_init();
