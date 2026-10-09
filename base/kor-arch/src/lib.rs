@@ -212,13 +212,13 @@ cfg_select! {
 }
 
 cfg_select! {
-    target_arch = "riscv64"      => { pub use self::riscv64::{trap, irq};
+    target_arch = "riscv64"      => { pub use self::riscv64::trap;
 pub use self::riscv64::time::{now, now_ticks, timer_hz};
 pub use self::riscv64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
-    target_arch = "x86_64"       => { pub use self::x86_64::{trap, irq};
+    target_arch = "x86_64"       => { pub use self::x86_64::trap;
 pub use self::x86_64::time::{now, now_ticks, timer_hz};
 pub use self::x86_64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
-    target_arch = "aarch64"      => { pub use self::aarch64::{trap, irq};
+    target_arch = "aarch64"      => { pub use self::aarch64::trap;
 pub use self::aarch64::time::{now, now_ticks, timer_hz};
 pub use self::aarch64::smp::{cpu_id, wait_for_interrupt, start_secondaries, shutdown}; }
 }
@@ -273,27 +273,27 @@ pub fn handle_tick() {
 /// Enable interrupts on the current CPU.
 pub fn irq_enable() {
     cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::irq::enable() }
-        target_arch = "x86_64"       => { self::x86_64::irq::enable() }
-        target_arch = "aarch64"      => { self::aarch64::irq::enable() }
+        target_arch = "riscv64"      => { self::riscv64::ic::enable() }
+        target_arch = "x86_64"       => { self::x86_64::ic::enable() }
+        target_arch = "aarch64"      => { self::aarch64::ic::enable() }
     }
 }
 
 /// Disable interrupts on the current CPU.
 pub fn irq_disable() {
     cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::irq::disable() }
-        target_arch = "x86_64"       => { self::x86_64::irq::disable() }
-        target_arch = "aarch64"      => { self::aarch64::irq::disable() }
+        target_arch = "riscv64"      => { self::riscv64::ic::disable() }
+        target_arch = "x86_64"       => { self::x86_64::ic::disable() }
+        target_arch = "aarch64"      => { self::aarch64::ic::disable() }
     }
 }
 
 /// Whether interrupts are currently enabled on this CPU.
 pub fn irq_is_enabled() -> bool {
     cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::irq::is_enabled() }
-        target_arch = "x86_64"       => { self::x86_64::irq::is_enabled() }
-        target_arch = "aarch64"      => { self::aarch64::irq::is_enabled() }
+        target_arch = "riscv64"      => { self::riscv64::ic::is_enabled() }
+        target_arch = "x86_64"       => { self::x86_64::ic::is_enabled() }
+        target_arch = "aarch64"      => { self::aarch64::ic::is_enabled() }
     }
 }
 

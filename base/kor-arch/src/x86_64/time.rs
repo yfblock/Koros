@@ -98,7 +98,7 @@ pub fn init() {
         Port::<u8>::new(0x21).write(0xFF);
         Port::<u8>::new(0xA1).write(0xFF);
     }
-    // Global interrupts are enabled separately via `kor::irq::enable`.
+    // Global interrupts are enabled separately via `crate::ic::enable`.
 }
 
 /// Acknowledge the timer interrupt (signal end-of-interrupt to the LAPIC).

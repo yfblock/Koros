@@ -28,16 +28,16 @@ fn set_timer(interval: u64) {
 pub fn init() {
     // GIC (distributor + CPU interface) is initialised by the interrupt
     // controller (`GicController::init`) before this runs.
-    super::gic::enable_ppi(TIMER_INTID);
+    super::ic::enable_ppi(TIMER_INTID);
 
     let interval = cntfrq() / crate::TICK_HZ;
     INTERVAL.store(interval, Ordering::Relaxed);
     set_timer(interval);
-    // Global interrupts are enabled separately via `kor::irq::enable`.
+    // Global interrupts are enabled separately via `crate::ic::enable`.
 }
 
 /// Reprogram the timer for the next period (called from the tick path; the
-/// GIC ack/EOI is handled by [`super::gic::dispatch`]).
+/// GIC ack/EOI is handled by [`super::ic::dispatch`]).
 pub fn handle_tick() {
     set_timer(INTERVAL.load(Ordering::Relaxed));
 }
