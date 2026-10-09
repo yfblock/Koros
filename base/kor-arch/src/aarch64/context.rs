@@ -12,9 +12,6 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
-
-
-
     pub const fn zero() -> Self {
         Self {
             regs: [0; 12],

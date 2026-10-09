@@ -13,14 +13,14 @@ const KERNEL_OFFSET: usize = 0xFFFF_0000_0000_0000;
 ///
 /// # Safety
 /// `pa` must be a page-aligned frame available for exclusive write.
-unsafe fn zero_page(pa: usize) {
+pub(crate) unsafe fn zero_page(pa: usize) {
     let va = phys_to_virt(pa) as *mut u64;
     // SAFETY: caller guarantees exclusive access to the frame.
     unsafe { core::ptr::write_bytes(va, 0, 512) };
 }
 
 /// Physical -> kernel direct-map virtual address.
-fn phys_to_virt(pa: usize) -> usize {
+pub(crate) fn phys_to_virt(pa: usize) -> usize {
     pa + KERNEL_OFFSET
 }
 
@@ -251,20 +251,6 @@ pub(crate) fn pte_address(pte: usize) -> usize {
 
 /// PTE encoding contract for the generic engine (see `page_table`).
 impl AddrSpace {
-    /// Physical -> kernel direct-map virtual address (inherent; the generic
-    /// engine calls this for table-page access).
-    pub fn phys_to_virt(pa: usize) -> usize {
-        phys_to_virt(pa)
-    }
-
-    /// Zero one page at `pa` through the direct map.
-    ///
-    /// # Safety
-    /// `pa` must be a page-aligned frame available for exclusive write.
-    pub unsafe fn zero_page(pa: usize) {
-        unsafe { zero_page(pa) }
-    }
-
 
     /// Number of radix levels (Sv39-style: four).
     pub const LEVELS: usize = 4;
