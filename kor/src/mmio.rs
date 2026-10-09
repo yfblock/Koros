@@ -1,59 +1,24 @@
-//! Memory-mapped device-register access, built on `tock-registers`.
+//! Memory-mapped device-register bit-field definitions.
 //!
-//! The tock register cells ([`ReadOnly`]/[`WriteOnly`]/[`ReadWrite`]) are
-//! placed over device memory by pointer cast; this module is where the
-//! address-validity contract concentrates:
-//!
-//! * [`ro`]/[`wo`]/[`rw`] take a *physical* device address, translate it
-//!   through the application-installed [`crate::addr`] pair (identity until
-//!   installed), and cast — the caller must pass the address of a real
-//!   register of width `T` on a mapped device (the per-arch driver constants
-//!   satisfy this by construction).
-//!
-//! Named bit-fields come from [`register_bitfields!`]
-//! (`reg.read(CTRL::ENABLE)`, `reg.modify(CTRL::MODE::PLL)`, …), replacing
-//! raw mask arithmetic at the call sites.
+//! Register *access* goes through the address newtypes
+//! (`PhysAddr::read::<T>()` / `write::<T>()` — see [`crate::addr`],
+//! translated through the installed application pair); this module only
+//! re-exports [`register_bitfields!`] so drivers can declare named fields
+//! (e.g. `LSR [THRE 5, DR 0]`) and use `FIELD.mask` / field values instead
+//! of hand-written mask constants.
 
-use tock_registers::RegisterLongName;
-use tock_registers::UIntLike;
-use tock_registers::registers::{ReadOnly, ReadWrite, WriteOnly};
+pub use tock_registers::RegisterLongName;
+pub use tock_registers::fields::Field;
+pub use tock_registers::register_bitfields;
 
-use crate::addr::PhysAddr;
-
-/// Re-exported register types, access traits, and the bit-field macro so
-/// drivers never depend on the tock crate directly.
-pub use tock_registers::{
-    interfaces::{Readable, Writeable},
-    register_bitfields, registers,
-};
-
-/// Read-only register cell at physical device address `pa`.
-pub fn ro<T: UIntLike>(pa: usize) -> &'static ReadOnly<T> {
-    // SAFETY: `pa` names a real read-only device register of width `T`.
-    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadOnly<T>) }
-}
-
-/// Read-only register cell whose named bit-fields ([`register_bitfields!`])
-/// are accessible via `read(field)`/`is_set(field)`.
-pub fn rof<T: UIntLike, R: RegisterLongName>(pa: usize) -> &'static ReadOnly<T, R> {
-    // SAFETY: `pa` names a real read-only device register of width `T`.
-    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadOnly<T, R>) }
-}
-
-/// Write-only register cell at physical device address `pa`.
-pub fn wo<T: UIntLike>(pa: usize) -> &'static WriteOnly<T> {
-    // SAFETY: `pa` names a real write-only device register of width `T`.
-    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const WriteOnly<T>) }
-}
-
-/// Read-write register cell at physical device address `pa`.
-pub fn rw<T: UIntLike>(pa: usize) -> &'static ReadWrite<T> {
-    // SAFETY: `pa` names a real read-write device register of width `T`.
-    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadWrite<T>) }
-}
-
-/// Read-write cell with named bit-fields (`read`/`modify`/`is_set`).
-pub fn rwf<T: UIntLike, R: RegisterLongName>(pa: usize) -> &'static ReadWrite<T, R> {
-    // SAFETY: `pa` names a real read-write device register of width `T`.
-    unsafe { &*(PhysAddr::new(pa).to_va().raw() as *const ReadWrite<T, R>) }
+/// Test whether a named single-bit field is set in `value`.
+///
+/// A tock [`Field`] carries its width mask *unshifted* (`THRE 5` has
+/// `mask == 1`, `shift == 5`), so raw `value & field.mask` tests the wrong
+/// bit — always go through this helper.
+pub fn bit_set<T, R: RegisterLongName>(value: T, field: Field<T, R>) -> bool
+where
+    T: tock_registers::UIntLike,
+{
+    (value & (field.mask << field.shift)) != T::zero()
 }
