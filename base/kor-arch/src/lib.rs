@@ -15,6 +15,13 @@ cfg_select! {
     target_arch = "loongarch64" => { pub mod loongarch64; }
 }
 
+cfg_select! {
+    target_arch = "riscv64"      => { pub use self::riscv64::context::TaskContext; }
+    target_arch = "x86_64"       => { pub use self::x86_64::context::TaskContext; }
+    target_arch = "aarch64"      => { pub use self::aarch64::context::TaskContext; }
+    target_arch = "loongarch64" => { pub use self::loongarch64::context::TaskContext; }
+}
+
 pub mod boot;
 pub mod uart;
 /// Architecture-neutral snapshot of a user trap frame.
@@ -235,18 +242,13 @@ unsafe extern "C" {
 }
 
 /// Zeroed task context for a new kernel task.
-pub fn task_context_zero() -> kor::TaskContext {
-    kor::TaskContext { _storage: [0; 32] }
+pub fn task_context_zero() -> TaskContext {
+    TaskContext::zero()
 }
 
 /// Initialize a task context to enter `entry` with `stack_top`.
-pub fn task_context_init(ctx: &mut kor::TaskContext, entry: usize, stack_top: usize) {
-    cfg_select! {
-        target_arch = "riscv64"      => { self::riscv64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
-        target_arch = "x86_64"       => { self::x86_64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
-        target_arch = "aarch64"      => { self::aarch64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
-        target_arch = "loongarch64" => { self::loongarch64::context::TaskContext::from_opaque(ctx).init(entry, stack_top) }
-    }
+pub fn task_context_init(ctx: &mut TaskContext, entry: usize, stack_top: usize) {
+    ctx.init(entry, stack_top)
 }
 
 /// Switch from `prev` to `next`.
@@ -254,15 +256,15 @@ pub fn task_context_init(ctx: &mut kor::TaskContext, entry: usize, stack_top: us
 /// # Safety
 /// `prev`/`next` must point to valid, properly-aligned contexts owned by
 /// tasks that are not concurrently being switched.
-pub unsafe fn context_switch(prev: *mut kor::TaskContext, next: *const kor::TaskContext) {
-    // SAFETY: the arch layout fits the opaque buffer (const-checked per
-    // arch); pointer casts preserve the caller's exclusivity contract.
+pub unsafe fn context_switch(prev: *mut TaskContext, next: *const TaskContext) {
+    // SAFETY: forwarded under the same contract; the re-exported type is
+    // exactly the active arch's context layout.
     unsafe {
         cfg_select! {
-            target_arch = "riscv64"      => { self::riscv64::context::context_switch(prev as *mut _, next as *const _) }
-            target_arch = "x86_64"       => { self::x86_64::context::context_switch(prev as *mut _, next as *const _) }
-            target_arch = "aarch64"      => { self::aarch64::context::context_switch(prev as *mut _, next as *const _) }
-            target_arch = "loongarch64" => { self::loongarch64::context::context_switch(prev as *mut _, next as *const _) }
+            target_arch = "riscv64"      => { self::riscv64::context::context_switch(prev, next) }
+            target_arch = "x86_64"       => { self::x86_64::context::context_switch(prev, next) }
+            target_arch = "aarch64"      => { self::aarch64::context::context_switch(prev, next) }
+            target_arch = "loongarch64" => { self::loongarch64::context::context_switch(prev, next) }
         }
     }
 }

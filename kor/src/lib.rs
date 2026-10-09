@@ -10,7 +10,6 @@
 extern crate alloc;
 
 pub mod addr;
-pub mod arch;
 pub mod block;
 pub mod cmdline;
 pub mod config;
@@ -28,7 +27,6 @@ pub mod user_trap;
 pub mod vfs;
 
 // Convenience re-exports at the crate root.
-pub use arch::TaskContext;
 pub use block::{BlockDevice, BlockError};
 pub use console::{Console, install_console, putc};
 pub use interrupt::{InterruptController, controller, enable_device_irq, install_controller};

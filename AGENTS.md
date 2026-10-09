@@ -5,7 +5,7 @@ Koros is a `#![no_std]` Rust kernel targeting QEMU on four architectures (riscv6
 ## Key Facts
 
 - **Twelve crates** (`Cargo.toml`, `resolver = "2"`):
-  - `kor/` (`kor`) — bottom abstraction layer: traits + registries, no arch code, no subsystem impls — **one exception: `kor::frame`**, the allocation-free physical frame allocator (every boot feeds it via `regions`; it has no dependencies of its own). Also defines `InterruptController`, `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, the opaque `TaskContext` buffer, plus boot-time helpers (FDT, regions, cmdline, config, SMP/time).
+  - `kor/` (`kor`) — bottom abstraction layer: traits + registries, no arch code, no subsystem impls — **one exception: `kor::frame`**, the allocation-free physical frame allocator (every boot feeds it via `regions`; it has no dependencies of its own). Also defines `InterruptController`, `Console`, `TrapCallbacks`, `BlockDevice`, the VFS traits, plus boot-time helpers (FDT, regions, cmdline, config, SMP/time).
   - `base/kor-alloc/` (`kor_alloc`) — slab kernel heap (`LockedSlabHeap`, the `#[global_allocator]`).
   - `filesystems/kor-fs/` (`kor_fs`) — VFS infrastructure: block cache, mount table, path resolver, fd, and the **filesystem-driver registry**. No concrete filesystems.
   - `filesystems/kor-ext2/` (`kor_ext2`) — ext2 (read/write, symlink, hard link, truncate, rename, indirect blocks, xattr, mknod) + `Ext2Driver` singleton.
@@ -64,14 +64,13 @@ This is the central design decision. **Shared crates contain no `#[cfg(target_ar
 - All downstream code (kor-alloc, kor-sched, kor-virtio, koros, korix) calls these static functions directly and lists `kor-arch` as a dependency. `kor-mmu` avoids a kor-mmu→kor-arch cycle by keeping its own per-arch `phys_to_virt`/`virt_to_phys`/`zero_page` in each `src/arch/<arch>.rs` back-end (kor-arch depends on kor-mmu, not the reverse). korhv does not depend on kor-arch at all; it has its own `apps/korhv/src/arch/{x86_64,aarch64}/` modules with the same shape.
 - If a feature differs per architecture, implement it as a separate file in each arch directory (each exporting the same function names), then re-export through the crate-root `cfg_select!` — never as `#[cfg]` branches in shared code.
 
-`kor::TaskContext` is an opaque `#[repr(C, align(16))]` buffer of 32 `usize` (sized for the largest arch — riscv64 with FPU state). Each arch's `context.rs` casts it to its internal layout via `TaskContext::from_opaque`.
+Each arch's `context.rs` defines its own typed `TaskContext` (`#[repr(C, align(16))]`, exact callee-saved layout, no opaque buffer); `kor-arch/src/lib.rs` re-exports the active arch's type as `kor_arch::TaskContext`, which kor-sched embeds directly. The facade trio `kor_arch::task_context_zero/task_context_init/context_switch` forwards to its inherent `zero`/`init` and the arch `context_switch`.
 
 ## Crate Layout
 
 ```
 kor/
   src/lib.rs              — module decls, re-exports, kernel_phys_range()
-  src/arch.rs             — opaque TaskContext buffer (no trait, no registry)
   src/addr.rs             — PhysAddr/VirtAddr newtypes
   src/interrupt.rs        — InterruptController trait + registry
   src/trap_callbacks.rs   — TrapCallbacks trait + registry; on_timer/dispatch_external

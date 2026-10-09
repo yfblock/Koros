@@ -3,7 +3,7 @@
 use core::arch::naked_asm;
 
 /// Saved callee state: `ra`, `sp`, `fp` ($r22) and `s0`–`s8` ($r23–$r31).
-#[repr(C)]
+#[repr(C, align(16))]
 #[derive(Clone, Copy)]
 pub struct TaskContext {
     ra: usize,
@@ -13,15 +13,6 @@ pub struct TaskContext {
 }
 
 impl TaskContext {
-    /// Borrow the opaque kor buffer as this arch's typed layout.
-    ///
-    /// # Safety
-    /// The buffer must be a valid `kor::TaskContext` (repr(C), align 16) and
-    /// the arch layout must fit within (const-checked below).
-    pub fn from_opaque(ctx: &mut kor::TaskContext) -> &mut Self {
-        // SAFETY: same layout contract as the previous provider cast.
-        unsafe { &mut *(ctx as *mut kor::TaskContext as *mut TaskContext) }
-    }
 
 
     pub const fn zero() -> Self {

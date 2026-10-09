@@ -31,7 +31,7 @@ use spin::Mutex;
 
 use kor::smp::MAX_CPUS;
 
-use kor::TaskContext;
+use kor_arch::TaskContext;
 
 /// Per-task kernel stack size.
 const STACK_SIZE: usize = 0x1_0000; // 64 KiB
