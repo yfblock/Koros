@@ -9,7 +9,7 @@ use kor::println;
 use kor_arch::TrapFrame;
 
 global_asm!(
-    kor_arch::trap_kernel_vec_asm!(),
+    kor_arch::trap_user_vec_asm!(),
     tf_size = const core::mem::size_of::<TrapFrame>(),
 );
 
