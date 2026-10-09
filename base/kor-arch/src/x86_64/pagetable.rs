@@ -2,7 +2,6 @@
 
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
-use crate::AddrSpace;
 use kor::mapping::MapError;
 use kor::mapping::MappingFlags;
 use x86_64::registers::control::Cr3;
@@ -11,7 +10,17 @@ use x86_64::registers::control::Cr3;
 
 /// First PML4 index after the boot high-half 512 GiB slot (index 256).
 
-use kor_arch::pte::{PTE_P, PTE_PS, PTE_RW, PTE_US, hw_flags};
+/// Zero one page at `pa` through the kernel mapping.
+///
+/// # Safety
+/// `pa` must be a page-aligned frame available for exclusive write.
+pub unsafe fn zero_page(pa: usize) {
+    let va = kor::PhysAddr::new(pa).to_ka().raw() as *mut u64;
+    // SAFETY: caller guarantees exclusive access to the frame.
+    unsafe { core::ptr::write_bytes(va, 0, 512) };
+}
+
+use crate::pte::{PTE_P, PTE_PS, PTE_RW, PTE_US, hw_flags};
 const PTE_NUM: usize = 512;
 
 pub fn init() {}
@@ -37,7 +46,7 @@ pub fn clone_active() -> Result<usize, MapError> {
 pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
-    unsafe { crate::page_table::zero_page(cloned) };
+    unsafe { zero_page(cloned) };
     let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
     let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     dst[256..].copy_from_slice(&src[256..]);
@@ -46,7 +55,7 @@ pub fn new_user() -> Result<usize, MapError> {
 
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
-    unsafe { crate::page_table::zero_page(cloned) };
+    unsafe { zero_page(cloned) };
     let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
     let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     for index in 0..PTE_NUM {
@@ -126,7 +135,7 @@ pub fn split_identity() {
 
         let old_pdpt = PhysAddr::new(pte_address(low));
         let new_pdpt_addr = alloc_frame().expect("x86: OOM cloning low PDPT");
-        crate::page_table::zero_page(new_pdpt_addr);
+        zero_page(new_pdpt_addr);
         let old_entries = old_pdpt.page_slice_at_mut::<usize>(PTE_NUM);
         let new_entries = PhysAddr::new(new_pdpt_addr).page_slice_at_mut::<usize>(PTE_NUM);
 
@@ -138,7 +147,7 @@ pub fn split_identity() {
 
             let old_pd = PhysAddr::new(pte_address(old_entry));
             let new_pd_addr = alloc_frame().expect("x86: OOM cloning low PD");
-            crate::page_table::zero_page(new_pd_addr);
+            zero_page(new_pd_addr);
             let old_pd_entries = old_pd.page_slice_at_mut::<usize>(PTE_NUM);
             let new_pd_entries = PhysAddr::new(new_pd_addr).page_slice_at_mut::<usize>(PTE_NUM);
             new_pd_entries.copy_from_slice(old_pd_entries);
@@ -178,73 +187,71 @@ pub(crate) fn pte_address(pte: usize) -> usize {
 
 
 /// PTE encoding contract for the generic engine (see `page_table`).
-impl AddrSpace {
 
-    /// Number of radix levels (Sv39-style: four).
-    pub const LEVELS: usize = 4;
+/// Number of radix levels (Sv39-style: four).
+pub const LEVELS: usize = 4;
 
-    /// This architecture drives real page tables.
-    pub const PAGING_SUPPORTED: bool = true;
+/// This architecture drives real page tables.
+pub const PAGING_SUPPORTED: bool = true;
 
-                pub fn table_entry( table_phys: usize) -> usize {
-        table_pte(table_phys)
+            pub fn table_entry( table_phys: usize) -> usize {
+    table_pte(table_phys)
+}
+
+pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
+    match level {
+        0 => leaf_pte_4k(phys, flags),
+        // 2 MiB and 1 GiB leaves set the PS bit in the entry.
+        _ => leaf_pte_2m(phys, flags),
     }
+}
 
-    pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
-        match level {
-            0 => leaf_pte_4k(phys, flags),
-            // 2 MiB and 1 GiB leaves set the PS bit in the entry.
-            _ => leaf_pte_2m(phys, flags),
-        }
-    }
+pub fn entry_present( entry: usize) -> bool {
+    is_present(entry)
+}
 
-    pub fn entry_present( entry: usize) -> bool {
+pub fn entry_is_leaf( entry: usize, level: usize) -> bool {
+    if level == 0 {
+        // PT entries are 4 KiB leaves whenever present.
         is_present(entry)
+    } else {
+        is_huge(entry)
     }
+}
 
-    pub fn entry_is_leaf( entry: usize, level: usize) -> bool {
-        if level == 0 {
-            // PT entries are 4 KiB leaves whenever present.
-            is_present(entry)
-        } else {
-            is_huge(entry)
-        }
+pub fn entry_phys( entry: usize, _level: usize) -> usize {
+    pte_address(entry)
+}
+
+pub fn entry_flags( entry: usize) -> MappingFlags {
+    // Mirror of `hw_flags`: present implies readable (and executable,
+    // since the encoders never set NX).
+    let mut flags = MappingFlags::R | MappingFlags::X;
+    if entry & (1 << 1) != 0 {
+        flags = flags | MappingFlags::W;
     }
-
-    pub fn entry_phys( entry: usize, _level: usize) -> usize {
-        pte_address(entry)
+    if entry & (1 << 2) != 0 {
+        flags = flags | MappingFlags::U;
     }
+    flags
+}
 
-    pub fn entry_flags( entry: usize) -> MappingFlags {
-        // Mirror of `hw_flags`: present implies readable (and executable,
-        // since the encoders never set NX).
-        let mut flags = MappingFlags::R | MappingFlags::X;
-        if entry & (1 << 1) != 0 {
-            flags = flags | MappingFlags::W;
-        }
-        if entry & (1 << 2) != 0 {
-            flags = flags | MappingFlags::U;
-        }
-        flags
-    }
-
-    pub fn flush_tlb( va: Option<usize>) {
-        // SAFETY: `invlpg` invalidates one page's translations; reloading
-        // CR3 flushes non-global entries.
-        unsafe {
-            match va {
-                Some(address) => core::arch::asm!(
-                    "invlpg [{}]",
-                    in(reg) address,
-                    options(nostack),
-                ),
-                None => {
-                    let cr3: usize;
-                    // SAFETY: reading CR3 is side-effect free.
-                    core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack));
-                    // SAFETY: writing CR3 back flushes non-global entries.
-                    core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack));
-                }
+pub fn flush_tlb( va: Option<usize>) {
+    // SAFETY: `invlpg` invalidates one page's translations; reloading
+    // CR3 flushes non-global entries.
+    unsafe {
+        match va {
+            Some(address) => core::arch::asm!(
+                "invlpg [{}]",
+                in(reg) address,
+                options(nostack),
+            ),
+            None => {
+                let cr3: usize;
+                // SAFETY: reading CR3 is side-effect free.
+                core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nostack));
+                // SAFETY: writing CR3 back flushes non-global entries.
+                core::arch::asm!("mov cr3, {}", in(reg) cr3, options(nostack));
             }
         }
     }

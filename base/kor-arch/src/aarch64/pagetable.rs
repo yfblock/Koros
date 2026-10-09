@@ -2,7 +2,6 @@
 
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
-use crate::AddrSpace;
 use kor::mapping::MapError;
 use kor::mapping::MappingFlags;
 
@@ -10,11 +9,21 @@ use kor::mapping::MappingFlags;
 
 /// 512 GiB slot — L0 index 1 is unused by the boot 1 GiB block map at L0[0].
 
-use kor_arch::pte::{PTE_VALID, ap_flags};
+/// Zero one page at `pa` through the kernel mapping.
+///
+/// # Safety
+/// `pa` must be a page-aligned frame available for exclusive write.
+pub unsafe fn zero_page(pa: usize) {
+    let va = kor::PhysAddr::new(pa).to_ka().raw() as *mut u64;
+    // SAFETY: caller guarantees exclusive access to the frame.
+    unsafe { core::ptr::write_bytes(va, 0, 512) };
+}
+
+use crate::pte::{PTE_VALID, ap_flags};
 
 /// Entries per page-table page (512 × 64-bit PTEs).
 const PTE_NUM: usize = 512;
-pub(crate) use kor_arch::pte::PTE_TABLE;
+pub(crate) use crate::pte::PTE_TABLE;
 
 /// Build the default boot tables: L0[0] -> L1, L1[i] = 1 GiB identity
 /// block (covers the first 512 GiB).  TTBR0 and TTBR1 share the root, so
@@ -49,7 +58,7 @@ pub unsafe extern "C" fn boot_mmu_build(table_pa: usize, _table_len: usize) -> u
     let pages = unsafe { &mut *(table_pa as *mut [usize; PTE_NUM * 2]) };
     boot_table_identity_512g(pages)
 }
-use kor_arch::pte::{PTE_AF, PTE_ATTR};
+use crate::pte::{PTE_AF, PTE_ATTR};
 
 pub fn init() {}
 
@@ -85,7 +94,7 @@ pub fn clone_active() -> Result<usize, MapError> {
 pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
-    unsafe { crate::page_table::zero_page(cloned) };
+    unsafe { zero_page(cloned) };
     let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
     let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     dst[256..].copy_from_slice(&src[256..]);
@@ -94,7 +103,7 @@ pub fn new_user() -> Result<usize, MapError> {
 
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
-    unsafe { crate::page_table::zero_page(cloned) };
+    unsafe { zero_page(cloned) };
     let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
     let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     for index in 0..PTE_NUM {
@@ -177,7 +186,7 @@ pub fn split_identity() {
         }
         // Allocate L2 table
         let l2_paddr = alloc_frame().expect("OOM: L2 table");
-        crate::page_table::zero_page(l2_paddr);
+        zero_page(l2_paddr);
         let l2_table = PhysAddr::new(l2_paddr).page_slice_at_mut::<usize>(PTE_NUM);
         // Fill L2 with 512 × 2 MiB identity-mapped blocks (no U bit)
         for i in 0..512 {
@@ -218,72 +227,70 @@ pub(crate) fn pte_address(pte: usize) -> usize {
 
 
 /// PTE encoding contract for the generic engine (see `page_table`).
-impl AddrSpace {
 
-    /// Number of radix levels (Sv39-style: four).
-    pub const LEVELS: usize = 4;
+/// Number of radix levels (Sv39-style: four).
+pub const LEVELS: usize = 4;
 
-    /// This architecture drives real page tables.
-    pub const PAGING_SUPPORTED: bool = true;
+/// This architecture drives real page tables.
+pub const PAGING_SUPPORTED: bool = true;
 
-                pub fn table_entry( table_phys: usize) -> usize {
-        table_phys | PTE_VALID | PTE_TABLE
+            pub fn table_entry( table_phys: usize) -> usize {
+    table_phys | PTE_VALID | PTE_TABLE
+}
+
+pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
+    if level == 0 {
+        page_pte(phys, flags)
+    } else {
+        block_pte(phys, flags)
     }
+}
 
-    pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
-        if level == 0 {
-            page_pte(phys, flags)
-        } else {
-            block_pte(phys, flags)
-        }
-    }
+pub fn entry_present( entry: usize) -> bool {
+    is_valid(entry)
+}
 
-    pub fn entry_present( entry: usize) -> bool {
+pub fn entry_is_leaf( entry: usize, level: usize) -> bool {
+    if level == 0 {
+        // L3 valid entries are always 4 KiB page descriptors.
         is_valid(entry)
+    } else {
+        is_block(entry)
     }
+}
 
-    pub fn entry_is_leaf( entry: usize, level: usize) -> bool {
-        if level == 0 {
-            // L3 valid entries are always 4 KiB page descriptors.
-            is_valid(entry)
-        } else {
-            is_block(entry)
-        }
+pub fn entry_phys( entry: usize, _level: usize) -> usize {
+    pte_address(entry)
+}
+
+pub fn entry_flags( entry: usize) -> MappingFlags {
+    // Present mappings are readable; mirror of `ap_flags`.
+    let mut flags = MappingFlags::R;
+    // AP[2] (bit 7) set means read-only.
+    if entry & (1 << 7) == 0 {
+        flags = flags | MappingFlags::W;
     }
-
-    pub fn entry_phys( entry: usize, _level: usize) -> usize {
-        pte_address(entry)
+    // AP[1] (bit 6) set means EL0-accessible.
+    if entry & (1 << 6) != 0 {
+        flags = flags | MappingFlags::U;
     }
-
-    pub fn entry_flags( entry: usize) -> MappingFlags {
-        // Present mappings are readable; mirror of `ap_flags`.
-        let mut flags = MappingFlags::R;
-        // AP[2] (bit 7) set means read-only.
-        if entry & (1 << 7) == 0 {
-            flags = flags | MappingFlags::W;
-        }
-        // AP[1] (bit 6) set means EL0-accessible.
-        if entry & (1 << 6) != 0 {
-            flags = flags | MappingFlags::U;
-        }
-        // UXN (bit 54) clear means executable.
-        if entry & (1 << 54) == 0 {
-            flags = flags | MappingFlags::X;
-        }
-        flags
+    // UXN (bit 54) clear means executable.
+    if entry & (1 << 54) == 0 {
+        flags = flags | MappingFlags::X;
     }
+    flags
+}
 
-    pub fn flush_tlb( va: Option<usize>) {
-        // SAFETY: `tlbi vae1is` invalidates one VA (all ASIDs, inner
-        // shareable); `tlbi vmalle1is` flushes everything.
-        unsafe {
-            match va {
-                Some(address) => core::arch::asm!(
-                    "tlbi vae1is, {}",
-                    in(reg) address,
-                ),
-                None => core::arch::asm!("tlbi vmalle1is"),
-            }
+pub fn flush_tlb( va: Option<usize>) {
+    // SAFETY: `tlbi vae1is` invalidates one VA (all ASIDs, inner
+    // shareable); `tlbi vmalle1is` flushes everything.
+    unsafe {
+        match va {
+            Some(address) => core::arch::asm!(
+                "tlbi vae1is, {}",
+                in(reg) address,
+            ),
+            None => core::arch::asm!("tlbi vmalle1is"),
         }
     }
 }

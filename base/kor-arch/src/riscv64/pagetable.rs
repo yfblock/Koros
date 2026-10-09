@@ -2,7 +2,6 @@
 
 use kor::addr::PhysAddr;
 use kor::frame::alloc_frame;
-use crate::AddrSpace;
 use kor::mapping::MapError;
 use kor::mapping::MappingFlags;
 
@@ -10,7 +9,17 @@ use kor::mapping::MappingFlags;
 
 /// First unused 1 GiB slot in the high-half root (boot leaves use 256–259).
 
-use kor_arch::pte::{
+/// Zero one page at `pa` through the kernel mapping.
+///
+/// # Safety
+/// `pa` must be a page-aligned frame available for exclusive write.
+pub unsafe fn zero_page(pa: usize) {
+    let va = kor::PhysAddr::new(pa).to_ka().raw() as *mut u64;
+    // SAFETY: caller guarantees exclusive access to the frame.
+    unsafe { core::ptr::write_bytes(va, 0, 512) };
+}
+
+use crate::pte::{
     PTE_A, PTE_D, PTE_R, PTE_RW, PTE_V, PTE_W, PTE_X, flags_to_hw, mapping_flags,
 };
 
@@ -111,7 +120,7 @@ pub fn clone_active() -> Result<usize, MapError> {
 pub fn new_user() -> Result<usize, MapError> {
     let source = root();
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
-    unsafe { crate::page_table::zero_page(cloned) };
+    unsafe { zero_page(cloned) };
     let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
     let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     dst[256..].copy_from_slice(&src[256..]);
@@ -120,7 +129,7 @@ pub fn new_user() -> Result<usize, MapError> {
 
 unsafe fn clone_table(source: usize, level: usize) -> Result<usize, MapError> {
     let cloned = alloc_frame().ok_or(MapError::OutOfMemory)?;
-    unsafe { crate::page_table::zero_page(cloned) };
+    unsafe { zero_page(cloned) };
     let src = unsafe { PhysAddr::new(source).page_slice_at_mut::<usize>(PTE_NUM) };
     let dst = unsafe { PhysAddr::new(cloned).page_slice_at_mut::<usize>(PTE_NUM) };
     for index in 0..PTE_NUM {
@@ -212,7 +221,7 @@ pub fn split_identity() {
 
         // Allocate L1 table
         let l1_paddr = alloc_frame().expect("OOM: L1 table");
-        crate::page_table::zero_page(l1_paddr);
+        zero_page(l1_paddr);
         let l1_table = PhysAddr::new(l1_paddr).page_slice_at_mut::<usize>(PTE_NUM);
 
         // Fill L1 entries 1-511 with 2 MiB identity-mapped leaves
@@ -224,7 +233,7 @@ pub fn split_identity() {
 
         // Allocate L0 table for the first 2 MiB (L1 entry 0)
         let l0_paddr = alloc_frame().expect("OOM: L0 table");
-        crate::page_table::zero_page(l0_paddr);
+        zero_page(l0_paddr);
         let l0_table = PhysAddr::new(l0_paddr).page_slice_at_mut::<usize>(PTE_NUM);
 
         // Fill L0 entries with 4 KiB identity-mapped leaves
@@ -271,55 +280,53 @@ pub(crate) fn pte_address(pte: usize) -> usize {
 
 
 /// PTE encoding contract for the generic engine (see `page_table`).
-impl AddrSpace {
 
-    /// Number of radix levels (Sv39-style: three).
-    pub const LEVELS: usize = 3;
+/// Number of radix levels (Sv39-style: three).
+pub const LEVELS: usize = 3;
 
-    /// This architecture drives real page tables.
-    pub const PAGING_SUPPORTED: bool = true;
+/// This architecture drives real page tables.
+pub const PAGING_SUPPORTED: bool = true;
 
-    pub fn table_entry( table_phys: usize) -> usize {
-        table_pte(table_phys)
+pub fn table_entry( table_phys: usize) -> usize {
+    table_pte(table_phys)
+}
+
+pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
+    match level {
+        0 => leaf_pte(phys, flags),
+        1 => megapage_2m_pte(phys, flags),
+        _ => leaf_pte(phys, flags),
     }
+}
 
-    pub fn leaf_entry( phys: usize, flags: MappingFlags, level: usize) -> usize {
-        match level {
-            0 => leaf_pte(phys, flags),
-            1 => megapage_2m_pte(phys, flags),
-            _ => leaf_pte(phys, flags),
-        }
-    }
+pub fn entry_present( entry: usize) -> bool {
+    is_valid(entry)
+}
 
-    pub fn entry_present( entry: usize) -> bool {
-        is_valid(entry)
-    }
+pub fn entry_is_leaf( entry: usize, _level: usize) -> bool {
+    // A PTE with any of R/W/X set is a leaf at every level; V with
+    // R=W=X=0 points to the next-level table.
+    is_leaf(entry)
+}
 
-    pub fn entry_is_leaf( entry: usize, _level: usize) -> bool {
-        // A PTE with any of R/W/X set is a leaf at every level; V with
-        // R=W=X=0 points to the next-level table.
-        is_leaf(entry)
-    }
+pub fn entry_phys( entry: usize, _level: usize) -> usize {
+    pte_address(entry)
+}
 
-    pub fn entry_phys( entry: usize, _level: usize) -> usize {
-        pte_address(entry)
-    }
+pub fn entry_flags( entry: usize) -> MappingFlags {
+    mapping_flags(entry)
+}
 
-    pub fn entry_flags( entry: usize) -> MappingFlags {
-        mapping_flags(entry)
-    }
-
-    pub fn flush_tlb( va: Option<usize>) {
-        // SAFETY: `sfence.vma` is always executable in S-mode; with an
-        // address it flushes that page's translations, else everything.
-        unsafe {
-            match va {
-                Some(address) => core::arch::asm!(
-                    "sfence.vma {}",
-                    in(reg) address,
-                ),
-                None => core::arch::asm!("sfence.vma"),
-            }
+pub fn flush_tlb( va: Option<usize>) {
+    // SAFETY: `sfence.vma` is always executable in S-mode; with an
+    // address it flushes that page's translations, else everything.
+    unsafe {
+        match va {
+            Some(address) => core::arch::asm!(
+                "sfence.vma {}",
+                in(reg) address,
+            ),
+            None => core::arch::asm!("sfence.vma"),
         }
     }
 }

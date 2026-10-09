@@ -25,7 +25,6 @@
 
 extern crate alloc;
 
-pub mod arch;
 pub mod descriptor;
 pub mod page_table;
 
@@ -36,47 +35,47 @@ use kor::mapping::{MapError, MapSize, MappingFlags};
 
 /// Install runtime page-table services (e.g. capture the boot root).
 pub fn page_table_init() {
-    arch::current::init();
+    kor_arch::pagetable::init();
 }
 
 /// Whether dynamic mappings are supported (false on unpaged arches).
 pub fn dynamic_maps_supported() -> bool {
-    AddrSpace::PAGING_SUPPORTED
+    kor_arch::pagetable::PAGING_SUPPORTED
 }
 
 /// Map through the generic engine on the active root.
 pub fn map(vaddr: usize, paddr: usize, flags: MappingFlags, size: MapSize) -> Result<(), MapError> {
-    if !AddrSpace::PAGING_SUPPORTED {
+    if !kor_arch::pagetable::PAGING_SUPPORTED {
         return Err(MapError::Unsupported);
     }
     // SAFETY: the active root is live for the whole call.
-    let space = unsafe { AddrSpace::from_root(arch::current::root()) };
+    let space = unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) };
     space.map(vaddr, paddr, flags, size)
 }
 
 /// Translate through the generic engine on the active root.
 pub fn translate(vaddr: usize) -> Option<usize> {
-    if !AddrSpace::PAGING_SUPPORTED {
+    if !kor_arch::pagetable::PAGING_SUPPORTED {
         return None;
     }
     // SAFETY: read-only walk of the live root inside a transaction.
-    let space = unsafe { AddrSpace::from_root(arch::current::root()) };
+    let space = unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) };
     space.translate(vaddr)
 }
 
 /// Unmap through the generic engine; returns the mapped physical address.
 pub fn unmap(vaddr: usize, size: MapSize) -> Result<usize, MapError> {
-    if !AddrSpace::PAGING_SUPPORTED {
+    if !kor_arch::pagetable::PAGING_SUPPORTED {
         return Err(MapError::Unsupported);
     }
     // SAFETY: same contract as `map`.
-    let space = unsafe { AddrSpace::from_root(arch::current::root()) };
+    let space = unsafe { AddrSpace::from_root(kor_arch::pagetable::root()) };
     space.unmap(vaddr, size)
 }
 
 /// Physical root of the active address space.
 pub fn address_space_root() -> usize {
-    arch::current::root()
+    kor_arch::pagetable::root()
 }
 
 /// Activate an address-space root and invalidate stale translations.
@@ -86,17 +85,17 @@ pub fn address_space_root() -> usize {
 /// required by the current execution context.
 pub unsafe fn activate_address_space(root: usize) {
     // SAFETY: forwarded to the arch backend under the same contract.
-    unsafe { arch::current::activate(root) }
+    unsafe { kor_arch::pagetable::activate(root) }
 }
 
 /// Clone the active address space, deeply copying user pages.
 pub fn clone_address_space() -> Result<usize, MapError> {
-    arch::current::clone_active()
+    kor_arch::pagetable::clone_active()
 }
 
 /// Create an empty user address space retaining kernel mappings.
 pub fn new_address_space() -> Result<usize, MapError> {
-    arch::current::new_user()
+    kor_arch::pagetable::new_user()
 }
 
 /// Destroy an inactive address space, releasing its user pages and tables.
@@ -105,13 +104,13 @@ pub fn new_address_space() -> Result<usize, MapError> {
 /// `root` must not be active on any CPU.
 pub unsafe fn destroy_address_space(root: usize) {
     // SAFETY: forwarded to the arch backend under the same contract.
-    unsafe { arch::current::destroy(root) }
+    unsafe { kor_arch::pagetable::destroy(root) }
 }
 
 /// Split the boot identity mapping so finer user pages can be mapped
 /// inside it (no-op where the boot layout already allows it).
 pub fn split_identity() {
-    arch::current::split_identity();
+    kor_arch::pagetable::split_identity();
 }
 
 // Link-time hooks consumed by kor-sched (per-task address-space roots).

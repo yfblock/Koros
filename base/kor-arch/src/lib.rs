@@ -34,6 +34,7 @@ cfg_select! {
 }
 
 pub mod interrupt;
+pub mod pagetable;
 
 pub use interrupt::{InterruptController, enable_device_irq};
 
