@@ -74,6 +74,7 @@ pub const SYS_SET_TID_ADDRESS: usize = 96;
 pub const SYS_SET_ROBUST_LIST: usize = 99;
 pub const SYS_FUTEX: usize = 98;
 pub const SYS_UNAME: usize = 160;
+pub const SYS_SYSINFO: usize = 179;
 pub const SYS_GETRANDOM: usize = 278;
 pub const SYS_WRITEV: usize = 66;
 pub const SYS_READV: usize = 65;
@@ -766,6 +767,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         }
         SYS_NANOSLEEP => sys_nanosleep(args[0]),
         SYS_UNAME => sys_uname(args[0]),
+        SYS_SYSINFO => sys_sysinfo(args[0]),
         SYS_BRK => sys_brk(args[0]),
         SYS_MMAP => sys_mmap(args[0], args[1], args[2], args[3], args[4], args[5] as i64),
         SYS_MUNMAP => sys_munmap(args[0], args[1]),
@@ -1914,6 +1916,7 @@ fn sys_clone(args: &[usize]) -> isize {
         child.signals = child_signals;
         child.brk = child_brk;
         child.executable = child_executable;
+        child.name = parent.lock().name;
         child.mmap_next = child_mmap_next;
         child.files = child_files;
         child.stdio = child_stdio;
@@ -2055,6 +2058,15 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
         let mut process = process.lock();
         let old = process.replace_address_space(replacement);
         process.executable = image_path;
+        process.name = {
+            // Linux comm = basename of the executable, truncated to 15 bytes.
+            let mut name = [0u8; 16];
+            let basename = path.rsplit('/').next().unwrap_or(&path);
+            let bytes = basename.as_bytes();
+            let length = bytes.len().min(15);
+            name[..length].copy_from_slice(&bytes[..length]);
+            name
+        };
         process.signals.reset_for_exec();
         process.brk = 0;
         process.mmap_next = crate::user::layout::MMAP_BASE;
@@ -2133,6 +2145,31 @@ fn sys_uname(buf: usize) -> isize {
     } else {
         0
     }
+}
+
+/// sysinfo(2) — struct sysinfo (asm-generic, 112 bytes) with memory and
+/// process counts filled from the frame allocator and scheduler.
+fn sys_sysinfo(address: usize) -> isize {
+    const SYSINFO_LEN: usize = 112;
+    const FIELD_TOTALRAM: usize = 32;
+    const FIELD_FREERAM: usize = 40;
+    const FIELD_PROCS: usize = 80;
+    const FIELD_MEM_UNIT: usize = 104;
+    const MEM_UNIT: u32 = 1024;
+
+    let mut info = [0u8; SYSINFO_LEN];
+    let uptime = kor_arch::now().as_secs() as u64;
+    info[0..8].copy_from_slice(&uptime.to_ne_bytes());
+    let (total_kib, free_kib) = crate::procfs::memory_report();
+    info[FIELD_TOTALRAM..FIELD_TOTALRAM + 8].copy_from_slice(&(total_kib as u64).to_ne_bytes());
+    info[FIELD_FREERAM..FIELD_FREERAM + 8].copy_from_slice(&(free_kib as u64).to_ne_bytes());
+    let procs = crate::sched::process_snapshot().len() as u16;
+    info[FIELD_PROCS..FIELD_PROCS + 2].copy_from_slice(&procs.to_ne_bytes());
+    info[FIELD_MEM_UNIT..FIELD_MEM_UNIT + 4].copy_from_slice(&MEM_UNIT.to_ne_bytes());
+    if copy_to_user(address, &info).is_none() {
+        return -14;
+    }
+    0
 }
 
 fn sys_getrandom(buf: usize, count: usize) -> isize {

@@ -198,6 +198,18 @@ pub fn reap(pid: usize) -> Option<Arc<Mutex<ProcessState>>> {
     PROCESSES.lock().remove(&pid)
 }
 
+/// Snapshot the process table for procfs: (pid, name, state, ppid).
+pub fn process_snapshot() -> alloc::vec::Vec<(usize, [u8; 16], usize, usize)> {
+    PROCESSES
+        .lock()
+        .values()
+        .map(|process| {
+            let process = process.lock();
+            (process.pid, process.name, process.state, process.parent)
+        })
+        .collect()
+}
+
 /// Mark the current process dead, notify its parent, and terminate its task.
 pub fn exit_current(code: i32) -> ! {
     let current = current_process().expect("exiting task is not a process");

@@ -62,7 +62,10 @@ pub fn spawn_init() {
 
             address_space.activate();
             if let Some(process) = crate::sched::current_process() {
-                process.lock().replace_address_space(address_space);
+                let mut process = process.lock();
+                process.executable = alloc::string::String::from("/bin/busybox");
+                process.name = *b"busybox\0\0\0\0\0\0\0\0\0";
+                process.replace_address_space(address_space);
             } else {
                 core::mem::forget(address_space);
             }

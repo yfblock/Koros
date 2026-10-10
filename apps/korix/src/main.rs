@@ -12,6 +12,7 @@ mod heap;
 mod mm;
 mod net;
 mod panic;
+mod procfs;
 mod registries;
 mod sched;
 pub mod syscall;
@@ -25,6 +26,11 @@ use spin::Mutex;
 static HEAP: kor_alloc::LockedSlabHeap = kor_alloc::LockedSlabHeap::empty();
 
 pub static MOUNTS: Mutex<kor_fs::mount::MountTable> = Mutex::new(kor_fs::mount::MountTable::new());
+
+/// Total system memory in KiB, captured after the frame allocator is fed
+/// and before the kernel carves out its own frames (procfs meminfo source).
+pub static TOTAL_MEMORY_KIB: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 /// Per-task-switch notification for kor-sched (link-time contract):
 /// on x86_64, point the native SYSCALL kernel stack at the new task.
@@ -66,6 +72,10 @@ extern "C" fn kernel_main() -> ! {
             kor::frame::add_region(s, e)
         });
     });
+    TOTAL_MEMORY_KIB.store(
+        kor::frame::available_frames() * kor::frame::PAGE_SIZE / 1024,
+        core::sync::atomic::Ordering::Relaxed,
+    );
     HEAP.enable_frame_growth();
     heap::self_test();
     kor_mmu::page_table_init();
@@ -82,6 +92,7 @@ extern "C" fn kernel_main() -> ! {
     probe_devices();
     kor_arch::boot_secondaries();
     crate::fs::init_rootfs();
+    crate::procfs::mount_procfs();
 
     // Install syscall handler so ecall from U-mode dispatches to our syscall layer.
 

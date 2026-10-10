@@ -108,6 +108,11 @@ impl MountTable {
             .rfind(|(mount_path, _)| is_mount_prefix(mount_path, &canonical))
             .map(|(mount_path, _)| mount_path.clone())
     }
+
+    /// Enumerate mount points (sorted) for /proc/mounts-style listings.
+    pub fn mount_points(&self) -> alloc::vec::Vec<String> {
+        self.table.keys().cloned().collect()
+    }
 }
 
 /// Check whether `mount_path` is a prefix of `canonical` for mount-matching

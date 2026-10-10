@@ -145,6 +145,75 @@ const O_WRONLY: usize = 1;
 const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 
+
+// --- procfs tests ------------------------------------------------------------
+
+fn read_file(path: &[u8]) -> isize {
+    let fd = sys4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, O_RDONLY, 0);
+    if fd < 0 {
+        return fd;
+    }
+    let mut buf = [0u8; 256];
+    let got = sys3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len());
+    sys1(SYS_CLOSE, fd as usize);
+    if got < 0 {
+        return got;
+    }
+    // Return the length; contents are checked by the caller via re-read.
+    got
+}
+
+fn test_procfs() {
+    let version = b"/proc/version\0";
+    let mut buf = [0u8; 256];
+    let fd = sys4(SYS_OPENAT, AT_FDCWD, version.as_ptr() as usize, O_RDONLY, 0);
+    if fd < 0 {
+        report("procfs_version", false, "open failed");
+    } else {
+        let got = sys3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len());
+        sys1(SYS_CLOSE, fd as usize);
+        let ok = got > 0 && buf.starts_with(b"Linux version");
+        report("procfs_version", ok, "starts with Linux version");
+    }
+
+    let self_stat = b"/proc/self/stat\0";
+    let fd = sys4(SYS_OPENAT, AT_FDCWD, self_stat.as_ptr() as usize, O_RDONLY, 0);
+    if fd < 0 {
+        report("procfs_self", false, "open /proc/self/stat failed");
+    } else {
+        let got = sys3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len());
+        sys1(SYS_CLOSE, fd as usize);
+        // First field is our own pid.
+        let pid = sys1(SYS_GETPID, 0);
+        let prefix = format_pid_prefix(buf.split(|b| *b == b' ').next().unwrap_or(&[]));
+        let ok = got > 0 && prefix == pid;
+        report("procfs_self", ok, "self stat pid matches");
+    }
+
+    let meminfo = b"/proc/meminfo\0";
+    let fd = sys4(SYS_OPENAT, AT_FDCWD, meminfo.as_ptr() as usize, O_RDONLY, 0);
+    if fd < 0 {
+        report("procfs_meminfo", false, "open failed");
+    } else {
+        let got = sys3(SYS_READ, fd as usize, buf.as_mut_ptr() as usize, buf.len());
+        sys1(SYS_CLOSE, fd as usize);
+        let ok = got > 0 && buf.starts_with(b"MemTotal:");
+        report("procfs_meminfo", ok, "MemTotal present");
+    }
+}
+
+/// Compare a decimal byte slice against a pid value.
+fn format_pid_prefix(bytes: &[u8]) -> isize {
+    let mut value: isize = 0;
+    for b in bytes {
+        if !b.is_ascii_digit() {
+            break;
+        }
+        value = value * 10 + (b - b'0') as isize;
+    }
+    value
+}
+
 // --- individual tests -------------------------------------------------------
 
 // --- signal tests -----------------------------------------------------------
@@ -499,6 +568,7 @@ extern "C" fn _start() -> ! {
     test_fork_exit_status();
     test_exec_true();
     test_error_paths();
+    test_procfs();
     unsafe {
         write_str("--- pass ");
         write_str(dec(PASS));
