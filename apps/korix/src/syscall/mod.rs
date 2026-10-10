@@ -2971,6 +2971,81 @@ fn sys_mremap(old_address: usize, old_size: usize, new_size: usize, flags: usize
     old_address as isize
 }
 
+/// Shared-memory registry: frames backing a MAP_SHARED file mapping,
+/// keyed by the inode's Arc identity so forks and re-maps alias the
+/// same physical pages.
+static SHM_REGISTRY: Mutex<BTreeMap<usize, Arc<Mutex<alloc::vec::Vec<usize>>>>> =
+    Mutex::new(BTreeMap::new());
+
+/// Map `length` bytes of shared, registry-owned frames at `page_start`.
+fn sys_mmap_shared(
+    page_start: usize,
+    length: usize,
+    flags: kor_arch::MappingFlags,
+    fd: usize,
+    offset: i64,
+) -> isize {
+    let Some(process) = crate::sched::current_process() else {
+        return -12;
+    };
+    let process = process.lock();
+    if offset < 0 || offset as usize % 4096 != 0 {
+        return -22;
+    }
+    let Some(entry) = process.files.get(&fd).cloned() else {
+        return -9;
+    };
+    let inode = entry.lock().inode.clone();
+    drop(process);
+
+    let key = Arc::as_ptr(&inode) as *const dyn INode as *const () as usize;
+    let frames = {
+        let mut registry = SHM_REGISTRY.lock();
+        registry
+            .entry(key)
+            .or_insert_with(|| Arc::new(Mutex::new(alloc::vec::Vec::new())))
+            .clone()
+    };
+    {
+        let mut frames = frames.lock();
+        while frames.len() * 4096 < length {
+            match kor::frame::alloc_frame() {
+                Some(phys) => {
+                    // SAFETY: freshly allocated frame; zero it once at
+                    // registry-creation time.
+                    unsafe {
+                        core::ptr::write_bytes(kor_arch::phys_to_virt(phys) as *mut u8, 0, 4096);
+                    }
+                    frames.push(phys);
+                }
+                None => return -12,
+            }
+        }
+    }
+
+    let Some(process) = crate::sched::current_process() else {
+        return -12;
+    };
+    let mut process = process.lock();
+    let Some(address_space) = process.address_space_mut() else {
+        return -12;
+    };
+    let frames = frames.lock();
+    let mut mapped = 0;
+    while mapped < length {
+        let phys = frames[mapped / 4096];
+        if address_space
+            .map_shared_frame(page_start + mapped, phys, flags)
+            .is_err()
+        {
+            let _ = address_space.unmap_range(page_start, mapped);
+            return -22;
+        }
+        mapped += 4096;
+    }
+    page_start as isize
+}
+
 fn sys_mmap(
     address: usize,
     mut length: usize,
@@ -3024,6 +3099,13 @@ fn sys_mmap(
     }
     if prot & 4 != 0 {
         map_flags = map_flags | kor_arch::MappingFlags::X;
+    }
+    // MAP_SHARED on a file: alias registry-owned frames so forks and other
+    // mappings of the same inode observe the same memory (LTP ipc).
+    const MAP_SHARED_FLAG: usize = 0x01;
+    const MAP_ANONYMOUS_FLAG: usize = 0x20;
+    if flags & MAP_SHARED_FLAG != 0 && flags & MAP_ANONYMOUS_FLAG == 0 {
+        return sys_mmap_shared(page_start, rounded, map_flags, fd, offset);
     }
     // Linux anonymous mappings without explicit PROT bits are inaccessible;
     // BusyBox requests the required permissions explicitly.

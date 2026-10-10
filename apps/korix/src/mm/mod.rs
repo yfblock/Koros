@@ -12,6 +12,9 @@ pub use crate::user::layout::ADDRESS_LIMIT as USER_ADDRESS_LIMIT;
 struct VmPage {
     phys: usize,
     flags: MappingFlags,
+    /// Registry-owned shared frame (MAP_SHARED): never copied on fork,
+    /// never freed by this space — the shm registry owns it.
+    shared: bool,
 }
 
 /// An exclusively owned user page-table root plus the authoritative set of
@@ -46,12 +49,13 @@ impl AddressSpace {
     pub fn fork(&self) -> Result<Self, MapError> {
         let mut child = Self::empty()?;
         for (&vaddr, &page) in &self.pages {
-            let child_phys = child.map_zeroed(vaddr, page.flags)?;
-            if crate::syscall::TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed)
-                && child_phys == page.phys
-            {
-                kor::println!("[trace] fork ALIAS va={:#x} pa={:#x}", vaddr, page.phys);
+            if page.shared {
+                // Shared mappings alias the registry-owned frames in the
+                // child: no copy, no transfer of ownership.
+                child.map_shared_frame(vaddr, page.phys, page.flags)?;
+                continue;
             }
+            let child_phys = child.map_zeroed(vaddr, page.flags)?;
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     kor_arch::phys_to_virt(page.phys) as *const u8,
@@ -179,8 +183,42 @@ impl AddressSpace {
             }
         })
         .inspect(|&phys| {
-            self.pages.insert(vaddr, VmPage { phys, flags });
+            self.pages.insert(
+                vaddr,
+                VmPage {
+                    phys,
+                    flags,
+                    shared: false,
+                },
+            );
         })
+    }
+
+    /// Map a registry-owned shared frame at `vaddr` without taking ownership:
+    /// the frame is aliased into this space, not copied and never freed by it.
+    pub fn map_shared_frame(
+        &mut self,
+        vaddr: usize,
+        phys: usize,
+        flags: MappingFlags,
+    ) -> Result<(), MapError> {
+        if vaddr & (PAGE_SIZE - 1) != 0
+            || vaddr >= USER_ADDRESS_LIMIT
+            || !flags.contains(MappingFlags::U)
+            || self.pages.contains_key(&vaddr)
+        {
+            return Err(MapError::BlockedByExistingMapping);
+        }
+        self.with_active(|| kor_mmu::active().map(vaddr, phys, flags, MapSize::Page4K))?;
+        self.pages.insert(
+            vaddr,
+            VmPage {
+                phys,
+                flags,
+                shared: true,
+            },
+        );
+        Ok(())
     }
 
     /// Replace a complete page-aligned range transactionally. Fresh frames are
@@ -264,6 +302,7 @@ impl AddressSpace {
                 VmPage {
                     phys: fresh[index],
                     flags,
+                    shared: false,
                 },
             );
         }
@@ -347,7 +386,9 @@ impl AddressSpace {
         })?;
         for (vaddr, page) in pages {
             self.pages.remove(&vaddr);
-            kor::frame::free_frames(page.phys, 1);
+            if !page.shared {
+                kor::frame::free_frames(page.phys, 1);
+            }
         }
         Ok(())
     }
@@ -419,7 +460,20 @@ impl Drop for AddressSpace {
     fn drop(&mut self) {
         if self.owned {
             assert!(!self.is_active(), "dropping active address space");
-            // kor-arch's destroy_table already returns every level-0 leaf
+            // Shared frames are registry-owned: detach their PTEs first so
+            // the arch walk below cannot return them to the frame allocator.
+            let shared: alloc::vec::Vec<usize> = self
+                .pages
+                .iter()
+                .filter(|(_, page)| page.shared)
+                .map(|(vaddr, _)| *vaddr)
+                .collect();
+            let _ = self.with_active(|| {
+                for vaddr in &shared {
+                    let _ = kor_mmu::active().unmap(*vaddr, MapSize::Page4K);
+                }
+            });
+            // kor-arch's destroy_table returns every remaining level-0 leaf
             // data frame along with the table pages.
             unsafe { kor_mmu::destroy_address_space(self.root) }
         }
