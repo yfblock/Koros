@@ -76,6 +76,7 @@ pub const SYS_FUTEX: usize = 98;
 pub const SYS_UNAME: usize = 160;
 pub const SYS_SYSINFO: usize = 179;
 pub const SYS_UMASK: usize = 166;
+pub const SYS_MSYNC: usize = 227;
 pub const SYS_FACCESSAT: usize = 48;
 pub const SYS_SETREGID: usize = 143;
 pub const SYS_SETGID: usize = 144;
@@ -788,6 +789,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_MADVISE => 0, // no-op
         SYS_MINCORE => 0, // no-op: all pages resident
         SYS_UMASK => sys_umask(args[0]),
+        SYS_MSYNC => 0, // anonymous mappings are always coherent
         SYS_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
         SYS_GETITIMER => sys_getitimer(args[0], args[1]),
         SYS_GETRUSAGE => sys_getrusage(args[0], args[1]),
