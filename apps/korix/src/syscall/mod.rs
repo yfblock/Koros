@@ -1396,22 +1396,32 @@ fn sys_pipe(pipefd: usize) -> isize {
 fn sys_pipe2(pipefd: usize, flags: usize) -> isize {
     const O_NONBLOCK: usize = 0o4000;
     const O_CLOEXEC: usize = 0o2000000;
-    let supported = flags & !(O_NONBLOCK | O_CLOEXEC);
+    const O_DIRECT_PIPE: usize = 0o40000;
+    let supported = flags & !(O_NONBLOCK | O_CLOEXEC | O_DIRECT_PIPE);
     if supported != 0 {
         return -22;
     }
     let result = sys_pipe(pipefd);
     if result == 0 && flags != 0 {
-        // Remember the descriptor flags for F_GETFL/F_SETFL.
+        // Read the fd pair BEFORE locking the process: read_user resolves
+        // through current_process() itself, and the ProcessState mutex is
+        // not reentrant — locking it twice self-deadlocks.
+        let fds = read_user::<[i32; 2]>(pipefd).unwrap_or([0; 2]);
         crate::sched::with_current_process(|process| {
             let mut process = process.lock();
-            let fds = read_user::<[i32; 2]>(pipefd).unwrap_or([0; 2]);
             for fd in fds {
                 let fd = fd as usize;
-                if let Some((_, _)) = process.pipes.get(&fd) {
-                    process
-                        .pipe_flags
-                        .insert(fd, (flags & (O_NONBLOCK | O_CLOEXEC)) as u32);
+                if process.pipes.contains_key(&fd) {
+                    // O_CLOEXEC is a per-descriptor flag (F_GETFD/F_SETFD);
+                    // O_NONBLOCK/O_DIRECT are status flags (F_GETFL/F_SETFL).
+                    if flags & O_CLOEXEC != 0 {
+                        process.fd_flags.insert(fd, 1);
+                    }
+                    if flags & (O_NONBLOCK | O_DIRECT_PIPE) != 0 {
+                        process
+                            .pipe_flags
+                            .insert(fd, (flags & (O_NONBLOCK | O_DIRECT_PIPE)) as u32);
+                    }
                 }
             }
         });
@@ -1422,7 +1432,10 @@ fn sys_pipe2(pipefd: usize, flags: usize) -> isize {
 fn create_pipe() -> Option<(usize, usize)> {
     let pipe_id = NEXT_PIPE_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
     let buffer = Arc::new(Mutex::new(PipeBuffer::new()));
-    PIPE_REGISTRY.lock().insert(pipe_id, buffer.clone());
+    // Register under the registry lock, then release it BEFORE taking the
+    // process lock: fork takes process→registry (pipe_add_holder), so the
+    // reverse order here would deadlock against it.
+    PIPE_REGISTRY.lock().insert(pipe_id, buffer);
 
     let process = crate::sched::current_process()?;
     let mut process = process.lock();
@@ -2945,6 +2958,11 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
         }
         F_GETFD => process.fd_flags.get(&fd).copied().unwrap_or(0) as isize,
         F_GETFL => {
+            kor::println!(
+                "[trace] fcntl GETFL fd={fd} pipe?={} flags={:?}",
+                process.pipes.contains_key(&fd),
+                process.pipe_flags.get(&fd)
+            );
             if let Some(flags) = process
                 .pipes
                 .get(&fd)
