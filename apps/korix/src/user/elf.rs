@@ -86,6 +86,7 @@ pub fn load_program(
     data: &[u8],
     interpreter: Option<&[u8]>,
     argv: &[String],
+    env: &[String],
 ) -> Result<LoadedProgram, &'static str> {
     let main = map_elf(address_space, data, None)?;
     let entry = if let Some(interpreter) = interpreter {
@@ -104,6 +105,7 @@ pub fn load_program(
             0
         },
         argv,
+        env,
     )?;
     Ok(LoadedProgram { entry, stack_top })
 }
@@ -115,7 +117,15 @@ pub fn load_elf(
     data: &[u8],
     argv: &[String],
 ) -> Result<LoadedProgram, &'static str> {
-    load_program(address_space, data, None, argv)
+    load_program(
+        address_space,
+        data,
+        None,
+        argv,
+        &[alloc::string::String::from(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )],
+    )
 }
 
 fn map_elf(
@@ -318,6 +328,7 @@ fn setup_user_stack(
     phnum: usize,
     interpreter_base: usize,
     argv: &[String],
+    env: &[String],
 ) -> Result<usize, &'static str> {
     let stack_base = USER_STACK_TOP - USER_STACK_SIZE;
     let flags = MappingFlags::U | MappingFlags::R | MappingFlags::W;
@@ -335,7 +346,6 @@ fn setup_user_stack(
     const AT_ENTRY: usize = 9;
     const AT_RANDOM: usize = 25;
 
-    let env0 = b"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\0";
     const AT_PHENT: usize = 4;
     const AT_UID: usize = 11;
     const AT_EUID: usize = 12;
@@ -349,11 +359,20 @@ fn setup_user_stack(
     address_space
         .write(random_off, &[0x42; 16])
         .map_err(|_| "write random")?;
-    sp = (sp - env0.len()) & !0xF;
-    let env0_off = sp;
-    address_space
-        .write(env0_off, env0)
-        .map_err(|_| "write environment")?;
+
+    let mut env_offsets = Vec::with_capacity(env.len());
+    for variable in env.iter().rev() {
+        let bytes = variable.as_bytes();
+        sp = (sp - bytes.len() - 1) & !0xF;
+        address_space
+            .write(sp, bytes)
+            .map_err(|_| "write environment")?;
+        address_space
+            .write(sp + bytes.len(), &[0])
+            .map_err(|_| "terminate environment")?;
+        env_offsets.push(sp);
+    }
+    env_offsets.reverse();
 
     let mut arg_offsets = Vec::with_capacity(argv.len());
     for arg in argv.iter().rev() {
@@ -373,7 +392,7 @@ fn setup_user_stack(
     words.push(arg_offsets.len());
     words.extend_from_slice(&arg_offsets);
     words.push(0);
-    words.push(env0_off);
+    words.extend_from_slice(&env_offsets);
     words.push(0);
     words.extend_from_slice(&[
         AT_PHDR,

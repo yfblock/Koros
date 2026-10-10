@@ -52,7 +52,16 @@ pub fn spawn_init() {
         }
     };
     let argv = [String::from("/bin/sh")];
-    match elf::load_program(&mut address_space, &image, interpreter.as_deref(), &argv) {
+    let env = [String::from(
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    )];
+    match elf::load_program(
+        &mut address_space,
+        &image,
+        interpreter.as_deref(),
+        &argv,
+        &env,
+    ) {
         Ok(prog) => {
             kor::println!(
                 "[korix] loaded: entry={:#x}, sp={:#x}",

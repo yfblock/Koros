@@ -767,7 +767,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_PIPE2 => sys_pipe2(args[0], args[1]),
         SYS_PREAD64 => sys_pread64(args[0], args[1], args[2], args[3]),
         SYS_PWRITE64 => sys_pwrite64(args[0], args[1], args[2], args[3]),
-        SYS_POLL => sys_poll(args[0], args[1], args[2]),
+        SYS_POLL => sys_poll(args[0], args[1], args[2] as i32),
         SYS_SENDFILE => sys_sendfile(args[0], args[1], args[2], args[3]),
         SYS_FCHDIR => sys_fchdir(args[0]),
         SYS_FSYNC => sys_fsync(args[0]),
@@ -852,7 +852,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_DUP2 => sys_dup2(args[0], args[1]),
         SYS_DUP3 => sys_dup2(args[0], args[1]),
         SYS_CLONE => sys_clone(args),
-        SYS_EXECVE => sys_execve(args[0], args[1]),
+        SYS_EXECVE => sys_execve(args[0], args[1], args[2]),
         SYS_WAIT4 => sys_wait4(args[0], args[1], args[2]),
         SYS_KILL => sys_kill(args[0], args[1]),
         SYS_TGKILL => sys_kill(args[1], args[2]),
@@ -1620,7 +1620,10 @@ fn sys_pwrite64(fd: usize, buf: usize, count: usize, offset: usize) -> isize {
 }
 
 /// struct pollfd { int fd; short events; short revents; } — 8 bytes
-fn sys_poll(fds: usize, nfds: usize, _timeout: usize) -> isize {
+fn sys_poll(fds: usize, nfds: usize, timeout: i32) -> isize {
+    const POLLIN: u16 = 0x001;
+    const POLLOUT: u16 = 0x004;
+    const POLLNVAL: u16 = 0x020;
     if nfds == 0 {
         return 0;
     }
@@ -1628,35 +1631,79 @@ fn sys_poll(fds: usize, nfds: usize, _timeout: usize) -> isize {
     if checked_user_range(fds, byte_len, true).is_none() {
         return -14;
     }
-    const POLLIN: u16 = 0x001;
-    let mut ready = 0;
-    for i in 0..nfds {
-        let pfd = fds + i * 8;
-        let fd = match read_user::<i32>(pfd) {
-            Some(fd) => fd,
-            None => return -14,
-        };
-        let events = match read_user::<u16>(pfd + 4) {
-            Some(e) => e,
-            None => return -14,
-        };
-        let mut revents: u16 = 0;
-        if events & POLLIN != 0 {
-            let readable = (fd == 0 && rx_has_data())
-                || pipe_readable(fd as usize)
-                || socket_id(fd as usize).is_ok_and(crate::net::has_data);
-            if readable {
-                revents = POLLIN;
+
+    /// One readiness pass: fills revents, returns how many fds are ready
+    /// (including POLLNVAL/POLLERR, which always report).
+    fn sweep(fds: usize, nfds: usize) -> isize {
+        let mut ready = 0;
+        for i in 0..nfds {
+            let pfd = fds + i * 8;
+            let fd = read_user::<i32>(pfd).unwrap_or(-1);
+            let events = read_user::<u16>(pfd + 4).unwrap_or(0);
+            let fd_u = fd as usize;
+            let mut revents: u16 = 0;
+            let is_stdio = fd >= 0 && fd <= 2;
+            let is_pipe = fd >= 0 && pipe_id(fd_u).is_some();
+            let is_socket = fd >= 0 && socket_id(fd_u).is_ok();
+            let is_file = fd >= 0 && current_file(fd_u).is_some();
+            if !is_stdio && !is_pipe && !is_socket && !is_file {
+                revents = POLLNVAL;
+            } else {
+                if events & POLLIN != 0 {
+                    let readable = (fd == 0 && rx_has_data())
+                        || pipe_readable(fd_u)
+                        || socket_id(fd_u).is_ok_and(crate::net::has_data)
+                        || (is_file && {
+                            // Regular files are always readable.
+                            true
+                        });
+                    if readable {
+                        revents |= POLLIN;
+                    }
+                }
+                if events & POLLOUT != 0 {
+                    let writable = is_pipe || is_socket || is_file || fd == 1 || fd == 2;
+                    if writable {
+                        revents |= POLLOUT;
+                    }
+                }
+            }
+            if revents != 0 {
+                ready += 1;
+            }
+            if write_user(pfd + 6, &revents).is_none() {
+                return -14;
             }
         }
-        if revents != 0 {
-            ready += 1;
+        ready
+    }
+
+    let first = sweep(fds, nfds);
+    if first != 0 {
+        return first;
+    }
+    if timeout == 0 {
+        return 0;
+    }
+    // Wait in slices: the caller's timeout (ms) or indefinitely when
+    // negative, yielding between sweeps so other tasks run.
+    let deadline = if timeout > 0 {
+        Some(kor_arch::now() + core::time::Duration::from_millis(timeout as u64))
+    } else {
+        None
+    };
+    loop {
+        kor_sched::sleep(core::time::Duration::from_millis(10));
+        let ready = sweep(fds, nfds);
+        if ready != 0 {
+            return ready;
         }
-        if write_user(pfd + 6, &revents).is_none() {
-            return -14;
+        if let Some(limit) = deadline {
+            if kor_arch::now() >= limit {
+                return 0;
+            }
         }
     }
-    ready as isize
 }
 
 fn sys_sendfile(out_fd: usize, in_fd: usize, offset: usize, count: usize) -> isize {
@@ -2296,7 +2343,7 @@ fn fork_child_entry() {
     unsafe { kor_arch::resume_user_context(&context) }
 }
 
-fn sys_execve(filename: usize, argv: usize) -> isize {
+fn sys_execve(filename: usize, argv: usize, envp: usize) -> isize {
     let path = match user_to_str(filename, 4096) {
         Some(path) => path,
         None => return -14,
@@ -2332,6 +2379,33 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
     if args.is_empty() {
         args.push(path.clone());
     }
+    // The caller's environment must survive exec: read the envp array the
+    // same way as argv, defaulting to PATH only when absent.
+    let mut env = Vec::new();
+    if envp != 0 {
+        for index in 0..256 {
+            let pointer_address = match envp.checked_add(index * core::mem::size_of::<usize>()) {
+                Some(address) => address,
+                None => return -14,
+            };
+            let Some(pointer) = read_user::<usize>(pointer_address) else {
+                return -14;
+            };
+            if pointer == 0 {
+                break;
+            }
+            let variable = match user_to_str(pointer, 4096) {
+                Some(variable) => variable,
+                None => return -14,
+            };
+            env.push(variable);
+        }
+    }
+    if env.is_empty() {
+        env.push(alloc::string::String::from(
+            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        ));
+    }
     let image = match crate::fs::read_file(&image_path) {
         Ok(image) => image,
         Err(error) => return fs_errno(error),
@@ -2356,6 +2430,7 @@ fn sys_execve(filename: usize, argv: usize) -> isize {
         &image,
         interpreter.as_deref(),
         &args,
+        &env,
     ) {
         Ok(program) => program,
         Err(_) => return -8,
@@ -2863,9 +2938,7 @@ fn sys_dup(fd: usize) -> isize {
 fn sys_dup2(fd: usize, newfd: usize) -> isize {
     const MAX_FD: usize = 1023; // soft RLIMIT_NOFILE stand-in
     if newfd > MAX_FD {
-        // Negative (wrapped) or absurdly high targets are EBADF; within
-        // range but above the limit is EMFILE.
-        return if newfd >= (1usize << 31) { -9 } else { -24 };
+        return -9; // EBADF: target beyond the descriptor limit
     }
     let Some(process) = crate::sched::current_process() else {
         return -9;
@@ -2889,7 +2962,6 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     process.stdio.remove(&newfd);
     process.sockets.remove(&newfd);
     process.ipv6_fds.remove(&newfd);
-    process.pipes.remove(&newfd);
     if let Some(entry) = file {
         process.files.insert(newfd, entry);
     } else if let Some(target) = stdio {
