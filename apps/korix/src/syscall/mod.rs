@@ -75,6 +75,9 @@ pub const SYS_SET_ROBUST_LIST: usize = 99;
 pub const SYS_FUTEX: usize = 98;
 pub const SYS_UNAME: usize = 160;
 pub const SYS_SYSINFO: usize = 179;
+pub const SYS_CLOCK_GETRES: usize = 114;
+pub const SYS_CLOCK_NANOSLEEP: usize = 115;
+
 pub const SYS_GETRANDOM: usize = 278;
 pub const SYS_WRITEV: usize = 66;
 pub const SYS_READV: usize = 65;
@@ -842,7 +845,9 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_MOUNT | SYS_UMOUNT2 => -38,
         SYS_MREMAP => sys_mremap(args[0], args[1], args[2], args[3]),
         SYS_FCHOWNAT | SYS_UTIMENSAT => 0,
-        SYS_CLOCK_GETTIME => sys_clock_gettime(args[1]),
+        SYS_CLOCK_GETTIME => sys_clock_gettime(args[0], args[1]),
+        SYS_CLOCK_GETRES => sys_clock_getres(args[0], args[1]),
+        SYS_CLOCK_NANOSLEEP => sys_clock_nanosleep(args[0], args[1], args[2], args[3]),
         SYS_SETSID => {
             let pid = current_pid();
             *SESSION_ID.lock() = pid;
@@ -3565,11 +3570,6 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) -> Option<i32>
             )
         };
         let (signal, bit, action, blocked) = pending;
-        kor::println!(
-            "[trace] delivering signal {} handler={:#x}",
-            signal,
-            action.handler
-        );
         if action.handler == SIG_IGN {
             continue;
         }
@@ -3767,7 +3767,25 @@ fn realtime_seconds() -> u64 {
     kor_arch::now().as_secs()
 }
 
-fn sys_clock_gettime(timespec: usize) -> isize {
+fn sys_clock_gettime(clockid: usize, timespec: usize) -> isize {
+    const CLOCK_REALTIME: usize = 0;
+    const CLOCK_MONOTONIC: usize = 1;
+    const CLOCK_PROCESS_CPUTIME_ID: usize = 2;
+    const CLOCK_THREAD_CPUTIME_ID: usize = 3;
+    const CLOCK_MONOTONIC_RAW: usize = 4;
+    const CLOCK_REALTIME_RAW: usize = 5;
+    const CLOCK_BOOTTIME: usize = 7;
+    // All supported ids share the tick-derived time base.
+    match clockid {
+        CLOCK_REALTIME
+        | CLOCK_MONOTONIC
+        | CLOCK_PROCESS_CPUTIME_ID
+        | CLOCK_THREAD_CPUTIME_ID
+        | CLOCK_MONOTONIC_RAW
+        | CLOCK_REALTIME_RAW
+        | CLOCK_BOOTTIME => {}
+        _ => return -22, // EINVAL
+    }
     let now = kor_arch::now();
     let value = [now.as_secs() as i64, now.subsec_nanos() as i64];
     if write_user(timespec, &value).is_none() {
@@ -3775,6 +3793,52 @@ fn sys_clock_gettime(timespec: usize) -> isize {
     } else {
         0
     }
+}
+
+/// clock_getres(2): every supported clock ticks at nanosecond resolution.
+fn sys_clock_getres(clockid: usize, res: usize) -> isize {
+    const CLOCK_MONOTONIC: usize = 1;
+    if clockid > CLOCK_MONOTONIC && clockid != 4 && clockid != 7 {
+        return -22;
+    }
+    if res != 0 {
+        let value = [1i64, 0i64]; // 1 ns
+        if write_user(res, &value).is_none() {
+            return -14;
+        }
+    }
+    0
+}
+
+/// clock_nanosleep(2): absolute or relative sleep on the monotonic base.
+fn sys_clock_nanosleep(_clockid: usize, flags: usize, request: usize, _remain: usize) -> isize {
+    const TIMER_ABSTIME: usize = 1;
+    if flags & !TIMER_ABSTIME != 0 {
+        return -22;
+    }
+    let Some(value) = read_user::<[i64; 2]>(request) else {
+        return -14;
+    };
+    let [seconds, nanos] = value;
+    if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
+        return -22;
+    }
+    if flags & TIMER_ABSTIME != 0 {
+        // Absolute deadline on the shared time base.
+        let deadline = core::time::Duration::new(seconds as u64, nanos as u32);
+        let mut now = kor_arch::now();
+        while now < deadline {
+            let remaining = deadline - now;
+            kor_sched::sleep(remaining.min(core::time::Duration::from_millis(20)));
+            now = kor_arch::now();
+        }
+        return 0;
+    }
+    let millis = seconds as u64 * 1000 + (nanos as u64).div_ceil(1_000_000);
+    if millis != 0 && kor_sched::is_ready() {
+        kor_sched::sleep(core::time::Duration::from_millis(millis));
+    }
+    0
 }
 
 fn sys_gettimeofday(timeval: usize) -> isize {

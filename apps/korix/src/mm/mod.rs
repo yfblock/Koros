@@ -473,9 +473,10 @@ impl Drop for AddressSpace {
                     let _ = kor_mmu::active().unmap(*vaddr, MapSize::Page4K);
                 }
             });
-            // kor-arch's destroy_table returns every remaining level-0 leaf
-            // data frame along with the table pages.
-            unsafe { kor_mmu::destroy_address_space(self.root) }
+            // The table walk frees frames one by one; a preemptive switch
+            // mid-walk could let another task reuse a just-freed table page
+            // that this walk then frees again.  Run it with IRQs off.
+            kor_arch::irq_without(|| unsafe { kor_mmu::destroy_address_space(self.root) });
         }
     }
 }

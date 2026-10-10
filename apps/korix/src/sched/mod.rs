@@ -88,14 +88,17 @@ impl ProcessState {
         }
     }
 
-    /// Install an already-active replacement and return the old owned space.
+    /// Install a replacement space as this task's active root, activating it
+    /// if a preemptive switch raced the caller's own activate() call.
     pub fn replace_address_space(&mut self, address_space: AddressSpace) -> Option<AddressSpace> {
-        assert!(
-            address_space.is_active(),
-            "replacement address space must be active"
-        );
-        kor_sched::current().set_address_space_root(address_space.root());
-        self.address_space.replace(address_space)
+        kor_arch::irq_without(|| {
+            if !address_space.is_active() {
+                // SAFETY: the caller intends this space to be live now.
+                unsafe { kor_mmu::activate_address_space(address_space.root()) };
+            }
+            kor_sched::current().set_address_space_root(address_space.root());
+            self.address_space.replace(address_space)
+        })
     }
 }
 

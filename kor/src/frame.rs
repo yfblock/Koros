@@ -131,6 +131,50 @@ impl FrameAllocator {
         None
     }
 
+    /// Allocate exactly `count` contiguous frames with no power-of-two
+    /// rounding or alignment.  For consumers that only need a contiguous
+    /// direct-map range (kernel heap backing), this fragments far less than
+    /// [`alloc_frames`].
+    pub fn alloc_frames_contiguous(&mut self, count: usize) -> Option<usize> {
+        if count == 0 {
+            return None;
+        }
+        for region_index in 0..self.region_count {
+            let region = &self.regions[region_index];
+            let hint = region.next_hint.min(region.frames);
+            if let Some(offset) = self
+                .find_exact_run(region_index, hint, count)
+                .or_else(|| self.find_exact_run(region_index, 0, count))
+            {
+                self.mark_run(region_index, offset, count, true);
+                self.regions[region_index].next_hint = offset + count;
+                self.free_frames -= count;
+                return Some((self.regions[region_index].start_ppn + offset) * PAGE_SIZE);
+            }
+        }
+        None
+    }
+
+    /// Find the first run of `count` clear bits at or after `start`.
+    fn find_exact_run(&self, region_index: usize, start: usize, count: usize) -> Option<usize> {
+        let frames = self.regions[region_index].frames;
+        if start >= frames || count > frames - start {
+            return None;
+        }
+        let mut run = 0usize;
+        for index in start..frames {
+            if self.bit(region_index, index) {
+                run = 0;
+            } else {
+                run += 1;
+                if run == count {
+                    return Some(index + 1 - count);
+                }
+            }
+        }
+        None
+    }
+
     /// Free `count` contiguous frames previously returned by [`alloc_frames`].
     fn free_frames_checked(
         &mut self,
@@ -156,6 +200,30 @@ impl FrameAllocator {
         self.mark_run(region_index, offset, frames, false);
         self.regions[region_index].next_hint = self.regions[region_index].next_hint.min(offset);
         self.free_frames += frames;
+    }
+
+    /// Free a run returned by [`alloc_frames_contiguous`] — exactly `count`
+    /// frames, no rounding.
+    fn free_frames_contiguous_checked(
+        &mut self,
+        phys: usize,
+        count: usize,
+        caller: &'static core::panic::Location<'static>,
+    ) {
+        assert!(phys % PAGE_SIZE == 0, "phys {phys:#x} not page-aligned");
+        let ppn = phys / PAGE_SIZE;
+        let (region_index, offset) = self
+            .locate(ppn, count)
+            .unwrap_or_else(|| panic!("frame extent not registered: {phys:#x} x{count}"));
+        for index in offset..offset + count {
+            assert!(
+                self.bit(region_index, index),
+                "freeing unallocated frame {phys:#x} x{count} from {caller}"
+            );
+        }
+        self.mark_run(region_index, offset, count, false);
+        self.regions[region_index].next_hint = self.regions[region_index].next_hint.min(offset);
+        self.free_frames += count;
     }
 
     /// Number of free 4 KiB frames tracked by the allocator.
@@ -267,6 +335,19 @@ pub fn alloc_frames(count: usize) -> Option<usize> {
 pub fn free_frames(phys: usize, count: usize) {
     let caller = core::panic::Location::caller();
     with_allocator(|allocator| allocator.free_frames_checked(phys, count, caller));
+}
+
+/// Allocate exactly `count` contiguous frames without pow2 alignment —
+/// heap-backing friendly under fragmentation.
+pub fn alloc_frames_contiguous(count: usize) -> Option<usize> {
+    with_allocator(|allocator| allocator.alloc_frames_contiguous(count))
+}
+
+/// Free a run returned by [`alloc_frames_contiguous`].
+#[track_caller]
+pub fn free_frames_contiguous(phys: usize, count: usize) {
+    let caller = core::panic::Location::caller();
+    with_allocator(|allocator| allocator.free_frames_contiguous_checked(phys, count, caller));
 }
 
 /// Allocate one 4 KiB physical frame.
