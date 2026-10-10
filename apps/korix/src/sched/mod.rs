@@ -174,11 +174,27 @@ pub fn process_utime(pid: usize) -> Option<u64> {
     process(pid).map(|process| process.lock().utime_ticks)
 }
 
-/// Charge one timer tick to the running process (called from the timer path).
+/// Charge one timer tick to the running process (called from the timer
+/// interrupt).  Uses try_lock throughout: an interrupt must never spin on a
+/// lock the interrupted task may hold (same-CPU self-deadlock), so a
+/// contended tick is simply skipped.
 pub fn tick_current_process() {
-    if let Some(pid) = current_pid() {
-        if let Some(process) = process(pid) {
-            process.lock().utime_ticks += 1;
+    // Only charge when the maps are uncontended: an interrupt must never
+    // spin on a lock the interrupted task may hold (same-CPU deadlock),
+    // so a contended tick is skipped.  current_pid() itself takes locks,
+    // hence the inline map walk with try_lock.
+    let task_id = kor_sched::current().id;
+    if let Some(task_pid) = TASK_PROCESSES.try_lock() {
+        let pid = task_pid.get(&task_id).copied().unwrap_or(0);
+        drop(task_pid);
+        if pid != 0 {
+            if let Some(processes) = PROCESSES.try_lock() {
+                if let Some(process) = processes.get(&pid) {
+                    if let Some(mut state) = process.try_lock() {
+                        state.utime_ticks += 1;
+                    }
+                }
+            }
         }
     }
 }
