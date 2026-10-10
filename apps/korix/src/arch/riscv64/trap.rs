@@ -85,14 +85,29 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
     // SIGSEGV instead of taking the kernel down with it.
     if !is_interrupt && tf.sstatus & (1 << 8) == 0 {
         const USER_SEGFAULT_STATUS: i32 = 128 + 11; // WIFSIGNLED-style SIGSEGV
+        let (pid, name) = crate::sched::with_current_process(|process| {
+            let process = process.lock();
+            (process.pid, process.name)
+        })
+        .unwrap_or((0, [0u8; 16]));
+        // Dump the top of the user stack (frame contents) for triage.
+        let sp = tf.regs[2] & !7;
+        let mut words = [0usize; 4];
+        for (index, slot) in words.iter_mut().enumerate() {
+            *slot = kor_mmu::active()
+                .translate(sp + index * 8)
+                .map(|paddr| unsafe { *(kor_arch::phys_to_virt(paddr) as *const usize) })
+                .unwrap_or(0);
+        }
         println!(
-            "[korix] user fault: scause={:#x} stval={:#x} sepc={:#x} ra={:#x} sp={:#x} tp={:#x} a0={:#x} last-syscall={} — exiting",
+            "[korix] user fault pid={pid} name={:?} scause={:#x} stval={:#x} sepc={:#x} ra={:#x} sp={:#x} stack={:?} a0={:#x} last-syscall={} — exiting",
+            core::str::from_utf8(&name).unwrap_or("?"),
             scause,
             stval,
             tf.sepc,
             tf.regs[1],
             tf.regs[2],
-            tf.regs[4],
+            words,
             tf.regs[10],
             crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed)
         );

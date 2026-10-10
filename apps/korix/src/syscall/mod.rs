@@ -2016,10 +2016,18 @@ fn sys_clone(args: &[usize]) -> isize {
     {
         context.regs[10] = 0;
         context.pc = context.pc.wrapping_add(4);
+        // A nonzero `stack` argument (posix_spawn, pthread_create) is where
+        // the child must run: __clone's trampoline loads fn/arg from [sp].
+        if args[1] != 0 {
+            context.sp = args[1];
+        }
     }
     #[cfg(target_arch = "aarch64")]
     {
         context.regs[0] = 0;
+        if args[1] != 0 {
+            context.sp = args[1];
+        }
     }
     #[cfg(target_arch = "x86_64")]
     {
@@ -3740,20 +3748,7 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
             if status != 0 && write_user(status, &((code & 0xff) << 8)).is_none() {
                 return -14;
             }
-            let reaped = crate::sched::reap(child_pid).expect("zombie disappeared while reaping");
-            if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
-                kor::println!(
-                    "[trace] reap pid={child_pid} refs={}",
-                    alloc::sync::Arc::strong_count(&reaped)
-                );
-            }
-            drop(reaped);
-            if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
-                kor::println!(
-                    "[trace] after reap free-frames={}",
-                    kor::frame::available_frames()
-                );
-            }
+            drop(crate::sched::reap(child_pid).expect("zombie disappeared while reaping"));
             return child_pid as isize;
         }
         if options & WNOHANG != 0 {
