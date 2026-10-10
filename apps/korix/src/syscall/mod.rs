@@ -124,8 +124,12 @@ pub static RX_BUF: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 pub fn rx_fill() {
     // LoongArch64 (unsupported for korix) has no UART source compiled in;
     // every other target drains its console into the shared buffer.
-    {
-        let mut buf = RX_BUF.lock();
+    //
+    // Runs in the timer interrupt: a task preempted while holding RX_BUF
+    // (rx_get) must not be spun on from IRQ context — same-CPU self-deadlock
+    // freezes the timer and the whole system.  Try-lock instead; the next
+    // tick drains whatever the UART still holds.
+    if let Some(mut buf) = RX_BUF.try_lock() {
         while let Some(b) = kor::console::getchar() {
             buf.push(b);
         }
@@ -4262,57 +4266,14 @@ fn poll_deadline(timespec_ptr: usize) -> Option<core::time::Duration> {
 }
 
 fn sys_ppoll(fds: usize, nfds: usize, tmo_p: usize) -> isize {
-    if nfds == 0 {
-        return 0;
-    }
-    // tmo_p: `struct timespec { tv_sec, tv_nsec }` in kernel timebase
-    // units below; null = infinite.  Honoring the timeout is what lets
-    // programs time out an escape-sequence probe (busybox vi's ESC key).
-    let deadline = poll_deadline(tmo_p);
-    let Some(byte_len) = nfds.checked_mul(8) else {
-        return -22;
-    };
-    if checked_user_range(fds, byte_len, true).is_none() {
-        return -14;
-    }
-    const POLLIN: u16 = 0x001;
-    loop {
-        let mut ready = 0;
-        for index in 0..nfds {
-            let Some(pfd) = fds.checked_add(index * 8) else {
-                return -14;
-            };
-            let Some(fd) = read_user::<i32>(pfd) else {
-                return -14;
-            };
-            let Some(events) = read_user::<u16>(pfd + 4) else {
-                return -14;
-            };
-            let mut revents = 0u16;
-            if events & POLLIN != 0 {
-                let readable = (fd == 0 && rx_has_data())
-                    || (fd >= 0 && socket_id(fd as usize).is_ok_and(crate::net::has_data));
-                if readable {
-                    revents = POLLIN;
-                }
-            }
-            if revents != 0 {
-                ready += 1;
-            }
-            if write_user(pfd + 6, &revents).is_none() {
-                return -14;
-            }
-        }
-        if ready != 0 {
-            return ready;
-        }
-        if let Some(deadline) = deadline
-            && kor_arch::now() >= deadline
-        {
-            return 0;
-        }
-        crate::net::wait();
-    }
+    // ppoll shares poll's readiness rules; a NULL timespec blocks forever.
+    let timeout_ms = poll_deadline(tmo_p)
+        .map(|deadline| {
+            let remaining = deadline.saturating_sub(kor_arch::now());
+            remaining.as_millis() as i32
+        })
+        .unwrap_or(-1);
+    sys_poll(fds, nfds, timeout_ms)
 }
 
 fn sys_select(
