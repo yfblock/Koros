@@ -1751,7 +1751,7 @@ fn sys_ftruncate(fd: usize, length: i64) -> isize {
 }
 
 fn sys_truncate(path_addr: usize, length: i64) -> isize {
-    let full = match user_absolute_path(0xFF, path_addr) {
+    let full = match user_absolute_path(AT_FDCWD as usize, path_addr) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -1808,10 +1808,42 @@ fn sys_fchmodat(dirfd: usize, path: usize, mode: usize, flags: usize) -> isize {
     }
 }
 
-fn sys_waitid(_idtype: usize, _pid: usize, _infop: usize, _options: usize) -> isize {
-    sys_wait4(usize::MAX, 0, 0)
+fn sys_waitid(idtype: usize, pid: usize, infop: usize, options: usize) -> isize {
+    // waitid-only option bits must not leak into wait4 (EINVAL there).
+    const WNOHANG: usize = 1;
+    const WEXITED: usize = 4;
+    const WSTOPPED: usize = 2;
+    const WCONTINUED: usize = 8;
+    const WNOWAIT: usize = 0x1000_0000;
+    let supported = WNOHANG | WEXITED | WSTOPPED | WCONTINUED | WNOWAIT;
+    if options & !supported != 0 {
+        return -22;
+    }
+    const P_ALL: usize = 0;
+    const P_PID: usize = 1;
+    let target = if idtype == P_ALL {
+        -1
+    } else if idtype == P_PID {
+        pid as isize
+    } else {
+        return -22;
+    };
+    match reap_child(target, options & WNOHANG != 0) {
+        Ok(Some((child_pid, code))) => {
+            if infop != 0 {
+                // siginfo_t: si_signo/errno/code (+0/+4/+8), pad to the
+                // 8-byte-aligned union, si_pid +16, si_uid +20, si_status +24.
+                let _ = write_user::<i32>(infop, &17); // SIGCHLD
+                let _ = write_user::<i32>(infop + 8, &1); // CLD_EXITED
+                let _ = write_user::<i32>(infop + 16, &(child_pid as i32));
+                let _ = write_user::<i32>(infop + 24, &(code & 0xff));
+            }
+            0
+        }
+        Ok(None) => 0, // WNOHANG, no state change yet
+        Err(errno) => errno,
+    }
 }
-
 fn sys_sigtimedwait(set: usize, info: usize, timeout: usize) -> isize {
     let Some(process) = crate::sched::current_process() else {
         return ESRCH;
@@ -1877,7 +1909,7 @@ fn sys_sigtimedwait(set: usize, info: usize, timeout: usize) -> isize {
 
 /// struct statfs { long type, bsize; long long blocks, bfree, bavail, files, ffree; ... }
 fn sys_statfs(path_addr: usize, buf: usize) -> isize {
-    let _path = match user_absolute_path(0xFF, path_addr) {
+    let _path = match user_absolute_path(AT_FDCWD as usize, path_addr) {
         Ok(p) => p,
         Err(e) => return e,
     };
@@ -2550,7 +2582,7 @@ fn sys_uname(buf: usize) -> isize {
         "x86_64"
     };
     let fields = [
-        "korix",
+        "Linux",
         "localhost",
         "6.12.0-korix",
         "#1 SMP korix",
@@ -4094,6 +4126,31 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
         }
         if options & WNOHANG != 0 {
             return 0;
+        }
+        events.wait();
+    }
+}
+
+/// Kernel-space reaping core shared by wait4 and waitid: returns
+/// Ok(Some((pid, exit_code))) when a zombie was reaped, Ok(None) for
+/// WNOHANG with nothing ready, Err(errno) otherwise.
+fn reap_child(requested: isize, nohang: bool) -> Result<Option<(usize, i32)>, isize> {
+    let parent = crate::sched::current_pid().ok_or(-10isize)?;
+    let events = crate::sched::child_wait_queue(parent).ok_or(-10isize)?;
+    if crate::sched::matching_child(parent, requested).is_none() {
+        return Err(-10); // ECHILD
+    }
+    loop {
+        if let Some(child) = crate::sched::matching_zombie(parent, requested) {
+            let (child_pid, code) = {
+                let child = child.lock();
+                (child.pid, child.exit_code)
+            };
+            drop(crate::sched::reap(child_pid).expect("zombie disappeared while reaping"));
+            return Ok(Some((child_pid, code)));
+        }
+        if nohang {
+            return Ok(None);
         }
         events.wait();
     }
