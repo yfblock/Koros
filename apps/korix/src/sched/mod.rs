@@ -19,6 +19,8 @@ pub struct ProcessState {
     /// beyond the initial setuid/setgid).
     pub uid: u32,
     pub gid: u32,
+    /// User CPU time in scheduler ticks (procfs utime).
+    pub utime_ticks: u64,
     address_space: Option<AddressSpace>,
     pub exit_code: i32,
     pub state: usize,
@@ -35,6 +37,8 @@ pub struct ProcessState {
     pub stdio: BTreeMap<usize, usize>,
     pub sockets: BTreeMap<usize, usize>,
     pub pipes: BTreeMap<usize, (usize, bool)>,
+    /// Per-fd O_* descriptor flags for pipes (F_GETFL/F_SETFL).
+    pub pipe_flags: BTreeMap<usize, u32>,
     /// File descriptors created through AF_INET6; transport remains IPv4-only.
     pub ipv6_fds: BTreeMap<usize, ()>,
     pub robust_list: usize,
@@ -49,6 +53,7 @@ impl ProcessState {
             parent,
             uid: 0,
             gid: 0,
+            utime_ticks: 0,
             address_space: Some(address_space),
             exit_code: 0,
             state: STATE_RUNNING,
@@ -65,6 +70,7 @@ impl ProcessState {
             stdio: BTreeMap::new(),
             sockets: BTreeMap::new(),
             pipes: BTreeMap::new(),
+            pipe_flags: BTreeMap::new(),
             ipv6_fds: BTreeMap::new(),
             robust_list: 0,
             robust_list_len: 0,
@@ -158,6 +164,20 @@ pub fn current_pid() -> Option<usize> {
         return None;
     }
     TASK_PROCESSES.lock().get(&kor_sched::current().id).copied()
+}
+
+/// A process's accumulated user ticks.
+pub fn process_utime(pid: usize) -> Option<u64> {
+    process(pid).map(|process| process.lock().utime_ticks)
+}
+
+/// Charge one timer tick to the running process (called from the timer path).
+pub fn tick_current_process() {
+    if let Some(pid) = current_pid() {
+        if let Some(process) = process(pid) {
+            process.lock().utime_ticks += 1;
+        }
+    }
 }
 
 /// The caller's effective uid (`user`) or gid.

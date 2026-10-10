@@ -364,7 +364,7 @@ fn test_sigpipe_epipe() {
     let ignore: [usize; 4] = [SIG_IGN, 0, 0, 0];
     sys3(SYS_RT_SIGACTION, SIGPIPE, ignore.as_ptr() as usize, 0);
     let mut fds = [0i32; 2];
-    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 2, 0) != 0 {
+    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 0, 0) != 0 {
         report("sigpipe_epipe", false, "pipe2 failed");
         return;
     }
@@ -466,7 +466,7 @@ fn test_error_paths() {
 
 fn test_pipe2() {
     let mut fds = [0i32; 2];
-    let r = sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 2, 0);
+    let r = sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 0, 0);
     if r != 0 {
         report("pipe2", false, "create failed");
         return;
@@ -484,7 +484,7 @@ fn test_pipe2() {
 
 fn test_pipe_eof() {
     let mut fds = [0i32; 2];
-    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 2, 0) != 0 {
+    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 0, 0) != 0 {
         report("pipe_eof", false, "pipe2 failed");
         return;
     }
@@ -566,7 +566,7 @@ fn test_madvise_mincore() {
 
 fn test_poll() {
     let mut fds = [0i32; 2];
-    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 2, 0) != 0 {
+    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 0, 0) != 0 {
         report("poll", false, "pipe2 failed");
         return;
     }

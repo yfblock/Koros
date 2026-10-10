@@ -1269,6 +1269,8 @@ pub(crate) struct FileEntry {
     inode: Arc<dyn INode>,
     offset: u64,
     path: String,
+    /// Access-mode bits from open(2), reported by F_GETFL.
+    pub(crate) open_flags: u32,
 }
 pub(crate) type SharedFile = Arc<Mutex<FileEntry>>;
 
@@ -1295,7 +1297,8 @@ fn stdio_target(fd: usize) -> Option<usize> {
     crate::sched::current_process().and_then(|process| process.lock().stdio.get(&fd).copied())
 }
 
-fn alloc_fd(inode: Arc<dyn INode>, path: String) -> Option<usize> {
+/// [`alloc_fd`] with the access-mode bits recorded for F_GETFL.
+fn alloc_fd_flags(inode: Arc<dyn INode>, path: String, open_flags: u32) -> Option<usize> {
     let process = crate::sched::current_process()?;
     let mut process = process.lock();
     let fd = next_fd(&process);
@@ -1305,6 +1308,7 @@ fn alloc_fd(inode: Arc<dyn INode>, path: String) -> Option<usize> {
             inode,
             offset: 0,
             path,
+            open_flags,
         })),
     );
     Some(fd)
@@ -1387,9 +1391,30 @@ fn sys_pipe(pipefd: usize) -> isize {
     0
 }
 
-fn sys_pipe2(pipefd: usize, _flags: usize) -> isize {
-    // Flags (O_NONBLOCK, O_CLOEXEC) not yet supported.
-    sys_pipe(pipefd)
+fn sys_pipe2(pipefd: usize, flags: usize) -> isize {
+    const O_NONBLOCK: usize = 0o4000;
+    const O_CLOEXEC: usize = 0o2000000;
+    let supported = flags & !(O_NONBLOCK | O_CLOEXEC);
+    if supported != 0 {
+        return -22;
+    }
+    let result = sys_pipe(pipefd);
+    if result == 0 && flags != 0 {
+        // Remember the descriptor flags for F_GETFL/F_SETFL.
+        crate::sched::with_current_process(|process| {
+            let mut process = process.lock();
+            let fds = read_user::<[i32; 2]>(pipefd).unwrap_or([0; 2]);
+            for fd in fds {
+                let fd = fd as usize;
+                if let Some((_, _)) = process.pipes.get(&fd) {
+                    process
+                        .pipe_flags
+                        .insert(fd, (flags & (O_NONBLOCK | O_CLOEXEC)) as u32);
+                }
+            }
+        });
+    }
+    result
 }
 
 fn create_pipe() -> Option<(usize, usize)> {
@@ -1410,6 +1435,22 @@ fn pipe_id(fd: usize) -> Option<(usize, bool)> {
     crate::sched::current_process().and_then(|process| process.lock().pipes.get(&fd).copied())
 }
 
+const O_NONBLOCK_FLAG: u32 = 0o4000;
+
+/// Whether a descriptor carries O_NONBLOCK (pipes and files).
+fn fd_is_nonblocking(fd: usize) -> bool {
+    crate::sched::with_current_process(|process| {
+        let process = process.lock();
+        process
+            .pipe_flags
+            .get(&fd)
+            .copied()
+            .or_else(|| process.files.get(&fd).map(|entry| entry.lock().open_flags))
+            .is_some_and(|flags| flags & O_NONBLOCK_FLAG != 0)
+    })
+    .unwrap_or(false)
+}
+
 fn pipe_read(fd: usize, buf: usize, count: usize) -> isize {
     let Some((pipe_id, true)) = pipe_id(fd) else {
         return -9;
@@ -1420,6 +1461,12 @@ fn pipe_read(fd: usize, buf: usize, count: usize) -> isize {
     let mut data = alloc::vec![0u8; count];
     let mut read = 0;
     // Block until at least one byte or writer closes.
+    if fd_is_nonblocking(fd) {
+        let pipe = buffer.lock();
+        if pipe.read_pos >= pipe.write_pos {
+            return -11; // EAGAIN: empty nonblocking pipe
+        }
+    }
     loop {
         let mut pipe = buffer.lock();
         if pipe.read_pos < pipe.write_pos {
@@ -1471,6 +1518,9 @@ fn pipe_write(fd: usize, buf: usize, count: usize) -> isize {
     let mut pipe = buffer.lock();
     if pipe.closed_read() {
         return -32; // EPIPE
+    }
+    if fd_is_nonblocking(fd) && pipe.data.len() - (pipe.write_pos - pipe.read_pos) < count {
+        return -11; // EAGAIN: not enough room in a nonblocking pipe
     }
     let mut written = 0;
     while written < count {
@@ -2352,6 +2402,22 @@ fn sys_brk(addr: usize) -> isize {
         return process.brk as isize;
     }
     let old = process.brk;
+    if addr < old {
+        // Shrink: release whole pages between the new break and the old one.
+        let page_start = (addr + 4095) & !4095;
+        let page_end = (old + 4095) & !4095;
+        if page_end > page_start {
+            let released = process
+                .address_space_mut()
+                .map(|space| space.unmap_range(page_start, page_end - page_start).is_ok());
+            if released == Some(true) {
+                process.brk = addr;
+            }
+        } else {
+            process.brk = addr;
+        }
+        return process.brk as isize;
+    }
     if addr > old {
         let page_start = (old + 4095) & !4095;
         let Some(page_end) = addr.checked_add(4095).map(|value| value & !4095) else {
@@ -2717,7 +2783,7 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
             return fs_errno(error);
         }
     }
-    alloc_fd(inode, path_str)
+    alloc_fd_flags(inode, path_str, (flags & 0o7777) as u32)
         .map(|fd| fd as isize)
         .unwrap_or(-24)
 }
@@ -2780,6 +2846,12 @@ fn sys_dup(fd: usize) -> isize {
 }
 
 fn sys_dup2(fd: usize, newfd: usize) -> isize {
+    const MAX_FD: usize = 1023; // soft RLIMIT_NOFILE stand-in
+    if newfd > MAX_FD {
+        // Negative (wrapped) or absurdly high targets are EBADF; within
+        // range but above the limit is EMFILE.
+        return if newfd >= (1usize << 31) { -9 } else { -24 };
+    }
     let Some(process) = crate::sched::current_process() else {
         return -9;
     };
@@ -2869,8 +2941,36 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
             }
             newfd as isize
         }
-        F_GETFD | F_GETFL => 0,
-        F_SETFD | F_SETFL => 0,
+        F_GETFD => 0,
+        F_GETFL => {
+            if let Some(flags) = process
+                .pipes
+                .get(&fd)
+                .and_then(|_| process.pipe_flags.get(&fd))
+            {
+                *flags as isize
+            } else {
+                // Regular files report the full access-mode bits stored at open.
+                match process.files.get(&fd) {
+                    Some(entry) => (entry.lock().open_flags & 0o7777) as isize,
+                    None => 0,
+                }
+            }
+        }
+        F_SETFD => 0,
+        F_SETFL => {
+            // Only O_NONBLOCK/CLOEXEC are mutable on pipes and files here.
+            const MUTABLE: u32 = (0o4000 | 0o2000000) as u32;
+            if let Some((_, _)) = process.pipes.get(&fd) {
+                let mut process = process;
+                let entry = process.pipe_flags.entry(fd).or_insert(0);
+                *entry = (*entry & !MUTABLE) | ((argument as u32) & MUTABLE);
+            } else if let Some(entry) = process.files.get(&fd) {
+                let mut entry = entry.lock();
+                entry.open_flags = (entry.open_flags & !MUTABLE) | ((argument as u32) & MUTABLE);
+            }
+            0
+        }
         _ => -22,
     }
 }

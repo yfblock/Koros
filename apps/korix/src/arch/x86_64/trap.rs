@@ -52,6 +52,7 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
             kor_arch::handle_tick();
             if kor_sched::is_ready() {
                 kor_sched::timer_tick();
+                crate::sched::tick_current_process();
                 kor_sched::preempt();
             }
         }

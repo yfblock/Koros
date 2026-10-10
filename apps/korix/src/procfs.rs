@@ -174,6 +174,7 @@ fn process_table() -> Vec<(usize, [u8; 16], usize, usize)> {
 
 /// `/proc/<pid>/stat`: pid (comm) state ppid ... — the fields busybox ps reads.
 fn process_stat(pid: usize) -> String {
+    let utime = crate::sched::process_utime(pid).unwrap_or(0);
     let Some(entry) = crate::sched::process_snapshot()
         .into_iter()
         .find(|p| p.0 == pid)
@@ -189,7 +190,7 @@ fn process_stat(pid: usize) -> String {
         _ => 'S',
     };
     format!(
-        "{pid} ({name}) {letter} {ppid} {ppid} {ppid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
+        "{pid} ({name}) {letter} {ppid} {ppid} {ppid} 0 0 0 0 0 0 0 {utime} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
         ppid = entry.3,
     )
 }
