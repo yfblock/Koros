@@ -3066,11 +3066,6 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
         }
         F_GETFD => process.fd_flags.get(&fd).copied().unwrap_or(0) as isize,
         F_GETFL => {
-            kor::println!(
-                "[trace] fcntl GETFL fd={fd} pipe?={} flags={:?}",
-                process.pipes.contains_key(&fd),
-                process.pipe_flags.get(&fd)
-            );
             if let Some(flags) = process
                 .pipes
                 .get(&fd)
