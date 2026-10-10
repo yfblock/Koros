@@ -15,6 +15,10 @@ pub const STATE_ZOMBIE: usize = 1;
 pub struct ProcessState {
     pub pid: usize,
     pub parent: usize,
+    /// Real/effective/saved credentials (kept equal — no privilege drops
+    /// beyond the initial setuid/setgid).
+    pub uid: u32,
+    pub gid: u32,
     address_space: Option<AddressSpace>,
     pub exit_code: i32,
     pub state: usize,
@@ -43,6 +47,8 @@ impl ProcessState {
         Self {
             pid,
             parent,
+            uid: 0,
+            gid: 0,
             address_space: Some(address_space),
             exit_code: 0,
             state: STATE_RUNNING,
@@ -152,6 +158,26 @@ pub fn current_pid() -> Option<usize> {
         return None;
     }
     TASK_PROCESSES.lock().get(&kor_sched::current().id).copied()
+}
+
+/// The caller's effective uid (`user`) or gid.
+pub fn current_credential(user: bool) -> u32 {
+    current_process()
+        .map(|process| {
+            let process = process.lock();
+            if user { process.uid } else { process.gid }
+        })
+        .unwrap_or(0)
+}
+
+/// The caller's (uid, gid) pair.
+pub fn current_credentials() -> (u32, u32) {
+    current_process()
+        .map(|process| {
+            let process = process.lock();
+            (process.uid, process.gid)
+        })
+        .unwrap_or((0, 0))
 }
 
 pub fn current_process() -> Option<Arc<Mutex<ProcessState>>> {

@@ -75,6 +75,16 @@ pub const SYS_SET_ROBUST_LIST: usize = 99;
 pub const SYS_FUTEX: usize = 98;
 pub const SYS_UNAME: usize = 160;
 pub const SYS_SYSINFO: usize = 179;
+pub const SYS_UMASK: usize = 166;
+pub const SYS_FACCESSAT: usize = 48;
+pub const SYS_SETREGID: usize = 143;
+pub const SYS_SETGID: usize = 144;
+pub const SYS_SETREUID: usize = 145;
+pub const SYS_SETUID: usize = 146;
+pub const SYS_SETRESUID: usize = 147;
+pub const SYS_SETRESGID: usize = 148;
+pub const SYS_GETEUID: usize = 175;
+pub const SYS_GETEGID: usize = 177;
 pub const SYS_CLOCK_GETRES: usize = 114;
 pub const SYS_CLOCK_NANOSLEEP: usize = 115;
 
@@ -748,8 +758,11 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
             *PROCESS_GROUP.lock() = pid;
             0
         }
-        SYS_GETUID | 175 => 0, // GETUID | GETEUID
-        SYS_GETGID | 177 => 0, // GETGID | GETEGID
+        SYS_GETUID | SYS_GETEUID => crate::sched::current_credential(true) as isize,
+        SYS_GETGID | SYS_GETEGID => crate::sched::current_credential(false) as isize,
+        SYS_SETUID | SYS_SETREUID | SYS_SETRESUID => sys_setuid(args[0]),
+        SYS_SETGID | SYS_SETREGID | SYS_SETRESGID => sys_setgid(args[0]),
+        SYS_FACCESSAT => sys_faccessat(args[0], args[1], args[2], args[3]),
         SYS_PIPE2 => sys_pipe2(args[0], args[1]),
         SYS_PREAD64 => sys_pread64(args[0], args[1], args[2], args[3]),
         SYS_PWRITE64 => sys_pwrite64(args[0], args[1], args[2], args[3]),
@@ -774,6 +787,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_FSTATFS => sys_fstatfs(args[0], args[1]),
         SYS_MADVISE => 0, // no-op
         SYS_MINCORE => 0, // no-op: all pages resident
+        SYS_UMASK => sys_umask(args[0]),
         SYS_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
         SYS_GETITIMER => sys_getitimer(args[0], args[1]),
         SYS_GETRUSAGE => sys_getrusage(args[0], args[1]),
@@ -860,13 +874,13 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_PSELECT6 => sys_select(args[0], args[1], args[2], args[3], args[4]),
 
         167 => sys_prctl(args),
-        149 => -38, // sched_getaffinity
+        149 => -38, // setfsuid is unsupported
         158 => 0,   // getgroups: no supplementary groups
         156 => *SESSION_ID.lock() as isize,
-        144 | 143 | 148 => -38, // scheduler mutation is unsupported
-        145 => 0,               // sched_getscheduler: SCHED_OTHER
-        146 => -38,             // sched_getparam requires an output parameter
-        32 => 0,                // flock: package database access is serialized by this kernel
+        119 => -38, // sched_setscheduler: unsupported
+        120 => 0,   // sched_getscheduler: SCHED_OTHER
+        121 => 0,   // sched_getparam: zeroed policy struct
+        32 => 0,    // flock: package database access is serialized by this kernel
         178 => current_pid() as isize,
         3 => -38, // io_cancel
         0 => -38, // io_setup
@@ -1776,6 +1790,119 @@ fn sys_getitimer(_which: usize, _val: usize) -> isize {
     0
 }
 
+/// umask(2): korix runs everything as root; report the previous mask.
+fn sys_umask(_mask: usize) -> isize {
+    0o022
+}
+
+/// setuid(2): root may adopt any id; other ids may only re-adopt their own.
+fn sys_setuid(uid: usize) -> isize {
+    let uid = uid as u32;
+    crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        if process.uid != 0 && process.uid != uid {
+            return -1; // EPERM
+        }
+        process.uid = uid;
+        0
+    })
+    .unwrap_or(-3)
+}
+
+/// setgid(2): same policy as [`sys_setuid`].
+fn sys_setgid(gid: usize) -> isize {
+    let gid = gid as u32;
+    crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        if process.gid != 0 && process.gid != gid {
+            return -1; // EPERM
+        }
+        process.gid = gid;
+        0
+    })
+    .unwrap_or(-3)
+}
+
+/// faccessat(2): existence + permission check against the caller's
+/// credentials. Root bypasses the mode bits (CAP_DAC_OVERRIDE).
+fn sys_faccessat(dirfd: usize, path: usize, mode: usize, flags: usize) -> isize {
+    const F_OK: usize = 0;
+    const X_OK: usize = 1;
+    const W_OK: usize = 2;
+    const R_OK: usize = 4;
+    const AT_EACCESS: usize = 0x200;
+    const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+    if flags & !(AT_EACCESS | AT_SYMLINK_NOFOLLOW) != 0 {
+        return -22;
+    }
+    if mode & !(R_OK | W_OK | X_OK) != 0 {
+        return -22;
+    }
+    let full = match user_absolute_path(dirfd, path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let inode = match kor_fs::mount::resolve(&crate::MOUNTS, &full) {
+        Ok(inode) => inode,
+        Err(error) => return fs_errno(error),
+    };
+    // Search permission: every parent directory needs x for non-root.
+    let (uid, gid) = crate::sched::current_credentials();
+    if uid != 0 {
+        let mut prefix = String::from("/");
+        for component in full.split('/').filter(|part| !part.is_empty()) {
+            match kor_fs::mount::resolve(&crate::MOUNTS, &prefix) {
+                Ok(dir) => {
+                    if let Ok(metadata) = dir.getattr() {
+                        let shift = if metadata.uid == uid {
+                            6
+                        } else if metadata.gid == gid {
+                            3
+                        } else {
+                            0
+                        };
+                        if (metadata.mode >> shift) & 0o1 == 0 {
+                            return -13; // EACCES: no search permission
+                        }
+                    }
+                }
+                Err(error) => return fs_errno(error),
+            }
+            prefix.push_str(component);
+            prefix.push('/');
+        }
+    }
+    if mode == F_OK {
+        return 0;
+    }
+    let metadata = match inode.getattr() {
+        Ok(metadata) => metadata,
+        Err(error) => return fs_errno(error),
+    };
+    let (uid, gid) = crate::sched::current_credentials();
+    if uid == 0 && (mode & X_OK == 0 || metadata.mode & 0o111 != 0) {
+        return 0; // root: DAC override (execute still needs some x bit)
+    }
+    let shift = if metadata.uid == uid {
+        6
+    } else if metadata.gid == gid {
+        3
+    } else {
+        0
+    };
+    let bits = (metadata.mode >> shift) & 0o7;
+    if mode & R_OK != 0 && bits & 0o4 == 0 {
+        return -13; // EACCES
+    }
+    if mode & W_OK != 0 && bits & 0o2 == 0 {
+        return -13;
+    }
+    if mode & X_OK != 0 && bits & 0o1 == 0 {
+        return -13;
+    }
+    0
+}
+
 fn sys_getrusage(_who: usize, usage: usize) -> isize {
     // struct rusage: 18 * 8 bytes (timevals + counters)
     let rusage = [0u64; 18];
@@ -2044,7 +2171,12 @@ fn sys_clone(args: &[usize]) -> isize {
         child.signals = child_signals;
         child.brk = child_brk;
         child.executable = child_executable;
-        child.name = parent.lock().name;
+        {
+            let parent = parent.lock();
+            child.name = parent.name;
+            child.uid = parent.uid;
+            child.gid = parent.gid;
+        }
         child.mmap_next = child_mmap_next;
         child.files = child_files;
         child.stdio = child_stdio;
