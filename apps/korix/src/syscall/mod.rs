@@ -3081,11 +3081,19 @@ struct LinuxStat {
 }
 
 fn linux_stat(meta: kor::Metadata, inode: u64) -> LinuxStat {
-    let mode = match meta.file_type {
-        kor::FileType::Regular => 0o100664,
-        kor::FileType::Directory => 0o040755,
-        kor::FileType::Symlink => 0o120777,
-        _ => 0o0600,
+    const S_IFMT: u32 = 0o170000;
+    // Prefer the filesystem's real mode word; synthesise the type bits when
+    // the driver stores only the permission nibbles (ramfs).
+    let mode = if meta.mode & S_IFMT != 0 {
+        meta.mode
+    } else {
+        let kind = match meta.file_type {
+            kor::FileType::Regular => 0o100000,
+            kor::FileType::Directory => 0o040000,
+            kor::FileType::Symlink => 0o120000,
+            _ => 0o060000,
+        };
+        kind | (meta.mode & 0o7777)
     };
     #[cfg(not(target_arch = "x86_64"))]
     {
