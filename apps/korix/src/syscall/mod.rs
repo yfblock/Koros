@@ -232,6 +232,7 @@ const EMPTY_SIGNAL_ACTION: SignalAction = SignalAction {
 struct UserSignalAction {
     handler: usize,
     flags: usize,
+    restorer: usize,
     mask: u64,
 }
 
@@ -244,7 +245,7 @@ fn kernel_signal_action(action: UserSignalAction) -> SignalAction {
         SignalAction {
             handler: action.handler,
             flags: action.flags,
-            restorer: 0,
+            restorer: action.restorer,
             mask: action.mask,
         }
     }
@@ -260,6 +261,7 @@ fn user_signal_action(action: SignalAction) -> UserSignalAction {
         UserSignalAction {
             handler: action.handler,
             flags: action.flags,
+            restorer: action.restorer,
             mask: action.mask,
         }
     }
@@ -447,43 +449,48 @@ const SIGNAL_RESTORER_CODE: [u32; 3] = [0xd280_1168, 0xd400_0001, 0x1400_0000];
 
 #[cfg(any(target_arch = "riscv64", target_arch = "aarch64"))]
 fn ensure_signal_restorer() -> Option<usize> {
-    if kor_mmu::active()
-        .translate(SIGNAL_RESTORER_ADDRESS)
-        .is_none()
-    {
-        let physical = kor::frame::alloc_frame()?;
-        let flags =
-            kor_arch::MappingFlags::U | kor_arch::MappingFlags::R | kor_arch::MappingFlags::X;
-        if kor_mmu::active()
-            .map(
-                SIGNAL_RESTORER_ADDRESS,
-                physical,
-                flags,
-                kor_arch::MapSize::Page4K,
-            )
-            .is_err()
-        {
-            kor::frame::free_frames(physical, 1);
-            return None;
+    let page = kor_mmu::active()
+        .lock(SIGNAL_RESTORER_ADDRESS..SIGNAL_RESTORER_ADDRESS + 0x1000)
+        .query(SIGNAL_RESTORER_ADDRESS);
+    if let kor_mmu::PageStatus::Mapped { flags, .. } = page {
+        if flags.contains(kor_arch::MappingFlags::U | kor_arch::MappingFlags::X) {
+            return Some(SIGNAL_RESTORER_ADDRESS);
         }
-        let kernel = kor_arch::phys_to_virt(physical);
-        unsafe {
-            core::ptr::write_bytes(kernel as *mut u8, 0, 0x1000);
-            core::ptr::copy_nonoverlapping(
-                SIGNAL_RESTORER_CODE.as_ptr(),
-                kernel as *mut u32,
-                SIGNAL_RESTORER_CODE.len(),
-            );
-        }
-        #[cfg(target_arch = "riscv64")]
-        unsafe {
-            core::arch::asm!("fence.i")
-        };
-        #[cfg(target_arch = "aarch64")]
-        unsafe {
-            core::arch::asm!("ic ivau, {}", "dsb ish", "isb", in(reg) SIGNAL_RESTORER_ADDRESS)
-        };
+        // A non-user placeholder (e.g. an exec-time span) covers the page;
+        // replace it with a user-executable restorer mapping.
+        let _ = kor_mmu::active().unmap(SIGNAL_RESTORER_ADDRESS, kor_arch::MapSize::Page4K);
     }
+    let physical = kor::frame::alloc_frame()?;
+    let flags = kor_arch::MappingFlags::U | kor_arch::MappingFlags::R | kor_arch::MappingFlags::X;
+    if kor_mmu::active()
+        .map(
+            SIGNAL_RESTORER_ADDRESS,
+            physical,
+            flags,
+            kor_arch::MapSize::Page4K,
+        )
+        .is_err()
+    {
+        kor::frame::free_frames(physical, 1);
+        return None;
+    }
+    let kernel = kor_arch::phys_to_virt(physical);
+    unsafe {
+        core::ptr::write_bytes(kernel as *mut u8, 0, 0x1000);
+        core::ptr::copy_nonoverlapping(
+            SIGNAL_RESTORER_CODE.as_ptr(),
+            kernel as *mut u32,
+            SIGNAL_RESTORER_CODE.len(),
+        );
+    }
+    #[cfg(target_arch = "riscv64")]
+    unsafe {
+        core::arch::asm!("fence.i")
+    };
+    #[cfg(target_arch = "aarch64")]
+    unsafe {
+        core::arch::asm!("ic ivau, {}", "dsb ish", "isb", in(reg) SIGNAL_RESTORER_ADDRESS)
+    };
     Some(SIGNAL_RESTORER_ADDRESS)
 }
 
@@ -1659,6 +1666,14 @@ fn sys_getrusage(_who: usize, usage: usize) -> isize {
 // --- Syscall implementations ---
 
 fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
+    // Linux checks the fd first: EBADF wins over EFAULT.
+    if pipe_id(fd).is_none()
+        && socket_id(fd).is_err()
+        && stdio_target(fd).is_none()
+        && current_file(fd).is_none()
+    {
+        return -9;
+    }
     if pipe_id(fd).is_some() {
         return pipe_write(fd, buf, count);
     }
@@ -1693,6 +1708,14 @@ fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
 }
 
 fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
+    // Linux checks the fd first: EBADF wins over EFAULT.
+    if pipe_id(fd).is_none()
+        && socket_id(fd).is_err()
+        && stdio_target(fd).is_none()
+        && current_file(fd).is_none()
+    {
+        return -9;
+    }
     if checked_user_range(buf, count, true).is_none() {
         return -14;
     }

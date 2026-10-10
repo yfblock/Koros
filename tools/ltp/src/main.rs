@@ -33,6 +33,21 @@ const SYS_GETRUSAGE: usize = 165;
 const SYS_SETITIMER: usize = 103;
 const SYS_GETITIMER: usize = 102;
 const SYS_UNLINKAT: usize = 35;
+const SYS_RT_SIGACTION: usize = 134;
+const SYS_RT_SIGPROCMASK: usize = 135;
+const SYS_KILL: usize = 129;
+const SYS_CLONE: usize = 220;
+const SYS_EXECVE: usize = 221;
+const SYS_WAIT4: usize = 260;
+const SYS_GETPID: usize = 172;
+const SYS_GETPPID: usize = 173;
+
+const SIGUSR1: usize = 10;
+const SIGPIPE: usize = 13;
+const SIGCHLD: usize = 17;
+const SIG_BLOCK: usize = 0;
+const SIG_SETMASK: usize = 2;
+const SIG_IGN: usize = 1;
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -131,6 +146,169 @@ const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
 
 // --- individual tests -------------------------------------------------------
+
+// --- signal tests -----------------------------------------------------------
+
+static mut HANDLER_HITS: usize = 0;
+
+extern "C" fn sigusr1_handler(_signal: usize) {
+    // SAFETY: single-threaded; handler body is a plain increment.
+    unsafe { HANDLER_HITS += 1 };
+}
+
+fn test_sigusr1_delivery() {
+    // rt_sigaction ABI: {handler, flags, restorer, mask} — 32 bytes.
+    let action: [usize; 4] = [sigusr1_handler as usize, 0, 0, 0];
+    let mut old: [usize; 4] = [0; 4];
+    let r = sys3(
+        SYS_RT_SIGACTION,
+        SIGUSR1,
+        action.as_ptr() as usize,
+        old.as_mut_ptr() as usize,
+    );
+    if r != 0 {
+        report("sigaction", false, "install failed");
+        return;
+    }
+    let fired = sys2(SYS_KILL, sys1(SYS_GETPID, 0) as usize, SIGUSR1);
+    // Give the kernel a return-to-user point to deliver the pending signal.
+    sys1(SYS_SCHED_YIELD, 0);
+    sys1(SYS_SCHED_YIELD, 0);
+    let hits = unsafe { HANDLER_HITS };
+    report("sigusr1", r == 0 && fired == 0 && hits >= 1, "handler ran");
+}
+
+fn test_sigprocmask_roundtrip() {
+    let block_sigusr1: u64 = 1 << (SIGUSR1 - 1);
+    let mut old: u64 = 0;
+    let set = sys3(
+        SYS_RT_SIGPROCMASK,
+        SIG_BLOCK,
+        &block_sigusr1 as *const u64 as usize,
+        &mut old as *mut u64 as usize,
+    );
+    let mut current: u64 = 0;
+    let query = sys3(
+        SYS_RT_SIGPROCMASK,
+        SIG_SETMASK,
+        &block_sigusr1 as *const u64 as usize,
+        &mut current as *mut u64 as usize,
+    );
+    // Restore the empty mask.
+    let empty: u64 = 0;
+    sys3(SYS_RT_SIGPROCMASK, SIG_SETMASK, &empty as *const u64 as usize, 0);
+    report(
+        "sigprocmask",
+        set == 0 && query == 0 && current & block_sigusr1 != 0,
+        "block persists",
+    );
+}
+
+fn test_sigpipe_epipe() {
+    // Ignore SIGPIPE, then write to a pipe whose read end is fully closed:
+    // the write must fail with EPIPE (-32), not kill the process.
+    let ignore: [usize; 4] = [SIG_IGN, 0, 0, 0];
+    sys3(SYS_RT_SIGACTION, SIGPIPE, ignore.as_ptr() as usize, 0);
+    let mut fds = [0i32; 2];
+    if sys3(SYS_PIPE2, fds.as_mut_ptr() as usize, 2, 0) != 0 {
+        report("sigpipe_epipe", false, "pipe2 failed");
+        return;
+    }
+    sys1(SYS_CLOSE, fds[0] as usize); // close the read end
+    const MSG: &[u8] = b"doomed";
+    let w = sys3(SYS_WRITE, fds[1] as usize, MSG.as_ptr() as usize, MSG.len());
+    sys1(SYS_CLOSE, fds[1] as usize);
+    report("sigpipe_epipe", w == -32, "EPIPE not death");
+}
+
+// --- fork/exec tests --------------------------------------------------------
+
+fn test_fork_exit_status() {
+    const SIGCHLD_FLAGS: usize = 17; // SIGCHLD
+    let pid = syscall(SYS_CLONE, SIGCHLD_FLAGS, 0, 0, 0, 0, 0);
+    if pid < 0 {
+        report("fork_status", false, "clone failed");
+        return;
+    }
+    if pid == 0 {
+        exit(42);
+    }
+    let mut status: i32 = 0;
+    sys3(SYS_WAIT4, pid as usize, &mut status as *mut i32 as usize, 0);
+    report("fork_status", status == (42 << 8), "child exit 42");
+}
+
+fn test_exec_true() {
+    const SIGCHLD_FLAGS: usize = 17;
+    let pid = syscall(SYS_CLONE, SIGCHLD_FLAGS, 0, 0, 0, 0, 0);
+    if pid < 0 {
+        report("exec_true", false, "clone failed");
+        return;
+    }
+    if pid == 0 {
+        let path = b"/bin/true\0";
+        let mut argv: [usize; 2] = [path.as_ptr() as usize, 0];
+        let r = syscall(SYS_EXECVE, path.as_ptr() as usize, argv.as_mut_ptr() as usize, 0, 0, 0, 0);
+        if r < 0 {
+            exit(98); // exec failed
+        }
+        exit(0); // unreachable when exec succeeds
+    }
+    let mut status: i32 = 0;
+    sys3(SYS_WAIT4, pid as usize, &mut status as *mut i32 as usize, 0);
+    report("exec_true", status == 0, "exec /bin/true exit 0");
+}
+
+// --- error-path tests -------------------------------------------------------
+
+/// Format an errno as decimal, e.g. "-2". Scratch buffer is per-call.
+fn signed(value: isize) -> &'static str {
+    const DIGITS: &[u8; 10] = b"0123456789";
+    // SAFETY: static scratch rewritten before every read; single-threaded.
+    static mut BUF: [u8; 12] = [0; 12];
+    const CAP: usize = 12;
+    let mut v = value.unsigned_abs();
+    let mut idx = CAP;
+    if v == 0 {
+        idx -= 1;
+        unsafe { (*core::ptr::addr_of_mut!(BUF))[idx] = b"0"[0]; }
+    }
+    while v > 0 {
+        idx -= 1;
+        unsafe { (*core::ptr::addr_of_mut!(BUF))[idx] = DIGITS[v % 10]; }
+        v /= 10;
+    }
+    if value < 0 {
+        idx -= 1;
+        unsafe { (*core::ptr::addr_of_mut!(BUF))[idx] = b"-"[0]; }
+    }
+    unsafe { core::str::from_utf8_unchecked(&*core::ptr::addr_of!(BUF)).split_at(idx).1 }
+}
+
+fn test_error_paths() {
+    let missing = b"/no/such/file\0";
+    let open_errno = sys4(SYS_OPENAT, AT_FDCWD, missing.as_ptr() as usize, O_RDONLY, 0);
+    let bad_close = sys1(SYS_CLOSE, 99);
+    let bad_kill = sys2(SYS_KILL, 0xDEAD_BEEF, SIGUSR1);
+    let bad_read = sys3(SYS_READ, 1234, 0x1000, 8);
+    if open_errno == -2 && bad_close == -9 && bad_kill == -3 && bad_read == -9 {
+        report("error_paths", true, "");
+    } else {
+        let detail = [
+            ("open", open_errno),
+            ("close", bad_close),
+            ("kill", bad_kill),
+            ("read", bad_read),
+        ];
+        for (name, value) in detail {
+            write_str(name);
+            write_str("=");
+            write_str(signed(value));
+            write_str(" ");
+        }
+        report("error_paths", false, "see values above");
+    }
+}
 
 fn test_pipe2() {
     let mut fds = [0i32; 2];
@@ -315,6 +493,12 @@ extern "C" fn _start() -> ! {
     test_fsync();
     test_setitimer();
     test_truncate();
+    test_sigusr1_delivery();
+    test_sigprocmask_roundtrip();
+    test_sigpipe_epipe();
+    test_fork_exit_status();
+    test_exec_true();
+    test_error_paths();
     unsafe {
         write_str("--- pass ");
         write_str(dec(PASS));

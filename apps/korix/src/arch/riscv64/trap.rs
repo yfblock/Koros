@@ -71,10 +71,26 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
         if nr != NR_RT_SIGRETURN && (nr != NR_EXECVE || ret < 0) {
             tf.sepc += 4;
         }
+        // Deliver any pending signal into the returning frame; a default
+        // disposition terminates the task instead of returning.
+        if let Some(code) = crate::syscall::user_trap_status(frame) {
+            crate::sched::exit_current(code);
+        }
         crate::syscall::user_trap_leave(frame);
         return;
     }
 
+    // Any other exception raised from U-mode is a user fault (bad memory
+    // access, illegal instruction, …): terminate the process like a
+    // SIGSEGV instead of taking the kernel down with it.
+    if !is_interrupt && tf.sstatus & (1 << 8) == 0 {
+        const USER_SEGFAULT_STATUS: i32 = 128 + 11; // WIFSIGNGED-style SIGSEGV
+        println!(
+            "[korix] user fault: scause={:#x} stval={:#x} sepc={:#x} — exiting",
+            scause, stval, tf.sepc
+        );
+        crate::sched::exit_current(USER_SEGFAULT_STATUS);
+    }
     println!("");
     println!("=== TRAP ===");
     println!(

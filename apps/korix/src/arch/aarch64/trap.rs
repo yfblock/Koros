@@ -56,6 +56,11 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame, kind: u64, source: u64) {
             ];
             let ret = crate::syscall::dispatch(nr, &args);
             tf.regs[0] = ret as usize;
+            // Deliver any pending signal into the returning frame; a
+            // default disposition terminates the task.
+            if let Some(code) = crate::syscall::user_trap_status(frame) {
+                crate::sched::exit_current(code);
+            }
             crate::syscall::user_trap_leave(frame);
             return;
         }
