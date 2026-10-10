@@ -39,6 +39,8 @@ pub struct ProcessState {
     pub pipes: BTreeMap<usize, (usize, bool)>,
     /// Per-fd O_* descriptor flags for pipes (F_GETFL/F_SETFL).
     pub pipe_flags: BTreeMap<usize, u32>,
+    /// Per-fd FD_* flags (F_GETFD/F_SETFD) for every descriptor kind.
+    pub fd_flags: BTreeMap<usize, u32>,
     /// File descriptors created through AF_INET6; transport remains IPv4-only.
     pub ipv6_fds: BTreeMap<usize, ()>,
     pub robust_list: usize,
@@ -71,6 +73,7 @@ impl ProcessState {
             sockets: BTreeMap::new(),
             pipes: BTreeMap::new(),
             pipe_flags: BTreeMap::new(),
+            fd_flags: BTreeMap::new(),
             ipv6_fds: BTreeMap::new(),
             robust_list: 0,
             robust_list_len: 0,

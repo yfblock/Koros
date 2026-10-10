@@ -2783,7 +2783,7 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
             return fs_errno(error);
         }
     }
-    alloc_fd_flags(inode, path_str, (flags & 0o7777) as u32)
+    alloc_fd_flags(inode, path_str, (flags & !0o20000000) as u32)
         .map(|fd| fd as isize)
         .unwrap_or(-24)
 }
@@ -2941,7 +2941,7 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
             }
             newfd as isize
         }
-        F_GETFD => 0,
+        F_GETFD => process.fd_flags.get(&fd).copied().unwrap_or(0) as isize,
         F_GETFL => {
             if let Some(flags) = process
                 .pipes
@@ -2952,15 +2952,20 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
             } else {
                 // Regular files report the full access-mode bits stored at open.
                 match process.files.get(&fd) {
-                    Some(entry) => (entry.lock().open_flags & 0o7777) as isize,
+                    Some(entry) => entry.lock().open_flags as isize,
                     None => 0,
                 }
             }
         }
-        F_SETFD => 0,
+        F_SETFD => {
+            const FD_CLOEXEC: u32 = 1;
+            process.fd_flags.insert(fd, (argument as u32) & FD_CLOEXEC);
+            0
+        }
         F_SETFL => {
-            // Only O_NONBLOCK/CLOEXEC are mutable on pipes and files here.
-            const MUTABLE: u32 = (0o4000 | 0o2000000) as u32;
+            // The access mode is immutable; status flags are replaceable.
+            const MUTABLE: u32 =
+                (0o4000 | 0o2000000 | 0o1000 | 0o2000 | 0o40000 | 0o10000 | 0o200 | 0o100) as u32;
             if let Some((_, _)) = process.pipes.get(&fd) {
                 let mut process = process;
                 let entry = process.pipe_flags.entry(fd).or_insert(0);
@@ -4122,12 +4127,20 @@ fn sys_nanosleep(request: usize) -> isize {
     }
     let millis = seconds as u64 * 1000 + (nanos as u64).div_ceil(1_000_000);
     if millis != 0 {
-        if kor_sched::is_ready() {
-            kor_sched::sleep(core::time::Duration::from_millis(millis));
-        } else {
-            let deadline = kor_arch::now() + core::time::Duration::from_millis(millis);
+        let deadline = kor_arch::now() + core::time::Duration::from_millis(millis);
+        if !kor_sched::is_ready() {
             while kor_arch::now() < deadline {
                 core::hint::spin_loop();
+            }
+        } else {
+            // Coarse sleep for the bulk (scheduler ticks are 10 ms), then
+            // poll the high-resolution clock for the sub-tick tail.
+            const TAIL_MS: u64 = 20;
+            if millis > TAIL_MS {
+                kor_sched::sleep(core::time::Duration::from_millis(millis - TAIL_MS));
+            }
+            while kor_arch::now() < deadline {
+                kor_sched::yield_now();
             }
         }
     }
