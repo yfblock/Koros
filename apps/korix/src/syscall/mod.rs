@@ -676,6 +676,7 @@ pub const SYS_FSYNC: usize = 82;
 pub const SYS_FTRUNCATE: usize = 46;
 pub const SYS_TRUNCATE: usize = 45;
 pub const SYS_FCHMOD: usize = 52;
+pub const SYS_FCHMODAT: usize = 53;
 pub const SYS_FCHOWN: usize = 55;
 // riscv64 has no `rmdir` (84) — use unlinkat with AT_REMOVEDIR.
 pub const SYS_GETPGID: usize = 155;
@@ -702,15 +703,27 @@ pub const SYS_READLINK: usize = 78; // same as READLINKAT on riscv64
 /// (`arch::current`) first translates `(nr, args)` into canonical
 /// asm-generic form; `dispatch_inner` and every handler below are portable.
 pub fn dispatch(nr: usize, args: &[usize]) -> isize {
+    LAST_SYSCALL.store(nr, core::sync::atomic::Ordering::Relaxed);
     let mut canonical = [0usize; 6];
     for (slot, value) in canonical.iter_mut().zip(args.iter()) {
         *slot = *value;
     }
-    match arch::current::translate(nr, &mut canonical) {
+    let result = match arch::current::translate(nr, &mut canonical) {
         Some(canonical_nr) => dispatch_inner(canonical_nr, &canonical),
         None => -38, // -ENOSYS
+    };
+    if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+        kor::println!("[trace] nr={nr} -> {result}");
     }
+    result
 }
+
+/// Toggle full syscall tracing from the kernel cmdline (`ltptrace`).
+pub static TRACE_SYSCALLS: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Last dispatched syscall number — diagnostic aid for user-fault triage.
+pub static LAST_SYSCALL: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 fn dispatch_inner(num: usize, args: &[usize]) -> isize {
     match num {
@@ -744,6 +757,9 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_FTRUNCATE => sys_ftruncate(args[0], args[1] as i64),
         SYS_TRUNCATE => sys_truncate(args[0], args[1] as i64),
         SYS_FCHMOD => sys_fchmod(args[0], args[1]),
+        // Classic fchmodat(53) has no flags argument (only fchmodat2 does);
+        // musl leaves a3 holding garbage, so do not validate it.
+        SYS_FCHMODAT => sys_fchmodat(args[0], args[1], args[2], 0),
         SYS_FCHOWN => 0, // stub: chown to self
         SYS_WAITID => sys_waitid(args[0], args[1], args[2], args[3] | args[4]),
         SYS_SCHED_YIELD => {
@@ -1613,8 +1629,48 @@ fn sys_truncate(path_addr: usize, length: i64) -> isize {
     }
 }
 
-fn sys_fchmod(_fd: usize, _mode: usize) -> isize {
-    0 // TODO: INode chmod not yet in trait
+/// Change permission bits on an inode via getattr → setattr.
+fn chmod_inode(inode: &Arc<dyn INode>, mode: u32) -> isize {
+    let mut metadata = match inode.getattr() {
+        Ok(metadata) => metadata,
+        Err(error) => return fs_errno(error),
+    };
+    metadata.mode = (metadata.mode & !0o7777) | (mode & 0o7777);
+    match inode.setattr(&metadata) {
+        Ok(()) => 0,
+        Err(error) => fs_errno(error),
+    }
+}
+
+fn sys_fchmod(fd: usize, mode: usize) -> isize {
+    let Some(entry) = current_file(fd) else {
+        return -9;
+    };
+    let inode = entry.lock().inode.clone();
+    chmod_inode(&inode, mode as u32)
+}
+
+fn sys_fchmodat(dirfd: usize, path: usize, mode: usize, flags: usize) -> isize {
+    const AT_SYMLINK_NOFOLLOW: usize = 0x100;
+    const AT_EMPTY_PATH: usize = 0x1000;
+    if flags & !(AT_SYMLINK_NOFOLLOW | AT_EMPTY_PATH) != 0 {
+        return -22;
+    }
+    if flags & AT_SYMLINK_NOFOLLOW != 0 {
+        // Linux rejects this combination (no O_PATH-based chmod yet).
+        return -95; // EOPNOTSUPP
+    }
+    if flags & AT_EMPTY_PATH != 0 && path == 0 {
+        return sys_fchmod(dirfd, mode);
+    }
+    let full = match user_absolute_path(dirfd, path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    match kor_fs::mount::resolve(&crate::MOUNTS, &full) {
+        Ok(inode) => chmod_inode(&inode, mode as u32),
+        Err(error) => fs_errno(error),
+    }
 }
 
 fn sys_waitid(_idtype: usize, _pid: usize, _infop: usize, _options: usize) -> isize {
@@ -2021,6 +2077,10 @@ fn fork_child_entry() {
             .take_fork_context()
             .expect("fork child has no user context")
     };
+    // `resume_user_context` never returns: entering user mode abandons this
+    // kernel stack, so the process Arc must be released here or the task's
+    // zombie address space would leak for good.
+    drop(process);
     // The architecture trampoline masks IRQs immediately before restoring the
     // detached user register set, closing the kernel-to-user transition window.
     unsafe { kor_arch::resume_user_context(&context) }
@@ -3423,6 +3483,11 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) -> Option<i32>
             )
         };
         let (signal, bit, action, blocked) = pending;
+        kor::println!(
+            "[trace] delivering signal {} handler={:#x}",
+            signal,
+            action.handler
+        );
         if action.handler == SIG_IGN {
             continue;
         }
@@ -3594,7 +3659,19 @@ fn sys_wait4(pid: usize, status: usize, options: usize) -> isize {
                 return -14;
             }
             let reaped = crate::sched::reap(child_pid).expect("zombie disappeared while reaping");
+            if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+                kor::println!(
+                    "[trace] reap pid={child_pid} refs={}",
+                    alloc::sync::Arc::strong_count(&reaped)
+                );
+            }
             drop(reaped);
+            if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+                kor::println!(
+                    "[trace] after reap free-frames={}",
+                    kor::frame::available_frames()
+                );
+            }
             return child_pid as isize;
         }
         if options & WNOHANG != 0 {

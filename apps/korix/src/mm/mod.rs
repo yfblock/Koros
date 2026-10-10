@@ -47,6 +47,11 @@ impl AddressSpace {
         let mut child = Self::empty()?;
         for (&vaddr, &page) in &self.pages {
             let child_phys = child.map_zeroed(vaddr, page.flags)?;
+            if crate::syscall::TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed)
+                && child_phys == page.phys
+            {
+                kor::println!("[trace] fork ALIAS va={:#x} pa={:#x}", vaddr, page.phys);
+            }
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     kor_arch::phys_to_virt(page.phys) as *const u8,
@@ -414,6 +419,8 @@ impl Drop for AddressSpace {
     fn drop(&mut self) {
         if self.owned {
             assert!(!self.is_active(), "dropping active address space");
+            // kor-arch's destroy_table already returns every level-0 leaf
+            // data frame along with the table pages.
             unsafe { kor_mmu::destroy_address_space(self.root) }
         }
     }

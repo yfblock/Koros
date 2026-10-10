@@ -232,7 +232,11 @@ pub unsafe fn destroy(root: usize) {
 
 unsafe fn destroy_table(table: usize, level: usize) {
     let entries = unsafe { PhysAddr::new(table).page_slice_at_mut::<usize>(PTE_NUM) };
-    for &entry in &entries[..256] {
+    // Only the root (level 2) masks to the low half: the kernel occupies
+    // the high-half entries there.  Sub-tables are pure user mappings —
+    // all 512 entries must be walked or their pages leak.
+    let limit = if level == 2 { 256 } else { PTE_NUM };
+    for &entry in &entries[..limit] {
         if !is_valid(entry) {
             continue;
         }

@@ -20,6 +20,10 @@ enum Kind {
     Root,
     /// Per-process directory (`/proc/<pid>`).
     Process(usize),
+    /// `/proc/sys` tunables directory.
+    SysDir,
+    /// `/proc/sys/kernel` tunables directory.
+    SysKernel,
     /// Regular pseudo-file rendered by a generator function.
     File(fn() -> String),
 }
@@ -80,7 +84,7 @@ impl ProcNode {
     fn render(&self) -> String {
         match &self.kind {
             Kind::File(generator) => generator(),
-            Kind::Root | Kind::Process(_) => String::new(),
+            Kind::Root | Kind::Process(_) | Kind::SysDir | Kind::SysKernel => String::new(),
         }
     }
 }
@@ -106,6 +110,26 @@ fn version() -> String {
 
 fn loadavg() -> String {
     "0.00 0.00 0.00 1/16 1\n".to_string()
+}
+
+fn pid_max() -> String {
+    "4194304\n".to_string()
+}
+
+fn threads_max() -> String {
+    "62904\n".to_string()
+}
+
+fn ngroups_max() -> String {
+    "65536\n".to_string()
+}
+
+fn osrelease() -> String {
+    "6.12.0-korix\n".to_string()
+}
+
+fn ostype() -> String {
+    "Linux\n".to_string()
 }
 
 fn cpuinfo() -> String {
@@ -217,7 +241,7 @@ impl INode for ProcNode {
                 "status" => process_status(pid),
                 _ => process_cmdline(pid),
             },
-            (Kind::Root | Kind::Process(_), _) => String::new(),
+            (Kind::Root | Kind::Process(_) | Kind::SysDir | Kind::SysKernel, _) => String::new(),
         };
         let bytes = content.as_bytes();
         if offset >= bytes.len() {
@@ -246,6 +270,7 @@ impl INode for ProcNode {
                     return Err(FsError::NotFound);
                 }
                 match name {
+                    "sys" => Ok(ProcNode::dir(Kind::SysDir)),
                     "meminfo" => Ok(ProcNode::file("meminfo", meminfo)),
                     "cpuinfo" => Ok(ProcNode::file("cpuinfo", cpuinfo)),
                     "uptime" => Ok(ProcNode::file("uptime", uptime)),
@@ -256,6 +281,18 @@ impl INode for ProcNode {
                     _ => Err(FsError::NotFound),
                 }
             }
+            Kind::SysDir => match name {
+                "kernel" => Ok(ProcNode::dir(Kind::SysKernel)),
+                _ => Err(FsError::NotFound),
+            },
+            Kind::SysKernel => match name {
+                "pid_max" => Ok(ProcNode::file("pid_max", pid_max)),
+                "threads-max" => Ok(ProcNode::file("threads-max", threads_max)),
+                "ngroups_max" => Ok(ProcNode::file("ngroups_max", ngroups_max)),
+                "osrelease" => Ok(ProcNode::file("osrelease", osrelease)),
+                "ostype" => Ok(ProcNode::file("ostype", ostype)),
+                _ => Err(FsError::NotFound),
+            },
             Kind::Process(pid) => match name {
                 "stat" => Ok(ProcNode::process_file(*pid, "stat")),
                 "status" => Ok(ProcNode::process_file(*pid, "status")),
@@ -290,7 +327,7 @@ impl INode for ProcNode {
     fn getattr(&self) -> Result<Metadata, FsError> {
         let file_type = match self.kind {
             Kind::File(_) => FileType::Regular,
-            Kind::Root | Kind::Process(_) => FileType::Directory,
+            Kind::Root | Kind::Process(_) | Kind::SysDir | Kind::SysKernel => FileType::Directory,
         };
         let mode = match file_type {
             FileType::Directory => Self::ROOT_MODE,
@@ -336,8 +373,17 @@ impl INode for ProcNode {
                     entries.push((process.0.to_string(), Self::ROOT_MODE));
                 }
                 entries.push(("self".to_string(), Self::ROOT_MODE));
+                entries.push(("sys".to_string(), Self::ROOT_MODE));
                 Ok(entries)
             }
+            Kind::SysDir => Ok(alloc::vec![("kernel".to_string(), Self::ROOT_MODE)]),
+            Kind::SysKernel => Ok(alloc::vec![
+                ("pid_max".to_string(), Self::FILE_MODE),
+                ("threads-max".to_string(), Self::FILE_MODE),
+                ("ngroups_max".to_string(), Self::FILE_MODE),
+                ("osrelease".to_string(), Self::FILE_MODE),
+                ("ostype".to_string(), Self::FILE_MODE),
+            ]),
             Kind::Process(_) => Ok(alloc::vec![
                 ("stat".to_string(), Self::FILE_MODE),
                 ("status".to_string(), Self::FILE_MODE),
@@ -351,6 +397,8 @@ impl INode for ProcNode {
         match &self.kind {
             Kind::Root => 1,
             Kind::Process(pid) => Self::stable_ino(&format!("proc{pid}")),
+            Kind::SysDir => Self::stable_ino("sysdir"),
+            Kind::SysKernel => Self::stable_ino("syskernel"),
             Kind::File(_) => Self::stable_ino(self.name),
         }
     }

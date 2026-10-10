@@ -58,6 +58,10 @@ extern "C" fn kernel_main() -> ! {
     arch::trap::init();
 
     kor::cmdline::init_from(kor_arch::boot_cmdline().unwrap_or_default());
+    crate::syscall::TRACE_SYSCALLS.store(
+        kor::cmdline::has_flag("ltptrace"),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     let mut collected = kor::regions::RegionCollector::new();
     kor_arch::detect_memory_regions(&mut |start, end| collected.add(start, end));
     let (ks, ke) = kor_arch::kernel_phys_range();

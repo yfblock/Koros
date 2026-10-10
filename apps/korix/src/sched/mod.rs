@@ -251,6 +251,17 @@ pub fn exit_current(code: i32) -> ! {
         crate::syscall::wake_futex(clear_child_tid, 1);
     }
 
+    // The `current` Arc local was captured at function entry; this function
+    // never returns, so without an explicit drop its destructor would never
+    // run and the zombie's address space would leak.
+    if crate::syscall::TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+        kor::println!(
+            "[trace] exit pid={pid} refs-before-drop={}",
+            alloc::sync::Arc::strong_count(&current)
+        );
+    }
+    drop(current);
+
     if requested_parent != 0 && requested_parent != pid {
         let mut processes = PROCESSES.lock();
         if let Some(parent) = processes.get_mut(&requested_parent) {

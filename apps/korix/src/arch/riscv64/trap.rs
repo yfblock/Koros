@@ -84,10 +84,13 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
     // access, illegal instruction, …): terminate the process like a
     // SIGSEGV instead of taking the kernel down with it.
     if !is_interrupt && tf.sstatus & (1 << 8) == 0 {
-        const USER_SEGFAULT_STATUS: i32 = 128 + 11; // WIFSIGNGED-style SIGSEGV
+        const USER_SEGFAULT_STATUS: i32 = 128 + 11; // WIFSIGNLED-style SIGSEGV
         println!(
-            "[korix] user fault: scause={:#x} stval={:#x} sepc={:#x} — exiting",
-            scause, stval, tf.sepc
+            "[korix] user fault: scause={:#x} stval={:#x} sepc={:#x} last-syscall={} — exiting",
+            scause,
+            stval,
+            tf.sepc,
+            crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed)
         );
         crate::sched::exit_current(USER_SEGFAULT_STATUS);
     }

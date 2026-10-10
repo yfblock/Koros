@@ -34,9 +34,11 @@ pub const BRK_BASE: usize = 0x80_0100_0000;
 pub const BRK_BASE: usize = 0x2_0000_0000;
 
 #[cfg(target_arch = "riscv64")]
-pub const SIGNAL_RESTORER: usize = 0x0f_fffe_f000;
+/// Just below the user stack region — must stay outside it: the restorer
+/// mapping replaces whatever PTE is there on first delivery.
+pub const SIGNAL_RESTORER: usize = 0x0f_ff7f_f000;
 #[cfg(target_arch = "aarch64")]
-pub const SIGNAL_RESTORER: usize = 0x7f_fffe_f000;
+pub const SIGNAL_RESTORER: usize = 0x7f_ff7f_f000;
 
 const _: () = assert!(LOAD_BASE < ADDRESS_LIMIT);
 const _: () = assert!(BRK_BASE < ADDRESS_LIMIT);

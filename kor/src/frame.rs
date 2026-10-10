@@ -132,7 +132,12 @@ impl FrameAllocator {
     }
 
     /// Free `count` contiguous frames previously returned by [`alloc_frames`].
-    pub fn free_frames(&mut self, phys: usize, count: usize) {
+    fn free_frames_checked(
+        &mut self,
+        phys: usize,
+        count: usize,
+        caller: &'static core::panic::Location<'static>,
+    ) {
         assert!(count != 0, "cannot free zero frames");
         assert!(phys % PAGE_SIZE == 0, "phys {phys:#x} not page-aligned");
         let frames = count
@@ -141,11 +146,11 @@ impl FrameAllocator {
         let ppn = phys / PAGE_SIZE;
         let (region_index, offset) = self
             .locate(ppn, frames)
-            .expect("frame extent was not registered");
+            .unwrap_or_else(|| panic!("frame extent not registered: {phys:#x} x{count}"));
         for index in offset..offset + frames {
             assert!(
                 self.bit(region_index, index),
-                "freeing unallocated physical frame"
+                "freeing unallocated frame {phys:#x} x{count} from {caller}"
             );
         }
         self.mark_run(region_index, offset, frames, false);
@@ -258,8 +263,10 @@ pub fn alloc_frames(count: usize) -> Option<usize> {
 }
 
 /// Free `count` contiguous 4 KiB frames at `phys`.
+#[track_caller]
 pub fn free_frames(phys: usize, count: usize) {
-    with_allocator(|allocator| allocator.free_frames(phys, count));
+    let caller = core::panic::Location::caller();
+    with_allocator(|allocator| allocator.free_frames_checked(phys, count, caller));
 }
 
 /// Allocate one 4 KiB physical frame.
