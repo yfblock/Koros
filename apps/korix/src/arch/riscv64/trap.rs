@@ -86,10 +86,14 @@ extern "C" fn trap_dispatch(tf: &mut TrapFrame) {
     if !is_interrupt && tf.sstatus & (1 << 8) == 0 {
         const USER_SEGFAULT_STATUS: i32 = 128 + 11; // WIFSIGNLED-style SIGSEGV
         println!(
-            "[korix] user fault: scause={:#x} stval={:#x} sepc={:#x} last-syscall={} — exiting",
+            "[korix] user fault: scause={:#x} stval={:#x} sepc={:#x} ra={:#x} sp={:#x} tp={:#x} a0={:#x} last-syscall={} — exiting",
             scause,
             stval,
             tf.sepc,
+            tf.regs[1],
+            tf.regs[2],
+            tf.regs[4],
+            tf.regs[10],
             crate::syscall::LAST_SYSCALL.load(core::sync::atomic::Ordering::Relaxed)
         );
         crate::sched::exit_current(USER_SEGFAULT_STATUS);
