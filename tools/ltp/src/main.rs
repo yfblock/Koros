@@ -41,6 +41,10 @@ const SYS_EXECVE: usize = 221;
 const SYS_WAIT4: usize = 260;
 const SYS_GETPID: usize = 172;
 const SYS_GETPPID: usize = 173;
+const SYS_FUTEX: usize = 98;
+const SYS_RT_SIGTIMEDWAIT: usize = 137;
+const SYS_GETDENTS64: usize = 61;
+const SYS_NANOSLEEP: usize = 101;
 
 const SIGUSR1: usize = 10;
 const SIGPIPE: usize = 13;
@@ -144,6 +148,7 @@ const O_RDONLY: usize = 0;
 const O_WRONLY: usize = 1;
 const O_CREAT: usize = 0o100;
 const O_TRUNC: usize = 0o1000;
+const O_DIRECTORY_FLAG: usize = 0o200000;
 
 
 // --- procfs tests ------------------------------------------------------------
@@ -212,6 +217,86 @@ fn format_pid_prefix(bytes: &[u8]) -> isize {
         value = value * 10 + (b - b'0') as isize;
     }
     value
+}
+
+
+// --- futex / sigtimedwait / getdents tests ----------------------------------
+
+fn test_futex_timeout() {
+    // FUTEX_WAIT on a word whose value matches, with a 20 ms timeout:
+    // must return -110 (ETIMEDOUT), not block forever.
+    let mut word: u32 = 7;
+    let timeout: [i64; 2] = [0, 20_000_000];
+    let r = syscall(
+        SYS_FUTEX,
+        &mut word as *mut u32 as usize,
+        0, // FUTEX_WAIT
+        7,
+        &timeout as *const [i64; 2] as usize,
+        0,
+        0,
+    );
+    report("futex_timeout", r == -110, "ETIMEDOUT after 20ms");
+}
+
+fn test_futex_wake() {
+    // FUTEX_WAIT on a mismatched word must fail immediately with EAGAIN.
+    let word: u32 = 7;
+    let timeout: [i64; 2] = [0, 50_000_000];
+    let r = syscall(
+        SYS_FUTEX,
+        &word as *const u32 as usize,
+        0,
+        8, // expected 8, actual 7
+        &timeout as *const [i64; 2] as usize,
+        0,
+        0,
+    );
+    report("futex_mismatch", r == -11, "EAGAIN on value mismatch");
+}
+
+fn test_sigtimedwait_timeout() {
+    // Empty-interest wait with a 20 ms timeout returns EAGAIN (-11).
+    let set: u64 = 0;
+    let timeout: [i64; 2] = [0, 20_000_000];
+    let r = syscall(
+        SYS_RT_SIGTIMEDWAIT,
+        &set as *const u64 as usize,
+        0,
+        &timeout as *const [i64; 2] as usize,
+        0,
+        0,
+        0,
+    );
+    report("sigtimedwait_timeout", r == -11, "EAGAIN after timeout");
+}
+
+fn test_getdents_pagination() {
+    // Read /proc with a 16-byte buffer (smaller than any record): EINVAL.
+    let path = b"/proc\0";
+    let fd = sys4(SYS_OPENAT, AT_FDCWD, path.as_ptr() as usize, O_DIRECTORY_FLAG, 0);
+    if fd < 0 {
+        report("getdents_small", false, "open /proc failed");
+        return;
+    }
+    let mut tiny = [0u8; 16];
+    let small = sys3(SYS_GETDENTS64, fd as usize, tiny.as_mut_ptr() as usize, 16);
+    // Then page through /proc in 32-byte chunks until EOF.
+    let mut total_entries = 0;
+    let mut buf = [0u8; 32];
+    loop {
+        let got = sys3(SYS_GETDENTS64, fd as usize, buf.as_mut_ptr() as usize, 32);
+        if got <= 0 {
+            break;
+        }
+        total_entries += 1;
+    }
+    sys1(SYS_CLOSE, fd as usize);
+    report(
+        "getdents_pagination",
+        small == -22 && total_entries >= 8,
+        "EINVAL small, pages through",
+    );
 }
 
 // --- individual tests -------------------------------------------------------
@@ -569,6 +654,10 @@ extern "C" fn _start() -> ! {
     test_exec_true();
     test_error_paths();
     test_procfs();
+    test_futex_timeout();
+    test_futex_wake();
+    test_sigtimedwait_timeout();
+    test_getdents_pagination();
     unsafe {
         write_str("--- pass ");
         write_str(dec(PASS));

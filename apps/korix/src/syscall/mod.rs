@@ -798,7 +798,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_RT_SIGRETURN => sys_rt_sigreturn(),
         SYS_SET_TID_ADDRESS => 1,
         SYS_SET_ROBUST_LIST => sys_set_robust_list(args[0], args[1]),
-        SYS_FUTEX => sys_futex(args[0], args[1], args[2]),
+        SYS_FUTEX => sys_futex(args[0], args[1], args[2], args[3]),
         200 => 0,
         SYS_IOCTL => sys_ioctl(args[0], args[1], args[2]),
         SYS_SOCKET => sys_socket(args[0], args[1], args[2]),
@@ -1621,8 +1621,67 @@ fn sys_waitid(_idtype: usize, _pid: usize, _infop: usize, _options: usize) -> is
     sys_wait4(usize::MAX, 0, 0)
 }
 
-fn sys_sigtimedwait(_set: usize, _info: usize, _timeout: usize) -> isize {
-    -38 // ENOSYS: not yet
+fn sys_sigtimedwait(set: usize, info: usize, timeout: usize) -> isize {
+    let Some(process) = crate::sched::current_process() else {
+        return ESRCH;
+    };
+    let Some(interest) = read_user::<u64>(set) else {
+        return EFAULT;
+    };
+    // A NULL timespec means wait forever (Linux treats it as such).
+    let deadline = if timeout == 0 {
+        None
+    } else {
+        let Some([seconds, nanos]) = read_user::<[i64; 2]>(timeout) else {
+            return EFAULT;
+        };
+        if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
+            return EINVAL;
+        }
+        Some(
+            kor_arch::now()
+                + core::time::Duration::from_secs(seconds as u64)
+                + core::time::Duration::from_nanos(nanos as u32 as u64),
+        )
+    };
+    loop {
+        let deliverable = {
+            let mut process = process.lock();
+            let signals = &mut process.signals;
+            let ready = signals.pending & !signals.blocked & interest;
+            match ready.trailing_zeros() {
+                index if index < 64 => {
+                    let signal = index + 1;
+                    signals.pending &= !(1 << index);
+                    signal
+                }
+                _ => 0,
+            }
+        };
+        if deliverable != 0 {
+            if info != 0 {
+                let payload = LinuxSigInfo {
+                    signo: deliverable as i32,
+                    errno: 0,
+                    code: 0,
+                    _pad0: 0,
+                    sender_pid: 0,
+                    sender_uid: 0,
+                    _pad: [0; 104],
+                };
+                if write_user(info, &payload).is_none() {
+                    return EFAULT;
+                }
+            }
+            return deliverable as isize;
+        }
+        match deadline {
+            Some(limit) if kor_arch::now() >= limit => return -11, // EAGAIN
+            Some(_) | None => {
+                kor_sched::yield_now();
+            }
+        }
+    }
 }
 
 /// struct statfs { long type, bsize; long long blocks, bfree, bavail, files, ffree; ... }
@@ -2302,6 +2361,10 @@ fn sys_getdents64(fd: usize, buf: usize, count: usize) -> isize {
         Err(_) => return -5,
     };
     let start_index = (entry.offset as usize).min(entries.len());
+    // Linux requires the buffer to fit at least one record.
+    if count < 19 && start_index < entries.len() {
+        return -22;
+    }
     let mut output = alloc::vec![0u8; count];
     let mut offset = 0usize;
     let mut index = start_index;
@@ -3437,12 +3500,14 @@ pub extern "Rust" fn korix_deliver_pending_signal(frame: *mut u8) -> Option<i32>
         return None;
     }
 }
-fn sys_futex(address: usize, operation: usize, value: usize) -> isize {
+fn sys_futex(address: usize, operation: usize, value: usize, timeout: usize) -> isize {
     const FUTEX_WAIT: usize = 0;
     const FUTEX_WAKE: usize = 1;
+    const FUTEX_WAIT_BITSET: usize = 9;
+    const FUTEX_WAKE_BITSET: usize = 10;
     let operation = operation & 0x7f;
     match operation {
-        FUTEX_WAIT => {
+        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
             let ptr = user_to_kernel(address);
             if ptr == 0 {
                 return -14;
@@ -3450,14 +3515,41 @@ fn sys_futex(address: usize, operation: usize, value: usize) -> isize {
             if !kor_sched::is_ready() {
                 return -11;
             }
-            let blocked = futex_queue(address).wait_if(|| unsafe {
-                (*(ptr as *const core::sync::atomic::AtomicU32))
-                    .load(core::sync::atomic::Ordering::SeqCst)
-                    == value as u32
-            });
-            if blocked { 0 } else { -11 }
+            // A NULL timeout means wait forever: use the blocking queue.
+            if timeout == 0 {
+                let blocked = futex_queue(address).wait_if(|| unsafe {
+                    (*(ptr as *const core::sync::atomic::AtomicU32))
+                        .load(core::sync::atomic::Ordering::SeqCst)
+                        == value as u32
+                });
+                return if blocked { 0 } else { -11 };
+            }
+            // Timed wait: poll the word with a 1 ms sleep cadence —
+            // EAGAIN if the value moved, ETIMEDOUT at the deadline.
+            let Some([seconds, nanos]) = read_user::<[i64; 2]>(timeout) else {
+                return -14;
+            };
+            if seconds < 0 || !(0..1_000_000_000).contains(&nanos) {
+                return -22;
+            }
+            let deadline = kor_arch::now()
+                + core::time::Duration::from_secs(seconds as u64)
+                + core::time::Duration::from_nanos(nanos as u32 as u64);
+            loop {
+                let current = unsafe {
+                    (*(ptr as *const core::sync::atomic::AtomicU32))
+                        .load(core::sync::atomic::Ordering::SeqCst)
+                };
+                if current != value as u32 {
+                    return -11;
+                }
+                if kor_arch::now() >= deadline {
+                    return -110;
+                }
+                kor_sched::sleep(core::time::Duration::from_millis(1));
+            }
         }
-        FUTEX_WAKE => {
+        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
             let queue = futex_queue(address);
             let mut woken = 0;
             while woken < value && queue.wake_one() {
