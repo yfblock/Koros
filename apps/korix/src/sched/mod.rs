@@ -50,6 +50,8 @@ pub struct ProcessState {
     pub blocks: BTreeMap<usize, usize>,
     /// File offsets for raw block descriptors.
     pub block_offsets: BTreeMap<usize, usize>,
+    /// epoll-instance descriptors: fd -> registry id.
+    pub epolls: BTreeMap<usize, usize>,
     /// File descriptors created through AF_INET6; transport remains IPv4-only.
     pub ipv6_fds: BTreeMap<usize, ()>,
     pub robust_list: usize,
@@ -88,6 +90,7 @@ impl ProcessState {
             fd_flags: BTreeMap::new(),
             blocks: BTreeMap::new(),
             block_offsets: BTreeMap::new(),
+            epolls: BTreeMap::new(),
             ipv6_fds: BTreeMap::new(),
             robust_list: 0,
             robust_list_len: 0,

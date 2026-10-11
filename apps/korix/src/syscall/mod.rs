@@ -97,6 +97,11 @@ pub const SYS_SOCKET: usize = 198;
 pub const SYS_CONNECT: usize = 203;
 pub const SYS_BIND: usize = 200;
 pub const SYS_LISTEN: usize = 201;
+pub const SYS_EPOLL_CREATE1: usize = 20;
+pub const SYS_EPOLL_CREATE: usize = 1042;
+pub const SYS_EPOLL_CTL: usize = 21;
+pub const SYS_EPOLL_PWAIT: usize = 22;
+
 pub const SYS_COPY_FILE_RANGE: usize = 285;
 pub const SYS_ACCEPT: usize = 202;
 pub const SYS_CHROOT: usize = 51;
@@ -851,6 +856,10 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_CONNECT => sys_connect(args[0], args[1], args[2]),
         SYS_BIND => sys_bind(args[0], args[1], args[2]),
         SYS_LISTEN => sys_listen(args[0], args[1]),
+        SYS_EPOLL_CREATE1 => sys_epoll_create1(args[0]),
+        SYS_EPOLL_CREATE => sys_epoll_create1(args[0]),
+        SYS_EPOLL_CTL => sys_epoll_ctl(args[0], args[1], args[2], args[3]),
+        SYS_EPOLL_PWAIT => sys_epoll_wait(args[0], args[1], args[2], args[3] as i32),
         SYS_ACCEPT => -38, // no incoming-connection machinery
         SYS_CHROOT => sys_chroot(args[0]),
         SYS_COPY_FILE_RANGE => sys_copy_file_range(args[0], args[1], args[2], args[3], args[4]),
@@ -1210,6 +1219,183 @@ fn sys_copy_file_range(
         }
     }
     copied as isize
+}
+
+// --- epoll ---------------------------------------------------------------
+
+/// Registered interest set for one epoll instance: fd -> events.
+struct EpollSet {
+    interests: BTreeMap<usize, u32>,
+}
+static EPOLL_REGISTRY: Mutex<BTreeMap<usize, Arc<Mutex<EpollSet>>>> = Mutex::new(BTreeMap::new());
+static NEXT_EPOLL_ID: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+
+const EPOLLIN: u32 = 0x001;
+const EPOLLOUT: u32 = 0x004;
+const EPOLLERR: u32 = 0x008;
+const EPOLLHUP: u32 = 0x010;
+const EPOLL_CTL_ADD: usize = 1;
+const EPOLL_CTL_DEL: usize = 2;
+const EPOLL_CTL_MOD: usize = 3;
+
+/// epoll_create1(2): allocate an interest set, returned as a descriptor.
+fn sys_epoll_create1(_flags: usize) -> isize {
+    let set = Arc::new(Mutex::new(EpollSet {
+        interests: BTreeMap::new(),
+    }));
+    let id = NEXT_EPOLL_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    EPOLL_REGISTRY.lock().insert(id, set);
+    // Descriptor number = the id, tracked in the process's epolls map.
+    let registered = crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        let fd = next_fd(&process);
+        process.epolls.insert(fd, id);
+        fd
+    });
+    match registered {
+        Some(fd) => fd as isize,
+        None => {
+            EPOLL_REGISTRY.lock().remove(&id);
+            -24
+        }
+    }
+}
+
+/// True when `fd` belongs to an epoll instance of the current process.
+fn epoll_id(fd: usize) -> Option<usize> {
+    crate::sched::current_process().and_then(|process| process.lock().epolls.get(&fd).copied())
+}
+
+/// epoll_ctl(2): add/modify/remove an interest entry.
+fn sys_epoll_ctl(epfd: usize, op: usize, fd: usize, event: usize) -> isize {
+    let Some(instance) = epoll_id(epfd) else {
+        return -9;
+    };
+    let Some(set) = EPOLL_REGISTRY.lock().get(&instance).cloned() else {
+        return -9;
+    };
+    let mut set = set.lock();
+    match op {
+        EPOLL_CTL_ADD => {
+            if set.interests.contains_key(&fd) {
+                return -17; // EEXIST
+            }
+            let events = if event != 0 {
+                // struct epoll_event { u32 events; epoll_data_t data; }
+                read_user::<u32>(event).unwrap_or(0)
+            } else {
+                0
+            };
+            set.interests.insert(fd, events);
+            0
+        }
+        EPOLL_CTL_DEL => {
+            set.interests.remove(&fd);
+            0
+        }
+        EPOLL_CTL_MOD => {
+            if !set.interests.contains_key(&fd) {
+                return -2; // ENOENT
+            }
+            let events = if event != 0 {
+                read_user::<u32>(event).unwrap_or(0)
+            } else {
+                0
+            };
+            set.interests.insert(fd, events);
+            0
+        }
+        _ => -22,
+    }
+}
+
+/// epoll_pwait/epoll_wait(2): report currently-ready descriptors.  The
+/// readiness rules mirror poll(2); no timeout blocking yet beyond a
+/// coarse sleep loop.
+fn sys_epoll_wait(epfd: usize, events: usize, maxevents: usize, timeout: i32) -> isize {
+    let Some(instance) = epoll_id(epfd) else {
+        return -9;
+    };
+    let Some(set) = EPOLL_REGISTRY.lock().get(&instance).cloned() else {
+        return -9;
+    };
+    if maxevents == 0 || events == 0 {
+        return -22;
+    }
+    if checked_user_range(events, maxevents * 16, true).is_none() {
+        return -14;
+    }
+    let interests = set.lock().interests.clone();
+    let report = |out: usize| -> isize {
+        let mut ready = 0;
+        let mut cursor = out;
+        for (&fd, &wanted) in &interests {
+            if ready as usize >= maxevents {
+                break;
+            }
+            let mut revents: u32 = 0;
+            let is_stdio = fd <= 2;
+            let is_pipe = pipe_id(fd).is_some();
+            let is_socket = socket_id(fd).is_ok();
+            let is_file = current_file(fd).is_some();
+            if !is_stdio && !is_pipe && !is_socket && !is_file {
+                revents = EPOLLERR | EPOLLHUP;
+            } else {
+                if wanted & EPOLLIN != 0 {
+                    let readable = (fd == 0 && rx_has_data())
+                        || pipe_readable(fd)
+                        || socket_id(fd).is_ok_and(crate::net::has_data)
+                        || is_file;
+                    if readable {
+                        revents |= EPOLLIN;
+                    }
+                }
+                if wanted & EPOLLOUT != 0 {
+                    if (is_pipe && pipe_writable(fd)) || is_socket || is_file || fd == 1 || fd == 2
+                    {
+                        revents |= EPOLLOUT;
+                    }
+                }
+            }
+            if revents != 0 {
+                // musl's struct epoll_event is naturally aligned:
+                // { u32 events; pad; u64 data } — sizeof 16, data at +8.
+                if write_user::<u32>(cursor, &revents).is_none() {
+                    return -14;
+                }
+                if write_user::<u64>(cursor + 8, &(fd as u64)).is_none() {
+                    return -14;
+                }
+                cursor += 16;
+                ready += 1;
+            }
+        }
+        ready
+    };
+    let first = report(events);
+    if first != 0 {
+        return first;
+    }
+    if timeout == 0 {
+        return 0;
+    }
+    let deadline = if timeout > 0 {
+        Some(kor_arch::now() + core::time::Duration::from_millis(timeout as u64))
+    } else {
+        None
+    };
+    loop {
+        kor_sched::sleep(core::time::Duration::from_millis(10));
+        let ready = report(events);
+        if ready != 0 {
+            return ready;
+        }
+        if let Some(limit) = deadline {
+            if kor_arch::now() >= limit {
+                return 0;
+            }
+        }
+    }
 }
 
 fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
@@ -1735,6 +1921,21 @@ fn pipe_close(fd: usize) {
 
 /// True when a pipe read-end has buffered data or its writer has closed
 /// (EOF also reports readable, matching poll(2) semantics).
+
+/// True when a pipe write-end has room for more data.
+fn pipe_writable(fd: usize) -> bool {
+    let Some((pipe, false)) = pipe_id(fd) else {
+        return false;
+    };
+    match PIPE_REGISTRY.lock().get(&pipe) {
+        Some(buffer) => {
+            let pipe = buffer.lock();
+            pipe.data.len() - (pipe.write_pos - pipe.read_pos) > 0
+        }
+        None => false,
+    }
+}
+
 fn pipe_readable(fd: usize) -> bool {
     let Some((pipe, true)) = pipe_id(fd) else {
         return false;
@@ -1843,7 +2044,11 @@ fn sys_poll(fds: usize, nfds: usize, timeout: i32) -> isize {
                     }
                 }
                 if events & POLLOUT != 0 {
-                    let writable = is_pipe || is_socket || is_file || fd == 1 || fd == 2;
+                    let writable = (is_pipe && pipe_writable(fd as usize))
+                        || is_socket
+                        || is_file
+                        || fd == 1
+                        || fd == 2;
                     if writable {
                         revents |= POLLOUT;
                     }
@@ -3412,6 +3617,13 @@ fn sys_close(fd: usize) -> isize {
             process.blocks.remove(&fd);
             process.block_offsets.remove(&fd);
         });
+        return 0;
+    }
+    if let Some(instance) = epoll_id(fd) {
+        crate::sched::with_current_process(|process| {
+            process.lock().epolls.remove(&fd);
+        });
+        EPOLL_REGISTRY.lock().remove(&instance);
         return 0;
     }
     if pipe_id(fd).is_some() {
