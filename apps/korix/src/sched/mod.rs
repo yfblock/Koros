@@ -35,6 +35,8 @@ pub struct ProcessState {
     pub mmap_next: usize,
     pub executable: String,
     pub cwd: String,
+    /// chroot(2) root prefix ("" = no chroot).
+    pub root: String,
     pub clear_child_tid: usize,
     pub files: BTreeMap<usize, crate::syscall::SharedFile>,
     pub stdio: BTreeMap<usize, usize>,
@@ -76,6 +78,7 @@ impl ProcessState {
             mmap_next: crate::user::layout::MMAP_BASE,
             executable: "/bin/busybox".to_string(),
             cwd: "/".to_string(),
+            root: String::new(),
             clear_child_tid: 0,
             files: BTreeMap::new(),
             stdio: BTreeMap::new(),

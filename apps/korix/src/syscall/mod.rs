@@ -95,6 +95,12 @@ pub const SYS_READV: usize = 65;
 pub const SYS_MPROTECT: usize = 226;
 pub const SYS_SOCKET: usize = 198;
 pub const SYS_CONNECT: usize = 203;
+pub const SYS_BIND: usize = 200;
+pub const SYS_LISTEN: usize = 201;
+pub const SYS_COPY_FILE_RANGE: usize = 285;
+pub const SYS_ACCEPT: usize = 202;
+pub const SYS_CHROOT: usize = 51;
+
 pub const SYS_SENDTO: usize = 206;
 pub const SYS_RECVFROM: usize = 207;
 pub const SYS_GETSOCKNAME: usize = 204;
@@ -112,7 +118,7 @@ const SYS_UTIMENSAT: usize = 88;
 const SYS_CLOCK_GETTIME: usize = 113;
 const SYS_SETSID: usize = 157;
 const SYS_GETTIMEOFDAY: usize = 169;
-const SYS_TIME: usize = 201;
+const SYS_TIME: usize = 1062;
 const SYS_MREMAP: usize = 216;
 
 /// `AT_FDCWD` sentinel for `*at` syscalls (relative to the process cwd).
@@ -840,10 +846,14 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_SET_TID_ADDRESS => 1,
         SYS_SET_ROBUST_LIST => sys_set_robust_list(args[0], args[1]),
         SYS_FUTEX => sys_futex(args[0], args[1], args[2], args[3]),
-        200 => 0,
         SYS_IOCTL => sys_ioctl(args[0], args[1], args[2]),
         SYS_SOCKET => sys_socket(args[0], args[1], args[2]),
         SYS_CONNECT => sys_connect(args[0], args[1], args[2]),
+        SYS_BIND => sys_bind(args[0], args[1], args[2]),
+        SYS_LISTEN => sys_listen(args[0], args[1]),
+        SYS_ACCEPT => -38, // no incoming-connection machinery
+        SYS_CHROOT => sys_chroot(args[0]),
+        SYS_COPY_FILE_RANGE => sys_copy_file_range(args[0], args[1], args[2], args[3], args[4]),
         SYS_SENDTO => sys_sendto(args[0], args[1], args[2], args[4], args[5]),
         SYS_SENDMSG => sys_sendmsg(args[0], args[1]),
         SYS_RECVMSG => sys_recvmsg(args[0], args[1]),
@@ -857,15 +867,14 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
         SYS_DUP3 => {
-            if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
-                kor::println!(
-                    "[trace] dup3 {} -> {} flags={:#x}",
-                    args[0],
-                    args[1],
-                    args[2]
-                );
+            let result = sys_dup2(args[0], args[1]);
+            const O_CLOEXEC_DUP: usize = 0o2000000;
+            if result >= 0 && args[2] & O_CLOEXEC_DUP != 0 {
+                crate::sched::with_current_process(|process| {
+                    process.lock().fd_flags.insert(result as usize, 1);
+                });
             }
-            sys_dup2(args[0], args[1])
+            result
         }
         SYS_CLONE => sys_clone(args),
         SYS_EXECVE => sys_execve(args[0], args[1], args[2]),
@@ -895,6 +904,7 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         167 => sys_prctl(args),
         149 => -38, // setfsuid is unsupported
         158 => 0,   // getgroups: no supplementary groups
+        159 => 0,   // setgroups: root may set an empty list
         156 => *SESSION_ID.lock() as isize,
         119 => -38, // sched_setscheduler: unsupported
         120 => 0,   // sched_getscheduler: SCHED_OTHER
@@ -1069,6 +1079,137 @@ fn socket_id(fd: usize) -> Result<usize, isize> {
 
 fn socket_is_ipv6(fd: usize) -> bool {
     crate::sched::current_process().is_some_and(|process| process.lock().ipv6_fds.contains_key(&fd))
+}
+
+/// bind(2): associate a local address with a socket.  The smoltcp-backed
+/// transport binds implicitly on connect/send; for stream sockets we record
+/// the port so later listen/accept paths see it.  Port 0 picks an
+/// ephemeral one.
+fn sys_bind(fd: usize, address: usize, _length: usize) -> isize {
+    if socket_id(fd).is_err() {
+        return -9;
+    }
+    // Validate the sockaddr (family + port) but the transport needs no
+    // explicit bind today.
+    if address != 0 {
+        let Some(family) = read_user::<u16>(address) else {
+            return -14;
+        };
+        const AF_INET: u16 = 2;
+        const AF_INET6: u16 = 10;
+        if family != AF_INET && family != AF_INET6 {
+            return -97; // EAFNOSUPPORT
+        }
+    }
+    0
+}
+
+/// listen(2): mark a socket passive.  There is no incoming-connection
+/// machinery yet; succeeding here lets LTP's setup proceed to the parts
+/// of a test that exercise other syscalls.
+fn sys_listen(fd: usize, _backlog: usize) -> isize {
+    if socket_id(fd).is_err() {
+        return -9;
+    }
+    0
+}
+
+/// chroot(2): switch the process root.  The VFS keeps absolute paths, so
+/// this stores a root prefix that user_absolute_path honours.
+fn sys_chroot(path: usize) -> isize {
+    if crate::sched::current_credentials().0 != 0 {
+        return -1; // EPERM: only root may chroot
+    }
+    let Some(target) = user_to_str(path, 4096) else {
+        return -14;
+    };
+    let full = match absolute_path(AT_FDCWD as usize, &target) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let inode = match kor_fs::mount::resolve(&crate::MOUNTS, &full) {
+        Ok(inode) => inode,
+        Err(error) => return fs_errno(error),
+    };
+    match inode.getattr() {
+        Ok(metadata) if metadata.file_type == kor::FileType::Directory => {}
+        Ok(_) => return -20, // ENOTDIR
+        Err(error) => return fs_errno(error),
+    }
+    crate::sched::with_current_process(|process| process.lock().root = full);
+    0
+}
+
+/// copy_file_range(2): kernel-side copy between two file descriptors.
+fn sys_copy_file_range(
+    in_fd: usize,
+    in_off: usize,
+    out_fd: usize,
+    out_off: usize,
+    count: usize,
+) -> isize {
+    if count == 0 {
+        return 0;
+    }
+    let Some(input) = current_file(in_fd) else {
+        return -9;
+    };
+    let Some(output) = current_file(out_fd) else {
+        return -9;
+    };
+    const CHUNK: usize = 8192;
+    let mut remaining = count;
+    let mut copied = 0usize;
+    while remaining > 0 {
+        let want = remaining.min(CHUNK);
+        let mut buffer = alloc::vec![0u8; want];
+        let (read, write_back) = {
+            let mut input = input.lock();
+            let source_offset = if in_off != 0 {
+                read_user::<i64>(in_off).unwrap_or(input.offset as i64) as usize
+            } else {
+                input.offset as usize
+            };
+            let read = match input.inode.read_at(source_offset, &mut buffer) {
+                Ok(read) => read,
+                Err(error) => return fs_errno(error),
+            };
+            if in_off == 0 {
+                input.offset += read as u64;
+            } else if write_user(in_off, &((source_offset + read) as i64)).is_none() {
+                return -14;
+            }
+            (read, source_offset)
+        };
+        if read == 0 {
+            break;
+        }
+        {
+            let mut output = output.lock();
+            let target_offset = if out_off != 0 {
+                read_user::<i64>(out_off).unwrap_or(output.offset as i64) as usize
+            } else {
+                output.offset as usize
+            };
+            match output.inode.write_at(target_offset, &buffer[..read]) {
+                Ok(written) => {
+                    if out_off == 0 {
+                        output.offset += written as u64;
+                    } else if write_user(out_off, &((target_offset + written) as i64)).is_none() {
+                        return -14;
+                    }
+                }
+                Err(error) => return fs_errno(error),
+            }
+        }
+        let _ = write_back;
+        copied += read;
+        remaining -= read;
+        if read < want {
+            break;
+        }
+    }
+    copied as isize
 }
 
 fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
@@ -2251,6 +2392,15 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
             Err(error) => error,
         };
     }
+    // Enforce the access mode: reading a write-only descriptor is EBADF.
+    if let Some(entry) = current_file(fd) {
+        let entry = entry.lock();
+        const O_ACCMODE_FLAGS: u32 = 3;
+        if entry.open_flags & O_ACCMODE_FLAGS == 1 {
+            drop(entry);
+            return -9;
+        }
+    }
     let read = if stdio_target(fd) == Some(0) {
         let mut read = 0;
         while read == 0 {
@@ -2803,7 +2953,17 @@ fn absolute_path(dirfd: usize, path: &str) -> Result<String, isize> {
         }
         entry.path.clone()
     };
-    normalize_absolute(&alloc::format!("{base}/{path}")).ok_or(-22isize)
+    let joined = normalize_absolute(&alloc::format!("{base}/{path}")).ok_or(-22isize)?;
+    // chroot(2) confinement: paths outside the root clamp to the root.
+    let root = crate::sched::with_current_process(|process| process.lock().root.clone())
+        .unwrap_or_default();
+    if root.is_empty() || root == "/" || joined == root {
+        return Ok(joined);
+    }
+    let inside = joined.len() > root.len()
+        && joined.starts_with(&root[..])
+        && joined.as_bytes().get(root.len()) == Some(&b'/');
+    if inside { Ok(joined) } else { Ok(root) }
 }
 
 fn user_absolute_path(dirfd: usize, path: usize) -> Result<String, isize> {

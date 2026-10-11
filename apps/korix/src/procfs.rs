@@ -298,6 +298,7 @@ impl INode for ProcNode {
                 "stat" => Ok(ProcNode::process_file(*pid, "stat")),
                 "status" => Ok(ProcNode::process_file(*pid, "status")),
                 "cmdline" => Ok(ProcNode::process_file(*pid, "cmdline")),
+                "mounts" => Ok(ProcNode::file("mounts", proc_mounts)),
                 _ => Err(FsError::NotFound),
             },
             Kind::File(_) => Err(FsError::NotDirectory),
@@ -389,6 +390,7 @@ impl INode for ProcNode {
                 ("stat".to_string(), Self::FILE_MODE),
                 ("status".to_string(), Self::FILE_MODE),
                 ("cmdline".to_string(), Self::FILE_MODE),
+                ("mounts".to_string(), Self::FILE_MODE),
             ]),
             Kind::File(_) => Err(FsError::NotDirectory),
         }
