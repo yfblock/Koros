@@ -3,7 +3,7 @@
 .opencode/
 opencode.jsonc
 session-*.md
-/tools/os-images/ext2-test.img
+/tools/os-images/*.img
 /tools/os-images/mount/
 /tools/os-images/korix-*.img
 ext2-plan.md
