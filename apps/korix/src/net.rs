@@ -33,7 +33,7 @@ static STACK: Mutex<Option<NetworkStack>> = Mutex::new(None);
 static NEXT_SOCKET: AtomicUsize = AtomicUsize::new(1);
 static NEXT_PORT: AtomicU16 = AtomicU16::new(49152);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum SocketKind {
     Tcp,
     Udp,
@@ -44,6 +44,8 @@ struct SocketState {
     handle: SocketHandle,
     local_port: u16,
     remote: Option<([u8; 4], u16)>,
+    /// Set when listen() put this TCP socket into the passive LISTEN state.
+    listening: bool,
 }
 
 struct NetworkStack {
@@ -221,6 +223,7 @@ pub fn socket(kind: i32) -> Result<usize, isize> {
             handle,
             local_port,
             remote: None,
+            listening: false,
         },
     );
     Ok(id)
@@ -237,6 +240,140 @@ pub fn close(id: usize) -> bool {
     };
     stack.sockets.remove(state.handle);
     true
+}
+
+/// Bind a socket to a specific local port (bind(2)); port 0 picks an
+/// ephemeral one.  TCP binds take effect at listen(); UDP sockets are
+/// re-bound in smoltcp directly.
+pub fn bind(id: usize, port: u16) -> Result<(), isize> {
+    let mut guard = STACK.lock();
+    let stack = guard.as_mut().ok_or(-100isize)?;
+    let state = stack.states.get_mut(&id).ok_or(-9isize)?;
+    let chosen = if port == 0 {
+        NEXT_PORT.fetch_add(1, Ordering::Relaxed)
+    } else {
+        port
+    };
+    match state.kind {
+        SocketKind::Tcp => {
+            // smoltcp binds at listen() time; record for then.
+            state.local_port = chosen;
+        }
+        SocketKind::Udp => {
+            let handle = state.handle;
+            state.local_port = chosen;
+            let socket = stack.sockets.get_mut::<udp::Socket>(handle);
+            if socket.is_open() {
+                socket.close();
+            }
+            socket.bind(chosen).map_err(|_| -98isize)?;
+        }
+    }
+    Ok(())
+}
+
+/// Put a TCP socket into the passive LISTEN state on its bound port.
+pub fn listen(id: usize) -> Result<(), isize> {
+    let mut guard = STACK.lock();
+    let stack = guard.as_mut().ok_or(-100isize)?;
+    let (handle, port) = {
+        let state = stack.states.get_mut(&id).ok_or(-9isize)?;
+        if state.kind != SocketKind::Tcp {
+            return Err(-95); // EOPNOTSUPP
+        }
+        state.listening = true;
+        (state.handle, state.local_port)
+    };
+    stack
+        .sockets
+        .get_mut::<tcp::Socket>(handle)
+        .listen(port)
+        .map_err(|_| -98isize)?;
+    Ok(())
+}
+
+#[expect(dead_code, reason = "kept for the explicit-port listen call site")]
+/// Put a TCP socket into the passive LISTEN state on `port`.
+pub fn listen_on(id: usize, port: u16) -> Result<(), isize> {
+    let mut guard = STACK.lock();
+    let stack = guard.as_mut().ok_or(-100isize)?;
+    let state = stack.states.get_mut(&id).ok_or(-9isize)?;
+    if state.kind != SocketKind::Tcp {
+        return Err(-95); // EOPNOTSUPP
+    }
+    let handle = state.handle;
+    state.listening = true;
+    state.local_port = port;
+    stack
+        .sockets
+        .get_mut::<tcp::Socket>(handle)
+        .listen(port)
+        .map_err(|_| -98isize)?;
+    Ok(())
+}
+
+/// Accept one established incoming connection on a listening socket.
+/// Returns the new socket id paired with the peer endpoint.  Blocks in a
+/// 10 ms poll cadence until a connection arrives.
+pub fn accept(id: usize) -> Result<(usize, [u8; 4], u16), isize> {
+    let (handle, port) = {
+        let mut guard = STACK.lock();
+        let stack = guard.as_mut().ok_or(-100isize)?;
+        let state = stack.states.get_mut(&id).ok_or(-9isize)?;
+        if !state.listening {
+            return Err(-22); // EINVAL: not listening
+        }
+        (state.handle, state.local_port)
+    };
+    loop {
+        {
+            let mut guard = STACK.lock();
+            let stack = guard.as_mut().ok_or(-100isize)?;
+            let socket = stack.sockets.get_mut::<tcp::Socket>(handle);
+            if socket.is_active() {
+                let peer = socket.remote_endpoint().map(|endpoint| {
+                    #[allow(unreachable_patterns)]
+                    match endpoint.addr {
+                        smoltcp::wire::IpAddress::Ipv4(address) => {
+                            (address.octets(), endpoint.port)
+                        }
+                        _ => ([0u8; 4], endpoint.port),
+                    }
+                });
+                if let Some((ip, peer_port)) = peer {
+                    // The listening socket itself graduates to the accepted
+                    // connection; a fresh listening socket replaces it so
+                    // further accepts work.
+                    let new_id = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
+                    stack.states.insert(
+                        new_id,
+                        SocketState {
+                            kind: SocketKind::Tcp,
+                            handle,
+                            local_port: port,
+                            remote: Some((ip, peer_port)),
+                            listening: false,
+                        },
+                    );
+                    let replacement = stack.sockets.add(tcp::Socket::new(
+                        tcp::SocketBuffer::new(vec![0; RX_BUFFER_SIZE]),
+                        tcp::SocketBuffer::new(vec![0; TX_BUFFER_SIZE]),
+                    ));
+                    let _ = stack
+                        .sockets
+                        .get_mut::<tcp::Socket>(replacement)
+                        .listen(port);
+                    if let Some(state) = stack.states.get_mut(&id) {
+                        state.handle = replacement;
+                    }
+                    return Ok((new_id, ip, peer_port));
+                }
+            }
+        }
+        // Poll the interface while waiting for a connection.
+        poll();
+        core::hint::spin_loop();
+    }
 }
 
 /// Connect a socket to a remote IPv4 endpoint.

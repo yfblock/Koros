@@ -463,9 +463,19 @@ static PROCESS_GROUP: Mutex<usize> = Mutex::new(1);
 fn machine_context(context: &kor_arch::UserTrapContext) -> LinuxMachineContext {
     let mut regs = context.regs;
     regs[0] = context.pc;
+    let mut fp = [0u8; 528];
+    // riscv sigcontext fp state: 16-byte header, then f0-f31 (8 bytes each),
+    // then fcsr.  Callee-saved fs0-fs11 are f8..f19 at u64 slots 8..19.
+    const FP_DATA_OFFSET: usize = 16;
+    for (index, value) in context.fp_callee.iter().enumerate() {
+        let slot = FP_DATA_OFFSET + (8 + index) * 8;
+        fp[slot..slot + 8].copy_from_slice(&value.to_ne_bytes());
+    }
+    const FCSR_OFFSET: usize = 16 + 32 * 8;
+    fp[FCSR_OFFSET..FCSR_OFFSET + 8].copy_from_slice(&context.fcsr.to_ne_bytes());
     LinuxMachineContext {
         regs,
-        fp_and_extensions: [0; 528],
+        fp_and_extensions: fp,
     }
 }
 
@@ -549,14 +559,31 @@ fn trap_context(machine: &LinuxMachineContext) -> Option<kor_arch::UserTrapConte
     let mut regs = machine.regs;
     let pc = regs[0];
     regs[0] = 0;
+    // Recover the callee-saved FP registers (fs0-fs11) and fcsr from the
+    // saved frame — zeroing them corrupts FP-using libc code after a
+    // signal round trip (riscv64 memcpy leans on FP registers).
+    const FP_DATA_OFFSET: usize = 16;
+    let mut fp_callee = [0u64; 12];
+    for (index, slot) in fp_callee.iter_mut().enumerate() {
+        let offset = FP_DATA_OFFSET + (8 + index) * 8;
+        let bytes: [u8; 8] = machine.fp_and_extensions[offset..offset + 8]
+            .try_into()
+            .ok()?;
+        *slot = u64::from_ne_bytes(bytes);
+    }
+    const FCSR_OFFSET: usize = 16 + 32 * 8;
+    let fcsr_bytes: [u8; 8] = machine.fp_and_extensions[FCSR_OFFSET..FCSR_OFFSET + 8]
+        .try_into()
+        .ok()?;
+    let fcsr = u64::from_ne_bytes(fcsr_bytes) as usize;
     Some(kor_arch::UserTrapContext {
         regs,
         pc,
         status: 0,
         sp: regs[2],
         tls: regs[4],
-        fp_callee: [0; 12],
-        fcsr: 0,
+        fp_callee,
+        fcsr,
     })
 }
 
@@ -860,7 +887,39 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_EPOLL_CREATE => sys_epoll_create1(args[0]),
         SYS_EPOLL_CTL => sys_epoll_ctl(args[0], args[1], args[2], args[3]),
         SYS_EPOLL_PWAIT => sys_epoll_wait(args[0], args[1], args[2], args[3] as i32),
-        SYS_ACCEPT => -38, // no incoming-connection machinery
+        SYS_ACCEPT => {
+            let Ok(listener) = socket_id(args[0]) else {
+                return -9;
+            };
+            if crate::sched::with_current_process(|process| {
+                let process = process.lock();
+                process.ipv6_fds.contains_key(&args[0])
+            })
+            .unwrap_or(false)
+            {
+                return -95; // EOPNOTSUPP on UDP
+            }
+            match crate::net::accept(listener) {
+                Ok((socket, ip, port)) => {
+                    let registered = crate::sched::with_current_process(|process| {
+                        let mut process = process.lock();
+                        let fd = next_fd(&process);
+                        process.sockets.insert(fd, socket);
+                        fd
+                    });
+                    let fd = registered.unwrap_or(usize::MAX);
+                    // sockaddr_in out: family, port, addr
+                    if args[1] != 0 && fd != usize::MAX {
+                        let family = 2u16.to_be();
+                        let _ = write_user::<u16>(args[1], &family);
+                        let _ = write_user::<u16>(args[1] + 2, &port.to_be());
+                        let _ = write_user::<u32>(args[1] + 4, &u32::from_be_bytes(ip));
+                    }
+                    fd as isize
+                }
+                Err(errno) => errno,
+            }
+        }
         SYS_CHROOT => sys_chroot(args[0]),
         SYS_COPY_FILE_RANGE => sys_copy_file_range(args[0], args[1], args[2], args[3], args[4]),
         SYS_SENDTO => sys_sendto(args[0], args[1], args[2], args[4], args[5]),
@@ -1095,32 +1154,42 @@ fn socket_is_ipv6(fd: usize) -> bool {
 /// the port so later listen/accept paths see it.  Port 0 picks an
 /// ephemeral one.
 fn sys_bind(fd: usize, address: usize, _length: usize) -> isize {
-    if socket_id(fd).is_err() {
+    let Ok(socket) = socket_id(fd) else {
         return -9;
+    };
+    if address == 0 {
+        return -22;
     }
-    // Validate the sockaddr (family + port) but the transport needs no
-    // explicit bind today.
-    if address != 0 {
-        let Some(family) = read_user::<u16>(address) else {
-            return -14;
-        };
-        const AF_INET: u16 = 2;
-        const AF_INET6: u16 = 10;
-        if family != AF_INET && family != AF_INET6 {
-            return -97; // EAFNOSUPPORT
-        }
+    // sockaddr_in { u16 family; u16 port_be; u32 addr_be; }
+    let Some(family) = read_user::<u16>(address) else {
+        return -14;
+    };
+    const AF_INET: u16 = 2;
+    const AF_INET6: u16 = 10;
+    if family != AF_INET && family != AF_INET6 {
+        return -97; // EAFNOSUPPORT
     }
-    0
+    let Some(port_raw) = read_user::<u16>(address + 2) else {
+        return -14;
+    };
+    let port = u16::from_be(port_raw);
+    match crate::net::bind(socket, port) {
+        Ok(()) => 0,
+        Err(errno) => errno,
+    }
 }
 
 /// listen(2): mark a socket passive.  There is no incoming-connection
 /// machinery yet; succeeding here lets LTP's setup proceed to the parts
 /// of a test that exercise other syscalls.
 fn sys_listen(fd: usize, _backlog: usize) -> isize {
-    if socket_id(fd).is_err() {
+    let Ok(socket) = socket_id(fd) else {
         return -9;
+    };
+    match crate::net::listen(socket) {
+        Ok(()) => 0,
+        Err(errno) => errno,
     }
-    0
 }
 
 /// chroot(2): switch the process root.  The VFS keeps absolute paths, so
