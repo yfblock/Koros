@@ -19,6 +19,9 @@ pub struct ProcessState {
     /// beyond the initial setuid/setgid).
     pub uid: u32,
     pub gid: u32,
+    /// Effective credentials (faccessat/chdir checks); real uid/gid above.
+    pub euid: u32,
+    pub egid: u32,
     /// User CPU time in scheduler ticks (procfs utime).
     pub utime_ticks: u64,
     address_space: Option<AddressSpace>,
@@ -41,6 +44,10 @@ pub struct ProcessState {
     pub pipe_flags: BTreeMap<usize, u32>,
     /// Per-fd FD_* flags (F_GETFD/F_SETFD) for every descriptor kind.
     pub fd_flags: BTreeMap<usize, u32>,
+    /// Raw block-device descriptors (LTP scratch device): fd -> registry index.
+    pub blocks: BTreeMap<usize, usize>,
+    /// File offsets for raw block descriptors.
+    pub block_offsets: BTreeMap<usize, usize>,
     /// File descriptors created through AF_INET6; transport remains IPv4-only.
     pub ipv6_fds: BTreeMap<usize, ()>,
     pub robust_list: usize,
@@ -55,6 +62,8 @@ impl ProcessState {
             parent,
             uid: 0,
             gid: 0,
+            euid: 0,
+            egid: 0,
             utime_ticks: 0,
             address_space: Some(address_space),
             exit_code: 0,
@@ -74,6 +83,8 @@ impl ProcessState {
             pipes: BTreeMap::new(),
             pipe_flags: BTreeMap::new(),
             fd_flags: BTreeMap::new(),
+            blocks: BTreeMap::new(),
+            block_offsets: BTreeMap::new(),
             ipv6_fds: BTreeMap::new(),
             robust_list: 0,
             robust_list_len: 0,
@@ -209,12 +220,12 @@ pub fn current_credential(user: bool) -> u32 {
         .unwrap_or(0)
 }
 
-/// The caller's (uid, gid) pair.
+/// The caller's effective (uid, gid) pair.
 pub fn current_credentials() -> (u32, u32) {
     current_process()
         .map(|process| {
             let process = process.lock();
-            (process.uid, process.gid)
+            (process.euid, process.egid)
         })
         .unwrap_or((0, 0))
 }

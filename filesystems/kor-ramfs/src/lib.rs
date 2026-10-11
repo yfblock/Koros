@@ -284,10 +284,22 @@ impl INode for RamINode {
             return Err(FsError::NotDirectory);
         }
         let children = self.children.lock();
-        Ok(children
+        let mut entries: Vec<(String, u32)> = children
             .iter()
             .map(|(name, node)| (name.clone(), node.ino))
-            .collect())
+            .collect();
+        // POSIX directories list "." and ".." — synthesize them like ext2.
+        let dot_ino = self.ino;
+        let dotdot_ino = self
+            .parent
+            .lock()
+            .as_ref()
+            .and_then(|weak| weak.upgrade())
+            .map(|parent| parent.ino)
+            .unwrap_or(dot_ino);
+        entries.push((".".to_string(), dot_ino));
+        entries.push(("..".to_string(), dotdot_ino));
+        Ok(entries)
     }
 
     fn ino(&self) -> u32 {

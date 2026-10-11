@@ -82,6 +82,10 @@ ifdef EXT2_IMG
     QEMU_EXEC += -global virtio-mmio.force-legacy=false -drive file=$(EXT2_IMG),format=raw,if=none,id=ext2drv -device virtio-blk-device,drive=ext2drv
     ifeq ($(BIN), korix)
       QEMU_EXEC += -netdev user,id=net0 -device virtio-net-device,netdev=net0
+      # Second blank disk exposed as /dev/vdb for LTP scratch-device tests.
+      SCRATCH_IMG ?= tools/os-images/scratch.img
+      $(shell test -f $(SCRATCH_IMG) || { mkdir -p tools/os-images; dd if=/dev/zero of=$(SCRATCH_IMG) bs=1M count=16 status=none; })
+      QEMU_EXEC += -drive file=$(SCRATCH_IMG),format=raw,if=none,id=scratchdrv -device virtio-blk-device,drive=scratchdrv
     endif
   endif
 endif

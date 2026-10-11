@@ -765,8 +765,10 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         }
         SYS_GETUID | SYS_GETEUID => crate::sched::current_credential(true) as isize,
         SYS_GETGID | SYS_GETEGID => crate::sched::current_credential(false) as isize,
-        SYS_SETUID | SYS_SETREUID | SYS_SETRESUID => sys_setuid(args[0]),
-        SYS_SETGID | SYS_SETREGID | SYS_SETRESGID => sys_setgid(args[0]),
+        SYS_SETUID => sys_setuid(args[0]),
+        SYS_SETGID => sys_setgid(args[0]),
+        SYS_SETREUID | SYS_SETRESUID => sys_setresuid(args[0], args[1], args[2]),
+        SYS_SETREGID | SYS_SETRESGID => sys_setresgid(args[0], args[1], args[2]),
         SYS_FACCESSAT => sys_faccessat(args[0], args[1], args[2], args[3]),
         SYS_PIPE2 => sys_pipe2(args[0], args[1]),
         SYS_PREAD64 => sys_pread64(args[0], args[1], args[2], args[3]),
@@ -854,7 +856,17 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_FCNTL => sys_fcntl(args[0], args[1], args[2]),
         SYS_DUP => sys_dup(args[0]),
         SYS_DUP2 => sys_dup2(args[0], args[1]),
-        SYS_DUP3 => sys_dup2(args[0], args[1]),
+        SYS_DUP3 => {
+            if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+                kor::println!(
+                    "[trace] dup3 {} -> {} flags={:#x}",
+                    args[0],
+                    args[1],
+                    args[2]
+                );
+            }
+            sys_dup2(args[0], args[1])
+        }
         SYS_CLONE => sys_clone(args),
         SYS_EXECVE => sys_execve(args[0], args[1], args[2]),
         SYS_WAIT4 => sys_wait4(args[0], args[1], args[2]),
@@ -862,7 +874,8 @@ fn dispatch_inner(num: usize, args: &[usize]) -> isize {
         SYS_TGKILL => sys_kill(args[1], args[2]),
         SYS_CHDIR => sys_chdir(args[0]),
         SYS_READLINKAT => sys_readlinkat(args[0], args[1], args[2], args[3]),
-        SYS_MOUNT | SYS_UMOUNT2 => -38,
+        SYS_MOUNT => sys_mount(args[0], args[1], args[2], args[3]),
+        SYS_UMOUNT2 => sys_umount2(args[0]),
         SYS_MREMAP => sys_mremap(args[0], args[1], args[2], args[3]),
         SYS_FCHOWNAT | SYS_UTIMENSAT => 0,
         SYS_CLOCK_GETTIME => sys_clock_gettime(args[0], args[1]),
@@ -1317,6 +1330,17 @@ fn alloc_fd_flags(inode: Arc<dyn INode>, path: String, open_flags: u32) -> Optio
             open_flags,
         })),
     );
+    if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+        kor::println!(
+            "[trace] alloc_fd {fd} pid={} files={:?}",
+            process.pid,
+            process
+                .files
+                .keys()
+                .copied()
+                .collect::<alloc::vec::Vec<usize>>()
+        );
+    }
     Some(fd)
 }
 
@@ -1589,6 +1613,12 @@ fn sys_pread64(fd: usize, buf: usize, count: usize, offset: usize) -> isize {
     if checked_user_range(buf, count, true).is_none() {
         return -14;
     }
+    if is_block_fd(fd) {
+        crate::sched::with_current_process(|process| {
+            process.lock().block_offsets.insert(fd, offset);
+        });
+        return block_read(fd, buf, count);
+    }
     let entry = match current_file(fd) {
         Some(entry) => entry,
         None => return -9,
@@ -1608,6 +1638,12 @@ fn sys_pread64(fd: usize, buf: usize, count: usize, offset: usize) -> isize {
 }
 
 fn sys_pwrite64(fd: usize, buf: usize, count: usize, offset: usize) -> isize {
+    if is_block_fd(fd) {
+        crate::sched::with_current_process(|process| {
+            process.lock().block_offsets.insert(fd, offset);
+        });
+        return block_write(fd, buf, count);
+    }
     let mut data = alloc::vec![0u8; count];
     if copy_from_user(buf, &mut data).is_none() {
         return -14;
@@ -1943,15 +1979,22 @@ fn sys_umask(_mask: usize) -> isize {
     0o022
 }
 
-/// setuid(2): root may adopt any id; other ids may only re-adopt their own.
+const UID_NO_CHANGE: u32 = u32::MAX; // -1 in the Linux setres ABI
+
+/// setuid(2): privileged callers set real+effective+saved; unprivileged
+/// callers may only swap between their own values.
 fn sys_setuid(uid: usize) -> isize {
     let uid = uid as u32;
     crate::sched::with_current_process(|process| {
         let mut process = process.lock();
-        if process.uid != 0 && process.uid != uid {
+        if process.euid == 0 {
+            process.uid = uid;
+            process.euid = uid;
+        } else if uid == process.uid || uid == process.euid {
+            process.euid = uid;
+        } else {
             return -1; // EPERM
         }
-        process.uid = uid;
         0
     })
     .unwrap_or(-3)
@@ -1962,10 +2005,66 @@ fn sys_setgid(gid: usize) -> isize {
     let gid = gid as u32;
     crate::sched::with_current_process(|process| {
         let mut process = process.lock();
-        if process.gid != 0 && process.gid != gid {
+        if process.egid == 0 {
+            process.gid = gid;
+            process.egid = gid;
+        } else if gid == process.gid || gid == process.egid {
+            process.egid = gid;
+        } else {
             return -1; // EPERM
         }
-        process.gid = gid;
+        0
+    })
+    .unwrap_or(-3)
+}
+
+/// setresuid(2)/setreuid(2)/seteuid(2) (musl routes all three here).
+/// Any field may be -1 (u32::MAX) to stay unchanged; privileged callers
+/// set anything, unprivileged ones only values they already hold.
+fn sys_setresuid(ruid: usize, euid: usize, _suid: usize) -> isize {
+    let ruid = ruid as u32;
+    let euid = euid as u32;
+    crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        let privileged = process.euid == 0;
+        if !privileged {
+            for requested in [ruid, euid].into_iter().filter(|v| *v != UID_NO_CHANGE) {
+                if requested != process.uid && requested != process.euid {
+                    return -1; // EPERM
+                }
+            }
+        }
+        if ruid != UID_NO_CHANGE {
+            process.uid = ruid;
+        }
+        if euid != UID_NO_CHANGE {
+            process.euid = euid;
+        }
+        0
+    })
+    .unwrap_or(-3)
+}
+
+/// setresgid(2)/setregid(2)/setegid(2) — the gid mirror of [`sys_setresuid`].
+fn sys_setresgid(rgid: usize, egid: usize, _sgid: usize) -> isize {
+    let rgid = rgid as u32;
+    let egid = egid as u32;
+    crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        let privileged = process.egid == 0;
+        if !privileged {
+            for requested in [rgid, egid].into_iter().filter(|v| *v != UID_NO_CHANGE) {
+                if requested != process.gid && requested != process.egid {
+                    return -1; // EPERM
+                }
+            }
+        }
+        if rgid != UID_NO_CHANGE {
+            process.gid = rgid;
+        }
+        if egid != UID_NO_CHANGE {
+            process.egid = egid;
+        }
         0
     })
     .unwrap_or(-3)
@@ -2068,11 +2167,15 @@ fn sys_write(fd: usize, buf: usize, count: usize) -> isize {
         && socket_id(fd).is_err()
         && stdio_target(fd).is_none()
         && current_file(fd).is_none()
+        && !is_block_fd(fd)
     {
         return -9;
     }
     if pipe_id(fd).is_some() {
         return pipe_write(fd, buf, count);
+    }
+    if is_block_fd(fd) {
+        return block_write(fd, buf, count);
     }
     let mut data = alloc::vec![0u8; count];
     if copy_from_user(buf, &mut data).is_none() {
@@ -2110,7 +2213,20 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
         && socket_id(fd).is_err()
         && stdio_target(fd).is_none()
         && current_file(fd).is_none()
+        && !is_block_fd(fd)
     {
+        if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+            let dump = crate::sched::with_current_process(|p| {
+                let p = p.lock();
+                (
+                    p.files.keys().copied().collect::<alloc::vec::Vec<usize>>(),
+                    p.pid,
+                )
+            });
+            if let Some((files, pid)) = dump {
+                kor::println!("[trace] read EBADF fd={fd} pid={pid} files={:?}", files);
+            }
+        }
         return -9;
     }
     if checked_user_range(buf, count, true).is_none() {
@@ -2118,6 +2234,9 @@ fn sys_read(fd: usize, buf: usize, count: usize) -> isize {
     }
     if pipe_id(fd).is_some() {
         return pipe_read(fd, buf, count);
+    }
+    if is_block_fd(fd) {
+        return block_read(fd, buf, count);
     }
     let mut data = alloc::vec![0u8; count];
     if let Ok(socket) = socket_id(fd) {
@@ -2324,6 +2443,8 @@ fn sys_clone(args: &[usize]) -> isize {
             child.name = parent.name;
             child.uid = parent.uid;
             child.gid = parent.gid;
+            child.euid = parent.euid;
+            child.egid = parent.egid;
         }
         child.mmap_next = child_mmap_next;
         child.files = child_files;
@@ -2736,9 +2857,26 @@ fn sys_chdir(path: usize) -> isize {
         Ok(inode) => inode,
         Err(error) => return fs_errno(error),
     };
-    if inode.getattr().map_err(fs_errno).map(|meta| meta.file_type) != Ok(kor::FileType::Directory)
-    {
+    let metadata = match inode.getattr() {
+        Ok(metadata) => metadata,
+        Err(error) => return fs_errno(error),
+    };
+    if metadata.file_type != kor::FileType::Directory {
         return -20;
+    }
+    // Search permission: non-root needs the x bit on the target directory.
+    let (uid, gid) = crate::sched::current_credentials();
+    if uid != 0 {
+        let shift = if metadata.uid == uid {
+            6
+        } else if metadata.gid == gid {
+            3
+        } else {
+            0
+        };
+        if (metadata.mode >> shift) & 0o1 == 0 {
+            return -13; // EACCES
+        }
     }
     let Some(process) = crate::sched::current_process() else {
         return -9;
@@ -2822,7 +2960,201 @@ fn fs_errno(error: kor::FsError) -> isize {
     }
 }
 
+/// Open the second registered block device as a raw descriptor.
+fn open_block_device() -> isize {
+    let count = crate::registries::BLOCKS.lock_all().len();
+    if count < 2 {
+        return -6; // ENXIO: no scratch device
+    }
+    crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        let fd = next_fd(&process);
+        process.blocks.insert(fd, 1);
+        fd as isize
+    })
+    .unwrap_or(-9)
+}
+
+/// Read from a raw block-device descriptor at the file offset.
+fn block_read(fd: usize, buf: usize, count: usize) -> isize {
+    let pair = crate::sched::current_process().and_then(|state| {
+        let process = state.lock();
+        process
+            .blocks
+            .get(&fd)
+            .map(|index| (*index, process.block_offsets.get(&fd).copied().unwrap_or(0)))
+    });
+    let Some((device, offset)) = pair else {
+        return -9;
+    };
+    let Some(buffer) = crate::registries::BLOCKS.get(device) else {
+        return -9;
+    };
+    let block_size = buffer.block_size();
+    let mut data = alloc::vec![0u8; count];
+    let mut copied = 0usize;
+    let mut cursor = offset;
+    while copied < count {
+        let block = cursor / block_size;
+        let in_block = cursor % block_size;
+        let chunk = core::cmp::min(block_size - in_block, count - copied);
+        let mut block_buf = alloc::vec![0u8; block_size];
+        if buffer.read_block(block, &mut block_buf).is_err() {
+            return -5;
+        }
+        data[copied..copied + chunk].copy_from_slice(&block_buf[in_block..in_block + chunk]);
+        copied += chunk;
+        cursor += chunk;
+    }
+    if copy_to_user(buf, &data[..copied]).is_none() {
+        return -14;
+    }
+    crate::sched::with_current_process(|process| {
+        process.lock().block_offsets.insert(fd, offset + copied);
+    });
+    copied as isize
+}
+
+fn block_write(fd: usize, buf: usize, count: usize) -> isize {
+    let pair = crate::sched::current_process().and_then(|state| {
+        let process = state.lock();
+        process
+            .blocks
+            .get(&fd)
+            .map(|index| (*index, process.block_offsets.get(&fd).copied().unwrap_or(0)))
+    });
+    let Some((device, offset)) = pair else {
+        return -9;
+    };
+    let Some(buffer) = crate::registries::BLOCKS.get(device) else {
+        return -9;
+    };
+    let block_size = buffer.block_size();
+    let mut data = alloc::vec![0u8; count];
+    if copy_from_user(buf, &mut data).is_none() {
+        return -14;
+    }
+    let mut written = 0usize;
+    while written < count {
+        let file_off = offset + written;
+        let block = file_off / block_size;
+        let in_block = file_off % block_size;
+        let chunk = core::cmp::min(block_size - in_block, count - written);
+        let mut block_buf = alloc::vec![0u8; block_size];
+        if in_block != 0 || chunk != block_size {
+            if buffer.read_block(block, &mut block_buf).is_err() {
+                return -5;
+            }
+        }
+        block_buf[in_block..in_block + chunk].copy_from_slice(&data[written..written + chunk]);
+        if buffer.write_block(block, &block_buf).is_err() {
+            return -5;
+        }
+        written += chunk;
+    }
+    crate::sched::with_current_process(|process| {
+        let mut process = process.lock();
+        process.block_offsets.insert(fd, offset + written);
+    });
+    written as isize
+}
+
+/// True when `fd` is a raw block-device descriptor.
+fn is_block_fd(fd: usize) -> bool {
+    crate::sched::with_current_process(|process| process.lock().blocks.contains_key(&fd))
+        .unwrap_or(false)
+}
+
+/// mount(2): mount a block device (by /dev path) at a directory.
+fn sys_mount(source: usize, target: usize, filesystem_type: usize, _flags: usize) -> isize {
+    let Some(target_path) = user_to_str(target, 4096) else {
+        return -14;
+    };
+    let full_target = match absolute_path(AT_FDCWD as usize, &target_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    if kor_fs::mount::resolve(&crate::MOUNTS, &full_target).is_err() {
+        return -2; // ENOENT: mountpoint missing
+    }
+    const MS_REMOUNT: usize = 32;
+    const MS_RDONLY: usize = 1;
+    if _flags & MS_REMOUNT != 0 {
+        if _flags & MS_RDONLY != 0 {
+            READONLY_MOUNTS.lock().insert(full_target.clone(), ());
+        } else {
+            READONLY_MOUNTS.lock().remove(&full_target);
+        }
+        return match crate::MOUNTS.lock().longest_prefix(&full_target) {
+            Some(_) => 0,
+            None => -22,
+        };
+    }
+    if _flags & MS_RDONLY != 0 {
+        READONLY_MOUNTS.lock().insert(full_target.clone(), ());
+    }
+    let fstype = user_to_str(filesystem_type, 32).unwrap_or_default();
+    // tmpfs (and ramfs aliases): mount an in-memory filesystem.
+    if fstype == "tmpfs" || fstype == "ramfs" {
+        return match kor_fs::registry::mount_named(&crate::MOUNTS, "ramfs", None, &full_target) {
+            Ok(_) => 0,
+            Err(_) => -22,
+        };
+    }
+    let Some(source_path) = user_to_str(source, 64) else {
+        return -14;
+    };
+    // Block-device sources: the LTP scratch disk or the root disk.
+    let device_index = match source_path.as_str() {
+        "/dev/vdb" => Some(1usize),
+        "/dev/vda" => Some(0usize),
+        _ => None,
+    };
+    let Some(index) = device_index else {
+        return -22; // EINVAL: no such device
+    };
+    let Some(device) = crate::registries::BLOCKS.get(index) else {
+        return -6; // ENXIO
+    };
+    match kor_ext2::Ext2Fs::open(device) {
+        Ok(fs) => match crate::MOUNTS.lock().mount(&full_target, fs) {
+            Ok(()) => 0,
+            Err(_) => -22,
+        },
+        Err(_) => -22, // not a valid ext2 volume
+    }
+}
+
+/// umount2(2): detach whatever is mounted at `target`.
+fn sys_umount2(target: usize) -> isize {
+    let Some(target_path) = user_to_str(target, 4096) else {
+        return -14;
+    };
+    READONLY_MOUNTS.lock().remove(&target_path);
+    let full_target = match absolute_path(AT_FDCWD as usize, &target_path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    match crate::MOUNTS.lock().unmount(&full_target) {
+        Ok(()) => 0,
+        Err(_) => -22,
+    }
+}
+
 fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
+    // Raw block device for LTP scratch tests: /dev/vdb is the second
+    // registered virtio-blk disk.  Opens bypass the VFS entirely.
+    if let Some(name) = user_to_str(path, 64) {
+        if name == "/dev/vdb" {
+            return open_block_device();
+        }
+    }
+    if TRACE_SYSCALLS.load(core::sync::atomic::Ordering::Relaxed) {
+        if let Some(n) = user_to_str(path, 64) {
+            let pid = crate::sched::current_pid().unwrap_or(0);
+            kor::println!("[trace] openat {n:?} flags={flags:#o} pid={pid}");
+        }
+    }
     const O_CREAT: usize = 0o100;
     const O_EXCL: usize = 0o200;
     const O_TRUNC: usize = 0o1000;
@@ -2841,18 +3173,17 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
         }
         path_str.push_str(TEMPORARY_NAME);
     }
-    if path_str == "/dev/null" {
-        return 3;
-    }
+    // /dev/null is a real (empty) file in the rootfs and opens through the
+    // normal VFS path below; /dev/tty and /dev/console alias the console
+    // stdio descriptor.
     if path_str == "/dev/tty" || path_str == "/dev/console" {
-        #[cfg(target_arch = "x86_64")]
-        {
-            return 0;
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            return 3;
-        }
+        return crate::sched::with_current_process(|process| {
+            let mut process = process.lock();
+            let fd = next_fd(&process);
+            process.stdio.insert(fd, 0);
+            fd as isize
+        })
+        .unwrap_or(-9);
     }
     let inode = if temporary {
         let (parent_path, name) = match split_absolute_parent(&path_str) {
@@ -2915,6 +3246,14 @@ fn sys_openat(dirfd: usize, path: usize, flags: usize, mode: usize) -> isize {
 }
 
 fn sys_close(fd: usize) -> isize {
+    if is_block_fd(fd) {
+        crate::sched::with_current_process(|process| {
+            let mut process = process.lock();
+            process.blocks.remove(&fd);
+            process.block_offsets.remove(&fd);
+        });
+        return 0;
+    }
     if pipe_id(fd).is_some() {
         pipe_close(fd);
         crate::sched::with_current_process(|process| process.lock().pipes.remove(&fd));
@@ -2988,7 +3327,8 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     };
     let socket = process.sockets.get(&fd).copied();
     let pipe = process.pipes.get(&fd).copied();
-    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() {
+    let block = process.blocks.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() && block.is_none() {
         return -9;
     }
     if fd == newfd {
@@ -2998,6 +3338,8 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     process.stdio.remove(&newfd);
     process.sockets.remove(&newfd);
     process.ipv6_fds.remove(&newfd);
+    process.pipes.remove(&newfd);
+    process.blocks.remove(&newfd);
     if let Some(entry) = file {
         process.files.insert(newfd, entry);
     } else if let Some(target) = stdio {
@@ -3010,6 +3352,10 @@ fn sys_dup2(fd: usize, newfd: usize) -> isize {
     } else if let Some(pipe) = pipe {
         process.pipes.insert(newfd, pipe);
         pipe_add_holder(pipe.0, pipe.1);
+    } else if let Some(block) = block {
+        process.blocks.insert(newfd, block);
+        let offset = process.block_offsets.get(&fd).copied().unwrap_or(0);
+        process.block_offsets.insert(newfd, offset);
     }
     newfd as isize
 }
@@ -3033,7 +3379,8 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
     };
     let socket = process.sockets.get(&fd).copied();
     let pipe = process.pipes.get(&fd).copied();
-    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() {
+    let block = process.blocks.get(&fd).copied();
+    if file.is_none() && stdio.is_none() && socket.is_none() && pipe.is_none() && block.is_none() {
         return -9;
     }
     match command {
@@ -3043,6 +3390,7 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
                 || process.stdio.contains_key(&newfd)
                 || process.sockets.contains_key(&newfd)
                 || process.pipes.contains_key(&newfd)
+                || process.blocks.contains_key(&newfd)
             {
                 newfd = match newfd.checked_add(1) {
                     Some(value) => value,
@@ -3061,6 +3409,10 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
             } else if let Some(pipe) = pipe {
                 process.pipes.insert(newfd, pipe);
                 pipe_add_holder(pipe.0, pipe.1);
+            } else if let Some(block) = block {
+                process.blocks.insert(newfd, block);
+                let offset = process.block_offsets.get(&fd).copied().unwrap_or(0);
+                process.block_offsets.insert(newfd, offset);
             }
             newfd as isize
         }
@@ -3108,6 +3460,44 @@ fn sys_fcntl(fd: usize, command: usize, argument: usize) -> isize {
 /// input path honours ICRNL, so raw-mode programs (vi) and line programs
 /// (sh) both behave.
 fn sys_ioctl(fd: usize, request: usize, argp: usize) -> isize {
+    // Block-device geometry ioctls for raw scratch descriptors.
+    if is_block_fd(fd) {
+        const BLKGETSIZE: usize = 0x1260; // unsigned long: 512-byte sectors
+        const BLKGETSIZE64: usize = 0x8008_1272; // u64: bytes
+        const BLKSSZGET: usize = 0x1268; // int: logical block size
+        let device = crate::sched::with_current_process(|process| {
+            let process = process.lock();
+            process.blocks.get(&fd).copied()
+        })
+        .flatten()
+        .and_then(|index| crate::registries::BLOCKS.get(index));
+        let Some(device) = device else {
+            return -9;
+        };
+        return match request {
+            BLKGETSIZE => {
+                let sectors = (device.total_blocks() * device.block_size() / 512) as u64;
+                if write_user(argp, &sectors).is_none() {
+                    return -14;
+                }
+                0
+            }
+            BLKGETSIZE64 => {
+                let bytes = (device.total_blocks() * device.block_size()) as u64;
+                if write_user(argp, &bytes).is_none() {
+                    return -14;
+                }
+                0
+            }
+            BLKSSZGET => {
+                if write_user::<u32>(argp, &(device.block_size() as u32)).is_none() {
+                    return -14;
+                }
+                0
+            }
+            _ => 0, // unknown ioctls succeed (best effort for mkfs)
+        };
+    }
     // TCGETS = 0x5401: get terminal attributes
     if request == 0x5401 && fd <= 2 {
         let termios = termios();
@@ -3264,6 +3654,62 @@ fn linux_stat(meta: kor::Metadata, inode: u64) -> LinuxStat {
 }
 
 fn sys_fstat(fd: usize, stat: usize) -> isize {
+    // Raw block devices report S_IFBLK geometry.
+    if is_block_fd(fd) {
+        let device = crate::sched::with_current_process(|process| {
+            let process = process.lock();
+            process.blocks.get(&fd).copied()
+        })
+        .flatten()
+        .and_then(|index| crate::registries::BLOCKS.get(index));
+        let Some(device) = device else {
+            return -9;
+        };
+        let bytes = device.total_blocks() * device.block_size();
+        #[cfg(not(target_arch = "x86_64"))]
+        let st = LinuxStat {
+            st_dev: 0,
+            st_ino: 0x76_6462, // "vdb"
+            st_mode: 0o060600, // S_IFBLK | rw
+            st_nlink: 1,
+            st_uid: 0,
+            st_gid: 0,
+            st_rdev: 0x768, // device number stand-in
+            _pad: 0,
+            st_size: bytes as i64,
+            st_blksize: device.block_size() as u32,
+            _pad2: 0,
+            st_blocks: (bytes / 512) as u64,
+            st_atime: 0,
+            st_mtime: 0,
+            st_ctime: 0,
+        };
+        #[cfg(target_arch = "x86_64")]
+        let st = LinuxStat {
+            st_dev: 0,
+            st_ino: 0x76_6462, // "vdb"
+            st_nlink: 1,
+            st_mode: 0o060600, // S_IFBLK | rw
+            st_uid: 0,
+            st_gid: 0,
+            _pad0: 0,
+            st_rdev: 0x768,
+            st_size: bytes as i64,
+            st_blksize: device.block_size() as i64,
+            st_blocks: (bytes / 512) as i64,
+            st_atime: 0,
+            st_atime_nsec: 0,
+            st_mtime: 0,
+            st_mtime_nsec: 0,
+            st_ctime: 0,
+            st_ctime_nsec: 0,
+            _unused: [0; 3],
+        };
+        if write_user(stat, &st).is_none() {
+            return -14;
+        }
+        return 0;
+    }
     let entry = match current_file(fd) {
         Some(entry) => entry,
         None => return -9,
@@ -3279,6 +3725,34 @@ fn sys_fstat(fd: usize, stat: usize) -> isize {
 }
 
 fn sys_lseek(fd: usize, offset: i64, whence: usize) -> isize {
+    // Raw block descriptors track their own offset.
+    if is_block_fd(fd) {
+        let current = crate::sched::with_current_process(|process| {
+            process.lock().block_offsets.get(&fd).copied().unwrap_or(0)
+        })
+        .unwrap_or(0);
+        let device_size = crate::sched::with_current_process(|process| {
+            let process = process.lock();
+            process.blocks.get(&fd).copied()
+        })
+        .flatten()
+        .and_then(|index| crate::registries::BLOCKS.get(index))
+        .map(|device| device.total_blocks() * device.block_size())
+        .unwrap_or(0);
+        let new = match whence {
+            0 => offset,
+            1 => current as i64 + offset,
+            2 => device_size as i64 + offset,
+            _ => -1,
+        };
+        if new < 0 {
+            return -22;
+        }
+        crate::sched::with_current_process(|process| {
+            process.lock().block_offsets.insert(fd, new as usize);
+        });
+        return new as isize;
+    }
     let entry = match current_file(fd) {
         Some(entry) => entry,
         None => return -9,
@@ -3655,7 +4129,27 @@ fn sys_unlinkat(dirfd: usize, path: usize, flags: usize) -> isize {
     result.map(|()| 0).unwrap_or_else(fs_errno)
 }
 
+/// Mount points currently enforcing read-only (MS_RDONLY set via remount).
+static READONLY_MOUNTS: Mutex<BTreeMap<String, ()>> = Mutex::new(BTreeMap::new());
+
+/// True when `path` lies under a read-only mount.
+fn path_is_readonly(path: &str) -> bool {
+    READONLY_MOUNTS.lock().keys().any(|point| {
+        path == *point
+            || (path.len() > point.len()
+                && path.starts_with(&point[..])
+                && path.as_bytes()[point.len()] == b'/')
+    })
+}
+
 fn sys_renameat(old_dirfd: usize, old_path: usize, new_dirfd: usize, new_path: usize) -> isize {
+    for (dirfd, path) in [(old_dirfd, old_path), (new_dirfd, new_path)] {
+        if let Ok(full) = user_absolute_path(dirfd, path)
+            && path_is_readonly(&full)
+        {
+            return -30; // EROFS
+        }
+    }
     let old_path = match user_absolute_path(old_dirfd, old_path) {
         Ok(path) => path,
         Err(error) => return error,

@@ -25,6 +25,16 @@ impl BlockRegistry {
         self.devices.lock().push(device);
     }
 
+    /// Fetch a registered device by index.
+    pub fn get(&self, index: usize) -> Option<Arc<dyn BlockDevice>> {
+        self.devices.lock().get(index).cloned()
+    }
+
+    /// Snapshot count of registered devices.
+    pub fn lock_all(&self) -> spin::MutexGuard<'_, Vec<Arc<dyn BlockDevice>>> {
+        self.devices.lock()
+    }
+
     pub fn first(&self) -> Option<Arc<dyn BlockDevice>> {
         self.devices.lock().first().cloned()
     }
