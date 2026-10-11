@@ -782,6 +782,22 @@ impl Ext2INode {
                 self.free_and_clear_logical(lb)?;
             }
             self.prune_empty_indirects()?;
+            // Zero the kept block's tail beyond the new size: POSIX requires
+            // the truncated-away bytes to read as zeros if the file later
+            // grows again (holes), and the old data must not resurface.
+            let tail_start = (new_size % block_size) as usize;
+            if tail_start != 0 && keep >= 1 {
+                let lb = keep - 1;
+                if let Ok(physical) = self.resolve_block_id(lb) {
+                    let block_size_u = block_size as usize;
+                    let mut block_buf = alloc::vec![0u8; block_size_u];
+                    self.fs.read_fs_block(physical as usize, &mut block_buf)?;
+                    for byte in &mut block_buf[tail_start..] {
+                        *byte = 0;
+                    }
+                    self.fs.write_fs_block(physical as usize, &block_buf)?;
+                }
+            }
             self.set_size(new_size);
             self.recompute_i_blocks()?;
         }
